@@ -1,7 +1,12 @@
 ---
 description: Generate a PR title and description following the team's PR template
 argument-hint: [base-branch]
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(gh:*)
+allowed-tools:
+  - Bash(git log *)
+  - Bash(git diff *)
+  - Bash(git branch *)
+  - Bash(gh pr view *)
+  - Write
 ---
 
 # PR Description Generator

@@ -6,10 +6,12 @@ allowed-tools:
   - mcp__atlassian__editJiraIssue
   - mcp__atlassian__getJiraIssue
   - mcp__atlassian__addCommentToJiraIssue
-  - Bash(git *)
+  - Bash(git rev-parse *)
+  - Bash(git add *)
+  - Bash(git commit *)
+  - Bash(git status *)
   - Bash(cd *)
   - Read
-  - Glob
   - Skill
   - Agent
 ---
@@ -43,14 +45,14 @@ Resolve `$PLANS_DIR` using the cascade:
 Use `mcp__atlassian__searchJiraIssuesUsingJql`:
 
 ```
-labels = "ClaudePlanApproved" AND labels NOT IN ("ClaudeWorkExecuting", "ClaudeWorkFinished", "ClaudeUserReviewDone", "ClaudeReviewing", "ClaudeReviewComplete") AND assignee = currentUser()
+labels = "ClaudePlanApproved" AND labels NOT IN ("ClaudeExecuting", "ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()
 ```
 
 If none found, display "Phase 2: No approved plans to execute." and stop.
 
 ## Step 3: Gate on Stack Dependencies
 
-Same gating logic as Phase 1 Step 3: for each ticket, check same-Epic "is blocked by" links. A blocker is "finished" if it has `ClaudeReviewComplete` label OR statusCategory "done". Skip tickets with unfinished blockers. Determine base branch from the finished blocker's key, or `main` if none.
+Same gating logic as Phase 1 Step 3: for each ticket, check same-Epic "is blocked by" links. A blocker is "finished" if its Jira status category is "done". Skip tickets with unfinished blockers. Determine base branch from the finished blocker's key, or `main` if none.
 
 ## Step 4: Launch Execution Agents (Parallel)
 
@@ -75,7 +77,7 @@ STEPS:
 
 1. Update labels:
    Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
-   update: {"labels": [{"remove": "ClaudePlanApproved"}, {"remove": "ClaudeWorkPlanningDone"}, {"add": "ClaudeWorkExecuting"}]}
+   update: {"labels": [{"remove": "ClaudePlanApproved"}, {"remove": "ClaudePlanNeedsApproval"}, {"add": "ClaudeExecuting"}]}
 
 2. Execute the plan:
    Use the Skill tool to run skill "plan-execute" with args "jira-{KEY}"
@@ -86,11 +88,11 @@ STEPS:
 
 4. Mark finished:
    Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
-   update: {"labels": [{"remove": "ClaudeWorkExecuting"}, {"add": "ClaudeWorkFinished"}]}
+   update: {"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeNeedsReview"}]}
 
 IF ANY CRITICAL STEP FAILS:
    Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
-   update: {"labels": [{"remove": "ClaudeWorkExecuting"}, {"add": "ClaudeWorkFailed"}]}
+   update: {"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeFailed"}]}
    Post a Jira comment explaining the failure.
 ```
 
@@ -112,7 +114,7 @@ Skipped (dependency not ready):
 
 ## Error Handling
 
-- Agent execution fails: agent handles labeling `ClaudeWorkFailed` and commenting
+- Agent execution fails: agent handles labeling `ClaudeFailed` and commenting
 - Label update fails: warn user, continue (non-blocking)
 - Never stop the phase due to a single ticket failure
 

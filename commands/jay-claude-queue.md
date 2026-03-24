@@ -11,17 +11,14 @@ Run all three queue phases in sequence: Plan, Execute, Promote. Each phase is id
 ## Label State Machine
 
 ```
-ClaudeReady              -> eligible for planning
-ClaudeWorkPlanning       -> /jira-start running
-ClaudeWorkPlanningDone   -> plan ready, awaiting approval
-ClaudePlanApproved       -> user approved, eligible for execution
-ClaudeWorkExecuting      -> /plan-execute running
-ClaudeWorkFinished       -> implementation done, awaiting user review
-ClaudeUserReviewDone     -> user finished iterating (user-applied)
-ClaudeReviewing          -> /pr-review running
-ClaudeReviewComplete     -> self-review passed, can unblock downstream
-ClaudeWorkFailed         -> execution failed, needs investigation
-ClaudeStackComplete      -> all tickets in stack finished (added to Epic)
+ClaudeWork (+ In Progress)  -> eligible for planning
+ClaudePlanning              -> /jira-start running
+ClaudePlanNeedsApproval     -> plan ready, user: review plan and apply ClaudePlanApproved
+ClaudePlanApproved          -> user approved, eligible for execution
+ClaudeExecuting             -> /plan-execute running
+ClaudeNeedsReview           -> done, user: review PR and move ticket to Done
+ClaudeFailed                -> error, user: investigate
+ClaudeStackComplete         -> all tickets in stack finished (added to Epic)
 ```
 
 ## Execution
@@ -35,12 +32,6 @@ Wait for it to complete before continuing.
 ### Phase 2 - Execute
 
 Use the Skill tool to run `jay-queue-execute`.
-
-Wait for it to complete before continuing.
-
-### Phase 2.5 - Review
-
-Use the Skill tool to run `jay-queue-review`.
 
 Wait for it to complete before continuing.
 
@@ -62,9 +53,6 @@ Phase 1 - Planned ({N}):
 
 Phase 2 - Executed ({N}):
   - {KEY}: {SUMMARY}
-
-Phase 2.5 - Reviewed ({N}):
-  - {KEY}: {SUMMARY} - {PASS/FIXED/FAILED}
 
 Phase 3 - Promoted ({N}):
   - {BLOCKED_KEY}: unblocked by {KEY}

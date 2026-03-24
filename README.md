@@ -6,15 +6,14 @@ Personal Claude Code commands for Jira queue automation, PR workflows, and stack
 
 ### Queue System
 
-Automated Jira work queue with a label-based state machine. Tickets flow through: `ClaudeReady` -> `ClaudeWorkPlanning` -> `ClaudeWorkPlanningDone` -> `ClaudePlanApproved` -> `ClaudeWorkExecuting` -> `ClaudeWorkFinished` -> `ClaudeUserReviewDone` -> `ClaudeReviewing` -> `ClaudeReviewComplete`.
+Automated Jira work queue with a label-based state machine. Label `ClaudeWork` on any ticket to mark it for Claude. Move to "In Progress" when ready: `ClaudeWork` + In Progress -> `ClaudePlanning` -> `ClaudePlanNeedsApproval` -> `ClaudePlanApproved` -> `ClaudeExecuting` -> `ClaudeNeedsReview` -> Done.
 
 | Command | Description |
 |---|---|
 | `/jay-claude-queue` | Run all three queue phases in sequence |
-| `/jay-queue-plan` | Phase 1: Find `ClaudeReady` tickets, gate on stack dependencies, create worktrees, run `/jira-start` |
+| `/jay-queue-plan` | Phase 1: Find `ClaudeWork` + In Progress tickets, gate on stack dependencies, create worktrees, run `/jira-start` |
 | `/jay-queue-execute` | Phase 2: Find `ClaudePlanApproved` tickets, launch parallel execution agents |
-| `/jay-queue-review` | Phase 2.5: Find `ClaudeUserReviewDone` tickets, run `/pr-review` for self-review |
-| `/jay-queue-promote` | Phase 3: Promote `ClaudeReviewComplete` tickets, detect stack completion |
+| `/jay-queue-promote` | Phase 3: Promote downstream tickets when blocker is Done, detect stack completion |
 
 ### PR Workflows
 
@@ -38,18 +37,25 @@ Automated Jira work queue with a label-based state machine. Tickets flow through
 ## Queue Label State Machine
 
 ```
-ClaudeReady           -- eligible for planning (user-applied or auto-promoted)
-ClaudeWorkPlanning    -- /jira-start in progress
-ClaudeWorkPlanningDone -- plan ready, awaiting user approval
-ClaudePlanApproved    -- user approved, eligible for execution
-ClaudeWorkExecuting   -- /plan-execute in progress
-ClaudeWorkFinished    -- implementation done, awaiting user review
-ClaudeUserReviewDone  -- user finished iterating (user-applied)
-ClaudeReviewing       -- /pr-review running
-ClaudeReviewComplete  -- self-review passed, can unblock downstream
-ClaudeWorkFailed      -- execution failed, needs investigation
-ClaudeStackComplete   -- all tickets in an Epic finished (added to Epic)
+ClaudeWork (+ In Progress) -- eligible for planning (user labels ClaudeWork, moves to In Progress when ready)
+ClaudePlanning             -- /jira-start in progress
+ClaudePlanNeedsApproval    -- plan ready, user: review plan and apply ClaudePlanApproved
+ClaudePlanApproved         -- user approved, eligible for execution
+ClaudeExecuting            -- /plan-execute in progress
+ClaudeNeedsReview          -- done, user: review PR, iterate, then move ticket to Done
+ClaudeFailed               -- error, user: investigate
+ClaudeStackComplete        -- all tickets in an Epic finished (added to Epic)
 ```
+
+### User Actions
+- **Label `ClaudeWork`**: mark any ticket for Claude to work on
+- **Move to In Progress**: signal that a `ClaudeWork` ticket is ready for planning
+- **Apply `ClaudePlanApproved`**: approve a plan after reviewing it
+- **Move to Done**: signal that PR review is complete, triggers downstream promotion
+
+### `ClaudeNeeds*` = user action required
+- `ClaudePlanNeedsApproval` -> review plan, apply `ClaudePlanApproved`
+- `ClaudeNeedsReview` -> review PR, iterate, move ticket to Done
 
 ## Install
 

@@ -5,9 +5,14 @@ allowed-tools:
   - mcp__atlassian__getJiraIssue
   - mcp__atlassian__searchJiraIssuesUsingJql
   - mcp__atlassian__addCommentToJiraIssue
-  - Bash(git *)
-  - Read
-  - Glob
+  - Bash(git fetch *)
+  - Bash(git branch *)
+  - Bash(git checkout *)
+  - Bash(git rebase *)
+  - Bash(git push --force-with-lease *)
+  - Bash(git worktree *)
+  - Bash(git diff *)
+  - Bash(gh pr edit *)
 ---
 
 # Stack Rebase - Cascade rebase through a stacked PR chain

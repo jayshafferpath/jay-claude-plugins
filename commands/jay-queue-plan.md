@@ -1,23 +1,22 @@
 ---
-description: "Phase 1: Find ClaudeReady tickets, gate on stack dependencies, create worktrees, run /jira-start"
+description: "Phase 1: Find ClaudeWork tickets In Progress, gate on stack dependencies, create worktrees, run /jira-start"
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__searchJiraIssuesUsingJql
   - mcp__atlassian__editJiraIssue
   - mcp__atlassian__getJiraIssue
   - mcp__atlassian__addCommentToJiraIssue
-  - Bash(git *)
+  - Bash(git rev-parse *)
+  - Bash(git fetch *)
+  - Bash(git worktree *)
   - Bash(cd *)
-  - Bash(jq *)
-  - Bash(mkdir *)
   - Read
-  - Glob
   - Skill
 ---
 
 # Queue Phase 1 - Plan
 
-Find tickets labeled `ClaudeReady`, gate on stack dependencies, create worktrees, and run `/jira-start` for each eligible ticket.
+Find tickets labeled `ClaudeWork` with status "In Progress", gate on stack dependencies, create worktrees, and run `/jira-start` for each eligible ticket.
 
 ## Step 1: Initialize
 
@@ -44,7 +43,7 @@ Resolve `$PLANS_DIR` using the cascade:
 Use `mcp__atlassian__searchJiraIssuesUsingJql`:
 
 ```
-labels = "ClaudeReady" AND labels NOT IN ("ClaudeWorkPlanning", "ClaudeWorkPlanningDone", "ClaudePlanApproved", "ClaudeWorkExecuting", "ClaudeWorkFinished", "ClaudeUserReviewDone", "ClaudeReviewing", "ClaudeReviewComplete") AND assignee = currentUser() AND status = "In Progress"
+labels = "ClaudeWork" AND labels NOT IN ("ClaudePlanning", "ClaudePlanNeedsApproval", "ClaudePlanApproved", "ClaudeExecuting", "ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser() AND status = "In Progress"
 ```
 
 If none found, display "Phase 1: No tickets ready for planning." and stop.
@@ -57,7 +56,7 @@ For each ticket:
 2. Get the ticket's Epic/parent key
 3. Find inward "is blocked by" links
 4. For each blocker sharing the same Epic:
-   - A blocker is considered "finished" if it has `ClaudeReviewComplete` label **OR** its Jira status category is "done" (statusCategory.key == "done", e.g., "Done", "Complete")
+   - A blocker is considered "finished" if its Jira status category is "done" (statusCategory.key == "done")
    - If ANY same-Epic blocker is NOT finished: **skip this ticket**
    - Display: "Skipping {KEY}: waiting on {BLOCKER_KEY} to finish"
 5. Determine base branch:
@@ -70,8 +69,8 @@ For each eligible ticket:
 
 1. Display: "Planning {KEY}: {SUMMARY} (base: {BASE_BRANCH})"
 
-2. Remove `ClaudeReady` label:
-   - `update`: `{"labels": [{"remove": "ClaudeReady"}]}`
+2. Add `ClaudePlanning` label:
+   - `update`: `{"labels": [{"add": "ClaudePlanning"}]}`
 
 3. Fetch latest:
    ```bash
@@ -128,7 +127,7 @@ Awaiting Approval:
 
 - Worktree creation fails: log error, skip ticket, continue
 - Stack dependency branch missing: skip ticket, log "will be picked up next pass"
-- /jira-start fails: add `ClaudeWorkFailed` label, log error, continue
+- /jira-start fails: add `ClaudeFailed` label, log error, continue
 - Label update fails: warn user, continue (non-blocking)
 - Never stop the phase due to a single ticket failure
 - Return to `REPO_ROOT` after processing each ticket regardless of success/failure

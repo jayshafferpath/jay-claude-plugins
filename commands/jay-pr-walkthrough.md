@@ -1,7 +1,11 @@
 ---
 description: Walk through PR changes file-by-file with explanations
 argument-hint: [base-branch]
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(gh:*)
+allowed-tools:
+  - Bash(git diff *)
+  - Bash(git branch *)
+  - Bash(gh pr view *)
+  - Read
 ---
 
 # PR Change Walkthrough
