@@ -5,7 +5,6 @@ allowed-tools:
   - mcp__atlassian__searchJiraIssuesUsingJql
   - mcp__atlassian__editJiraIssue
   - mcp__atlassian__getJiraIssue
-  - mcp__atlassian__atlassianUserInfo
   - mcp__atlassian__addCommentToJiraIssue
   - Bash(git *)
   - Bash(cd *)
@@ -27,18 +26,13 @@ Find tickets labeled `ClaudeReady`, gate on stack dependencies, create worktrees
 - Use `mcp__atlassian__getAccessibleAtlassianResources`
 - Store first resource `id` as `CLOUD_ID`
 
-### 1b: Get Current User
-
-- Use `mcp__atlassian__atlassianUserInfo`
-- Store `account_id` as `MY_ACCOUNT_ID`
-
-### 1c: Get Repository Root
+### 1b: Get Repository Root
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
 ```
 
-### 1d: Resolve Plans Directory
+### 1c: Resolve Plans Directory
 
 Resolve `$PLANS_DIR` using the cascade:
 1. Check `./.claude/settings.local.json` for `plans.directory`
@@ -50,7 +44,7 @@ Resolve `$PLANS_DIR` using the cascade:
 Use `mcp__atlassian__searchJiraIssuesUsingJql`:
 
 ```
-labels = "ClaudeReady" AND labels NOT IN ("ClaudeWorkPlanning", "ClaudeWorkPlanningDone", "ClaudePlanApproved", "ClaudeWorkExecuting", "ClaudeWorkFinished") AND assignee = currentUser() AND status = "In Progress"
+labels = "ClaudeReady" AND labels NOT IN ("ClaudeWorkPlanning", "ClaudeWorkPlanningDone", "ClaudePlanApproved", "ClaudeWorkExecuting", "ClaudeWorkFinished", "ClaudeUserReviewDone", "ClaudeReviewing", "ClaudeReviewComplete") AND assignee = currentUser() AND status = "In Progress"
 ```
 
 If none found, display "Phase 1: No tickets ready for planning." and stop.
@@ -63,11 +57,11 @@ For each ticket:
 2. Get the ticket's Epic/parent key
 3. Find inward "is blocked by" links
 4. For each blocker sharing the same Epic:
-   - Check if it has `ClaudeWorkFinished` label
-   - If ANY same-Epic blocker lacks `ClaudeWorkFinished`: **skip this ticket**
+   - A blocker is considered "finished" if it has `ClaudeReviewComplete` label **OR** its Jira status category is "done" (statusCategory.key == "done", e.g., "Done", "Complete")
+   - If ANY same-Epic blocker is NOT finished: **skip this ticket**
    - Display: "Skipping {KEY}: waiting on {BLOCKER_KEY} to finish"
 5. Determine base branch:
-   - Same-Epic blocker exists with `ClaudeWorkFinished`: base = blocker's ticket key
+   - Same-Epic blocker exists that is finished: base = blocker's ticket key
    - No same-Epic blocker: base = `main`
 
 ## Step 4: Process Each Eligible Ticket (Sequential)

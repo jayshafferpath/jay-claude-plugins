@@ -6,14 +6,15 @@ Personal Claude Code commands for Jira queue automation, PR workflows, and stack
 
 ### Queue System
 
-Automated Jira work queue with a label-based state machine. Tickets flow through: `ClaudeReady` -> `ClaudeWorkPlanning` -> `ClaudeWorkPlanningDone` -> `ClaudePlanApproved` -> `ClaudeWorkExecuting` -> `ClaudeWorkFinished`.
+Automated Jira work queue with a label-based state machine. Tickets flow through: `ClaudeReady` -> `ClaudeWorkPlanning` -> `ClaudeWorkPlanningDone` -> `ClaudePlanApproved` -> `ClaudeWorkExecuting` -> `ClaudeWorkFinished` -> `ClaudeUserReviewDone` -> `ClaudeReviewing` -> `ClaudeReviewComplete`.
 
 | Command | Description |
 |---|---|
 | `/jay-claude-queue` | Run all three queue phases in sequence |
 | `/jay-queue-plan` | Phase 1: Find `ClaudeReady` tickets, gate on stack dependencies, create worktrees, run `/jira-start` |
 | `/jay-queue-execute` | Phase 2: Find `ClaudePlanApproved` tickets, launch parallel execution agents |
-| `/jay-queue-promote` | Phase 3: Promote downstream tickets to `ClaudeReady`, detect stack completion |
+| `/jay-queue-review` | Phase 2.5: Find `ClaudeUserReviewDone` tickets, run `/pr-review` for self-review |
+| `/jay-queue-promote` | Phase 3: Promote `ClaudeReviewComplete` tickets, detect stack completion |
 
 ### PR Workflows
 
@@ -42,7 +43,10 @@ ClaudeWorkPlanning    -- /jira-start in progress
 ClaudeWorkPlanningDone -- plan ready, awaiting user approval
 ClaudePlanApproved    -- user approved, eligible for execution
 ClaudeWorkExecuting   -- /plan-execute in progress
-ClaudeWorkFinished    -- implementation done, PR created
+ClaudeWorkFinished    -- implementation done, awaiting user review
+ClaudeUserReviewDone  -- user finished iterating (user-applied)
+ClaudeReviewing       -- /pr-review running
+ClaudeReviewComplete  -- self-review passed, can unblock downstream
 ClaudeWorkFailed      -- execution failed, needs investigation
 ClaudeStackComplete   -- all tickets in an Epic finished (added to Epic)
 ```

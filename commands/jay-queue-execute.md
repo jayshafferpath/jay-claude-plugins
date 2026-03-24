@@ -5,11 +5,9 @@ allowed-tools:
   - mcp__atlassian__searchJiraIssuesUsingJql
   - mcp__atlassian__editJiraIssue
   - mcp__atlassian__getJiraIssue
-  - mcp__atlassian__atlassianUserInfo
   - mcp__atlassian__addCommentToJiraIssue
   - Bash(git *)
   - Bash(cd *)
-  - Bash(jq *)
   - Read
   - Glob
   - Skill
@@ -27,18 +25,13 @@ Find tickets labeled `ClaudePlanApproved`, gate on stack dependencies, and launc
 - Use `mcp__atlassian__getAccessibleAtlassianResources`
 - Store first resource `id` as `CLOUD_ID`
 
-### 1b: Get Current User
-
-- Use `mcp__atlassian__atlassianUserInfo`
-- Store `account_id` as `MY_ACCOUNT_ID`
-
-### 1c: Get Repository Root
+### 1b: Get Repository Root
 
 ```bash
 REPO_ROOT=$(git rev-parse --show-toplevel)
 ```
 
-### 1d: Resolve Plans Directory
+### 1c: Resolve Plans Directory
 
 Resolve `$PLANS_DIR` using the cascade:
 1. Check `./.claude/settings.local.json` for `plans.directory`
@@ -50,27 +43,14 @@ Resolve `$PLANS_DIR` using the cascade:
 Use `mcp__atlassian__searchJiraIssuesUsingJql`:
 
 ```
-labels = "ClaudePlanApproved" AND labels NOT IN ("ClaudeWorkExecuting", "ClaudeWorkFinished") AND assignee = currentUser()
+labels = "ClaudePlanApproved" AND labels NOT IN ("ClaudeWorkExecuting", "ClaudeWorkFinished", "ClaudeUserReviewDone", "ClaudeReviewing", "ClaudeReviewComplete") AND assignee = currentUser()
 ```
 
 If none found, display "Phase 2: No approved plans to execute." and stop.
 
 ## Step 3: Gate on Stack Dependencies
 
-Same logic as Phase 1 gating:
-
-For each ticket:
-
-1. Use `mcp__atlassian__getJiraIssue` to get issue links
-2. Get the ticket's Epic/parent key
-3. Find inward "is blocked by" links
-4. For each blocker sharing the same Epic:
-   - Check if it has `ClaudeWorkFinished` label
-   - If ANY same-Epic blocker lacks `ClaudeWorkFinished`: **skip this ticket**
-   - Display: "Skipping {KEY}: waiting on {BLOCKER_KEY} to finish"
-5. Determine base branch:
-   - Same-Epic blocker exists with `ClaudeWorkFinished`: base = blocker's ticket key
-   - No same-Epic blocker: base = `main`
+Same gating logic as Phase 1 Step 3: for each ticket, check same-Epic "is blocked by" links. A blocker is "finished" if it has `ClaudeReviewComplete` label OR statusCategory "done". Skip tickets with unfinished blockers. Determine base branch from the finished blocker's key, or `main` if none.
 
 ## Step 4: Launch Execution Agents (Parallel)
 
@@ -93,28 +73,24 @@ SETUP:
 
 STEPS:
 
-1. Remove ClaudePlanApproved label:
+1. Update labels:
    Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
-   update: {"labels": [{"remove": "ClaudePlanApproved"}]}
+   update: {"labels": [{"remove": "ClaudePlanApproved"}, {"remove": "ClaudeWorkPlanningDone"}, {"add": "ClaudeWorkExecuting"}]}
 
-2. Add ClaudeWorkExecuting label:
-   Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
-   update: {"labels": [{"remove": "ClaudeWorkPlanningDone"}, {"add": "ClaudeWorkExecuting"}]}
-
-3. Execute the plan:
+2. Execute the plan:
    Use the Skill tool to run skill "plan-execute" with args "jira-{KEY}"
 
-4. After plan execution completes successfully:
+3. After plan execution completes successfully:
    a. Stage relevant files (NOT .env, credentials, or secrets)
    b. Commit with a descriptive message
 
-5. Mark finished:
+4. Mark finished:
    Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
    update: {"labels": [{"remove": "ClaudeWorkExecuting"}, {"add": "ClaudeWorkFinished"}]}
 
 IF ANY CRITICAL STEP FAILS:
    Use mcp__atlassian__editJiraIssue with cloudId={CLOUD_ID}, issueIdOrKey={KEY},
-   update: {"labels": [{"remove": "ClaudeWorkExecuting"}, {"remove": "ClaudeWorkPlanningDone"}, {"remove": "ClaudePlanApproved"}, {"add": "ClaudeWorkFailed"}]}
+   update: {"labels": [{"remove": "ClaudeWorkExecuting"}, {"add": "ClaudeWorkFailed"}]}
    Post a Jira comment explaining the failure.
 ```
 

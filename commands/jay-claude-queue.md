@@ -16,7 +16,10 @@ ClaudeWorkPlanning       -> /jira-start running
 ClaudeWorkPlanningDone   -> plan ready, awaiting approval
 ClaudePlanApproved       -> user approved, eligible for execution
 ClaudeWorkExecuting      -> /plan-execute running
-ClaudeWorkFinished       -> done, implementation complete
+ClaudeWorkFinished       -> implementation done, awaiting user review
+ClaudeUserReviewDone     -> user finished iterating (user-applied)
+ClaudeReviewing          -> /pr-review running
+ClaudeReviewComplete     -> self-review passed, can unblock downstream
 ClaudeWorkFailed         -> execution failed, needs investigation
 ClaudeStackComplete      -> all tickets in stack finished (added to Epic)
 ```
@@ -32,6 +35,12 @@ Wait for it to complete before continuing.
 ### Phase 2 - Execute
 
 Use the Skill tool to run `jay-queue-execute`.
+
+Wait for it to complete before continuing.
+
+### Phase 2.5 - Review
+
+Use the Skill tool to run `jay-queue-review`.
 
 Wait for it to complete before continuing.
 
@@ -53,6 +62,9 @@ Phase 1 - Planned ({N}):
 
 Phase 2 - Executed ({N}):
   - {KEY}: {SUMMARY}
+
+Phase 2.5 - Reviewed ({N}):
+  - {KEY}: {SUMMARY} - {PASS/FIXED/FAILED}
 
 Phase 3 - Promoted ({N}):
   - {BLOCKED_KEY}: unblocked by {KEY}
