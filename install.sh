@@ -6,7 +6,7 @@ COMMANDS_DIR="$HOME/.claude/commands"
 
 mkdir -p "$COMMANDS_DIR"
 
-echo "Installing claude-queue commands..."
+echo "Installing commands..."
 
 for cmd in "$SCRIPT_DIR"/commands/*.md; do
   name=$(basename "$cmd")
@@ -23,22 +23,24 @@ for cmd in "$SCRIPT_DIR"/commands/*.md; do
   echo "  Linked $name"
 done
 
-# Install repo-map.json config
-REPO_MAP_SRC="$SCRIPT_DIR/repo-map.json"
-REPO_MAP_TARGET="$HOME/.claude/repo-map.json"
-if [ -f "$REPO_MAP_SRC" ]; then
-  if [ -f "$REPO_MAP_TARGET" ] && [ ! -L "$REPO_MAP_TARGET" ]; then
-    echo "  repo-map.json already exists at $REPO_MAP_TARGET (not a symlink), skipping"
-    echo "  Edit $REPO_MAP_TARGET directly to configure repo mappings"
+# Install dev-root.json config
+DEV_ROOT_SRC="$SCRIPT_DIR/dev-root.json"
+DEV_ROOT_TARGET="$HOME/.claude/dev-root.json"
+if [ -f "$DEV_ROOT_SRC" ]; then
+  if [ -f "$DEV_ROOT_TARGET" ] && [ ! -L "$DEV_ROOT_TARGET" ]; then
+    echo "  dev-root.json already exists at $DEV_ROOT_TARGET, skipping"
+    echo "  Edit $DEV_ROOT_TARGET to set your dev directory"
   else
-    [ -L "$REPO_MAP_TARGET" ] && rm "$REPO_MAP_TARGET"
-    cp "$REPO_MAP_SRC" "$REPO_MAP_TARGET"
-    echo "  Copied repo-map.json (edit ~/.claude/repo-map.json to configure repos)"
+    [ -L "$DEV_ROOT_TARGET" ] && rm "$DEV_ROOT_TARGET"
+    cp "$DEV_ROOT_SRC" "$DEV_ROOT_TARGET"
+    echo "  Copied dev-root.json (edit ~/.claude/dev-root.json to set your dev directory)"
   fi
 fi
 
+echo ""
 echo "Done. Commands available:"
-echo "  /jay-claude-queue  - Run all phases"
-echo "  /jay-queue-plan    - Phase 1: Plan ready tickets"
-echo "  /jay-queue-execute - Phase 2: Execute approved plans"
-echo "  /jay-queue-promote - Phase 3: Promote finished tickets"
+echo "  /ticket-work       - Run tickets end-to-end (single or queue mode)"
+echo "  /stack-rebase      - Rebase a stacked PR chain"
+echo "  /ears-requirements - EARS requirements ideation"
+echo ""
+echo "Configure your dev directory in ~/.claude/dev-root.json"

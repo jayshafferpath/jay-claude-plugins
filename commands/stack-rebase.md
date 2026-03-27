@@ -3,7 +3,6 @@ description: Rebase a stacked PR chain after a base PR is merged or updated
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
-  - mcp__atlassian__searchJiraIssuesUsingJql
   - mcp__atlassian__addCommentToJiraIssue
   - Bash(git fetch *)
   - Bash(git branch *)
@@ -17,7 +16,7 @@ allowed-tools:
 
 # Stack Rebase - Cascade rebase through a stacked PR chain
 
-Given a ticket key, rebase all downstream stacked tickets (connected via "blocks" links within the same Epic).
+Given a ticket key, rebase all downstream stacked tickets (connected via "blocks" links within the same stack container — either an Epic or a parent Story for subtasks).
 
 ## Step 1: Get Atlassian Cloud ID
 
@@ -31,20 +30,22 @@ Starting from the given ticket key, walk the full stack in both directions:
 ### 2a: Walk Upstream
 
 1. Use `mcp__atlassian__getJiraIssue` to get the ticket with issue links
-2. Get the ticket's Epic (from `epic` or `parent` field) — store as `EPIC_KEY`
-3. Follow "is blocked by" links where the blocker shares the same Epic
-4. Repeat until you find a ticket with no same-Epic blocker — this is the **stack root**
+2. Determine the **stack container**:
+   - If the ticket is a **subtask** (has a `parent` field that is a Story/Task, not an Epic): the stack container is the parent Story key (`CONTAINER_KEY`). Stack siblings are other subtasks of that parent.
+   - Otherwise: the stack container is the ticket's Epic key (`CONTAINER_KEY`). Stack siblings are other tickets linked to the same Epic.
+3. Follow "is blocked by" links where the blocker shares the same stack container
+4. Repeat until you find a ticket with no same-stack blocker — this is the **stack root**
 
 ### 2b: Walk Downstream from Root
 
-1. Starting from the stack root, follow outward "blocks" links where the blocked ticket shares the same Epic
+1. Starting from the stack root, follow outward "blocks" links where the blocked ticket shares the same stack container
 2. Build an ordered list: `[root, next, next, ...]`
 3. Store as `STACK_CHAIN`
 
 ### 2c: Display the Stack
 
 ```
-Stack detected (Epic: {EPIC_KEY}):
+Stack detected ({CONTAINER_TYPE}: {CONTAINER_KEY}):
   1. {KEY-1} (root)
   2. {KEY-2} (based on {KEY-1})
   3. {KEY-3} (based on {KEY-2})
@@ -135,7 +136,7 @@ Resolve conflicts manually:
   git rebase --onto {NEW_BASE} {OLD_BASE} {ticket_key}
   # resolve conflicts
   git rebase --continue
-Then re-run: /jay-stack-rebase {ticket_key}
+Then re-run: /stack-rebase {ticket_key}
 ```
 
 4. STOP processing — do not continue to subsequent tickets
@@ -185,7 +186,7 @@ If `gh` CLI is available, offer to run it. Otherwise, display the manual instruc
 ```
 Stack Rebase Complete
 
-Epic: {EPIC_KEY}
+{CONTAINER_TYPE}: {CONTAINER_KEY}
 Trigger: {given_ticket_key} ({scenario description})
 
 Rebased {N} branch(es):
