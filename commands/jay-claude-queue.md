@@ -25,19 +25,19 @@ ClaudeStackComplete         -> all tickets in stack finished (added to Epic)
 
 ### Phase 1 - Plan
 
-Use the Skill tool to run `jay-queue-plan`.
+Use the Skill tool to run `jay-queue-plan`. If $ARGUMENTS were provided, pass them through as args.
 
 Wait for it to complete before continuing.
 
 ### Phase 2 - Execute
 
-Use the Skill tool to run `jay-queue-execute`.
+Use the Skill tool to run `jay-queue-execute`. If $ARGUMENTS were provided, pass them through as args.
 
 Wait for it to complete before continuing.
 
 ### Phase 3 - Promote
 
-Use the Skill tool to run `jay-queue-promote`.
+Use the Skill tool to run `jay-queue-promote`. If $ARGUMENTS were provided, pass them through as args.
 
 Wait for it to complete before continuing.
 
@@ -69,4 +69,6 @@ Awaiting Approval:
 
 ## Arguments
 
-$ARGUMENTS (unused)
+$ARGUMENTS
+
+Optional: space-separated Jira ticket keys (e.g., `PROJ-123 PROJ-456`). When provided, all three phases operate only on the specified tickets instead of searching Jira. Each phase still applies its own eligibility checks.

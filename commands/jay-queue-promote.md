@@ -21,7 +21,9 @@ Find tickets labeled `ClaudeWork` with status category "done", promote unblocked
 
 ## Step 2: Find Done Tickets
 
-Use `mcp__atlassian__searchJiraIssuesUsingJql`:
+**If ticket keys were provided in $ARGUMENTS:** Use `mcp__atlassian__getJiraIssue` to fetch each specified ticket directly. Skip the JQL search entirely.
+
+**Otherwise:** Use `mcp__atlassian__searchJiraIssuesUsingJql`:
 
 ```
 labels = "ClaudeWork" AND statusCategory = Done AND assignee = currentUser()
@@ -87,4 +89,6 @@ Skipped:
 
 ## Arguments
 
-$ARGUMENTS (unused)
+$ARGUMENTS
+
+Optional: space-separated Jira ticket keys (e.g., `PROJ-123 PROJ-456`). When provided, skip the JQL search in Step 2 and operate only on the specified tickets. All other steps (dependency checking, promotion, stack completion detection) still apply.
