@@ -177,7 +177,7 @@ For each ticket:
    - Otherwise: the stack container is the ticket's Epic key. Stack siblings are other tickets linked to the same Epic.
 2. Find inward "is blocked by" links
 3. For each blocker that shares the same stack container:
-   - A blocker is "finished" if its Jira status category is "done" (statusCategory.key == "done")
+   - A blocker is "finished" if its Jira status category is "done" (statusCategory.key == "done") OR it has the `ClaudeNeedsReview` label (PR has been pushed)
    - If ANY same-stack blocker is NOT finished: **skip this ticket**
    - Display: "Skipping {KEY}: waiting on {BLOCKER_KEY} to finish"
 4. Determine base branch:
@@ -196,14 +196,16 @@ Fetch once per repo, then create worktrees sequentially (shared git state requir
 2. For each eligible ticket:
    a. Display: "Preparing worktree for {KEY}: {SUMMARY} (base: {BASE_BRANCH})"
 
-   b. Create worktree (from within `{REPO_ROOT}`):
+   b. Derive `BRANCH_NAME` for this ticket using the same logic as S1c (ticket key + slugified summary, reuse existing branch if one matches `{KEY}*`)
+
+   c. Create worktree (from within `{REPO_ROOT}`):
       - If base is `main`:
         ```bash
-        cd {REPO_ROOT} && git worktree add -b {KEY} {REPO_ROOT}/../{KEY}
+        cd {REPO_ROOT} && git worktree add -b {BRANCH_NAME} {REPO_ROOT}/../{KEY}
         ```
       - If base is another ticket:
         ```bash
-        cd {REPO_ROOT} && git worktree add -b {KEY} {REPO_ROOT}/../{KEY} origin/{BASE_BRANCH}
+        cd {REPO_ROOT} && git worktree add -b {BRANCH_NAME} {REPO_ROOT}/../{KEY} origin/{BASE_BRANCH}
         ```
       - If branch/worktree already exists, verify and skip creation
 
@@ -252,7 +254,7 @@ For each done ticket:
 2. Determine the **stack container** (subtask → parent Story key, otherwise → Epic key)
 3. For each blocked ticket sharing the same stack container:
    - Get blocked ticket via `mcp__atlassian__getJiraIssue`
-   - Check if ALL of its same-stack "is blocked by" dependencies are "finished"
+   - Check if ALL of its same-stack "is blocked by" dependencies are "finished" (status category "done" OR has `ClaudeNeedsReview` label)
    - If all dependencies met AND blocked ticket does NOT already have any of: `ClaudePlanning`, `ClaudePlanNeedsApproval`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeNeedsReview`, `ClaudeFailed`:
      - Verify blocked ticket is assigned to current user
      - If not assigned: skip and display "Skipping promotion of {BLOCKED_KEY}: not assigned to me"
@@ -322,9 +324,11 @@ Store as `CURRENT_ROOT`. Then determine if we are already in the correct worktre
     ```
     The first entry (marked `bare` or without `branch`) is the main worktree. Store its path as `REPO_ROOT`.
     If `CURRENT_ROOT` IS the main worktree (not a linked worktree), then `REPO_ROOT` = `CURRENT_ROOT` and we still need to create the ticket worktree (proceed to S2).
+  - Detect `BRANCH_NAME` from the current branch: `git rev-parse --abbrev-ref HEAD`
 - If the basename **does not match**: we are in the main repo (or a different worktree).
   - Set `REPO_ROOT` = `CURRENT_ROOT`
   - Set `WORKTREE_DIR` = `{REPO_ROOT}/../{TICKET_KEY}`
+  - If a checklist file already exists at `{WORKTREE_DIR}/.claude/plans/ticket-work-{TICKET_KEY}.md`, read `BRANCH_NAME` from its `branch:` frontmatter field
 
 ### S1b: Get Atlassian Cloud ID
 
@@ -335,12 +339,17 @@ Store as `CURRENT_ROOT`. Then determine if we are already in the correct worktre
 
 - Use `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
 - Store: summary, status, labels, issue links, epic/parent key
+- Derive `BRANCH_NAME` from the ticket key and summary:
+  1. Take the summary, lowercase it, replace non-alphanumeric characters with hyphens, collapse consecutive hyphens, trim leading/trailing hyphens
+  2. Truncate the slug to 40 characters (at a word boundary if possible)
+  3. `BRANCH_NAME` = `{TICKET_KEY}-{slug}` (e.g., `NEV-123-add-user-auth-endpoint`)
+  4. If a branch already exists for this ticket (check with `git branch --list '{TICKET_KEY}*'`), use the existing branch name instead to avoid creating duplicates
 - Determine the **stack container**:
   - If the ticket is a **subtask** (has a `parent` field that is a Story/Task, not an Epic): the stack container is the parent Story key. Stack siblings are other subtasks of that parent.
   - Otherwise: the stack container is the ticket's Epic key. Stack siblings are other tickets linked to the same Epic.
 - Determine `BASE_BRANCH`:
   - Check same-stack "is blocked by" links
-  - If a blocker exists and its status category is "done": `BASE_BRANCH` = blocker's ticket key
+  - If a blocker exists and is "finished" (status category is "done" OR has `ClaudeNeedsReview` label): `BASE_BRANCH` = blocker's ticket key
   - Otherwise: `BASE_BRANCH` = `main`
 
 ## S2: Ensure Worktree Exists
@@ -359,15 +368,15 @@ ls -d {WORKTREE_DIR} 2>/dev/null
   Then:
   - If `BASE_BRANCH` is `main`:
     ```bash
-    cd {REPO_ROOT} && git worktree add -b {TICKET_KEY} {WORKTREE_DIR}
+    cd {REPO_ROOT} && git worktree add -b {BRANCH_NAME} {WORKTREE_DIR}
     ```
   - If `BASE_BRANCH` is another ticket:
     ```bash
-    cd {REPO_ROOT} && git worktree add -b {TICKET_KEY} {WORKTREE_DIR} origin/{BASE_BRANCH}
+    cd {REPO_ROOT} && git worktree add -b {BRANCH_NAME} {WORKTREE_DIR} origin/{BASE_BRANCH}
     ```
   - If the branch already exists but the worktree doesn't:
     ```bash
-    cd {REPO_ROOT} && git worktree add {WORKTREE_DIR} {TICKET_KEY}
+    cd {REPO_ROOT} && git worktree add {WORKTREE_DIR} {BRANCH_NAME}
     ```
 
 After this step, all subsequent work happens inside `WORKTREE_DIR`:
@@ -402,7 +411,7 @@ Use the Jira labels (from S1c) and artifact checks to determine initial state:
 | Plan exists | File `{PLANS_DIR}/jira-{TICKET_KEY}.md` exists and has content | Step 1 |
 | Plan approved | Jira label `ClaudePlanApproved` is present, OR label `ClaudeExecuting` / `ClaudeNeedsReview` is present (implies approval already happened) | Steps 1, 2 |
 | Plan executed | Jira label `ClaudeNeedsReview` is present, OR label `ClaudeExecuting` is present AND all plan tasks are marked complete in the plan file | Steps 1, 2, 3 |
-| PR exists | `gh pr view {TICKET_KEY} --json number 2>/dev/null` succeeds | Steps 1, 2, 3, 4, 5 |
+| PR exists | `gh pr view {BRANCH_NAME} --json number 2>/dev/null` succeeds | Steps 1, 2, 3, 4, 5 |
 | PR review plan exists | A PR review plan file exists in `{WORKTREE_DIR}/.claude/plans/` matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md` | Steps 1-6 |
 
 Apply in reverse order (check the most-advanced state first) so you mark the correct set. Steps 7, 8, and 9 are never pre-seeded — they always run fresh if unchecked.
@@ -414,6 +423,7 @@ Write the file using the seeded state:
 ```markdown
 ---
 ticket: {TICKET_KEY}
+branch: {BRANCH_NAME}
 summary: {SUMMARY}
 base_branch: {BASE_BRANCH}
 worktree: {WORKTREE_DIR}
@@ -527,12 +537,12 @@ Check the ticket's current labels:
 
 1. Check if a PR already exists for this branch:
    ```bash
-   gh pr view {TICKET_KEY} --json number,url 2>/dev/null
+   gh pr view {BRANCH_NAME} --json number,url 2>/dev/null
    ```
 2. If no PR exists:
    a. Push the branch:
       ```bash
-      cd {WORKTREE_DIR} && git push -u origin {TICKET_KEY}
+      cd {WORKTREE_DIR} && git push -u origin {BRANCH_NAME}
       ```
    b. Read the generated PR description file (from step S4.4 output or `./pr.md` if it exists)
    c. Create a draft PR targeting `{BASE_BRANCH}`:
@@ -602,7 +612,7 @@ Check the ticket's current labels:
    ```
 3. Post the comment to the PR:
    ```bash
-   gh pr comment {TICKET_KEY} --body "{REVIEW_SUMMARY}"
+   gh pr comment {BRANCH_NAME} --body "{REVIEW_SUMMARY}"
    ```
 4. Mark step 9 as `[x]`
 
@@ -614,11 +624,50 @@ Display:
 Ticket {TICKET_KEY} - Complete
 
 Worktree: {WORKTREE_DIR}
-Branch: {TICKET_KEY} (base: {BASE_BRANCH})
+Branch: {BRANCH_NAME} (base: {BASE_BRANCH})
 PR: {PR_URL}
 
 All 9 steps completed. PR is ready for human review.
 ```
+
+## S6: Continue to Next Ticket in Stack
+
+After completing a ticket, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
+
+### S6a: Find Downstream Tickets
+
+1. Use `mcp__atlassian__getJiraIssue` to get the completed ticket's outward "blocks" links
+2. Determine the **stack container** (subtask → parent Story key, otherwise → Epic key)
+3. Filter to blocked tickets that share the same stack container
+
+### S6b: Check Eligibility
+
+For each downstream ticket in the same stack:
+
+1. Use `mcp__atlassian__getJiraIssue` to fetch the blocked ticket
+2. Verify it is assigned to the current user — if not, skip it
+3. Check ALL of its same-stack "is blocked by" dependencies are "finished" (status category "done" OR has `ClaudeNeedsReview` label)
+4. Skip tickets that already have any of: `ClaudePlanning`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeNeedsReview`, `ClaudeFailed`
+
+### S6c: Promote and Run Next Ticket
+
+If exactly **one** eligible downstream ticket is found:
+
+1. Add `ClaudeReady` label if not already present:
+   - Use `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "ClaudeReady"}]}`
+2. Inherit labels/assignee from parent (same logic as Q2e) if it's a subtask
+3. Display: "Moving to next ticket in stack: {NEXT_KEY} - {NEXT_SUMMARY} (base: {TICKET_KEY})"
+4. Run the **Single Ticket Lifecycle** (S1 onward) for `{NEXT_KEY}`, which will use the just-completed ticket's branch as its base
+
+If **multiple** eligible downstream tickets are found:
+
+1. Promote all of them (add `ClaudeReady` label, inherit from parent)
+2. Run the **Queue Pipeline** (Q3 onward) with these tickets
+
+If **no** eligible downstream tickets are found:
+
+1. Check for stack completion (same logic as Q7c)
+2. Display: "No more eligible tickets in this stack."
 
 ## Error Handling
 
