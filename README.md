@@ -7,6 +7,8 @@ Personal Claude Code commands for Jira ticket automation, PR workflows, and stac
 | Command | Description |
 |---|---|
 | `/ticket-work [KEY...]` | Run Jira tickets end-to-end: plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
+| `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
 | `/ears-requirements [topic]` | Ideate and write EARS (Easy Approach to Requirements Syntax) requirements interactively |
 
@@ -65,13 +67,25 @@ The queue uses `~/.claude/dev-root.json` to locate repo clones. Tickets need a `
 }
 ```
 
+## CLI Tools
+
+### `ticket-status`
+
+Terminal CLI for viewing and managing Claude ticket stacks in Jira. Provides a dashboard view of in-progress stacks without needing to open Claude Code.
+
+```bash
+ticket-status
+```
+
+Requires environment variables: `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_DOMAIN`.
+
 ## Install
 
 ```bash
 ./install.sh
 ```
 
-Symlinks commands into `~/.claude/commands/` and copies `dev-root.json` to `~/.claude/`. Existing files are backed up as `.bak`.
+Symlinks commands into `~/.claude/commands/`, copies `dev-root.json` to `~/.claude/`, and installs the `ticket-status` CLI via npm link. Existing files are backed up as `.bak`.
 
 ## Prerequisites
 
