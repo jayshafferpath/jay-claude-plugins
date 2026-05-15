@@ -37,10 +37,27 @@ if [ -f "$DEV_ROOT_SRC" ]; then
   fi
 fi
 
+# Install CLI tools
+CLI_DIR="$SCRIPT_DIR/cli"
+if [ -d "$CLI_DIR" ]; then
+  echo ""
+  echo "Installing CLI tools..."
+  (cd "$CLI_DIR" && npm install --silent)
+  npm link --silent "$CLI_DIR" 2>/dev/null || {
+    echo "  Note: 'npm link' failed — you can run directly with: node $CLI_DIR/bin/ticket-status.js"
+  }
+  echo "  ticket-status CLI installed"
+fi
+
 echo ""
 echo "Done. Commands available:"
 echo "  /ticket-work       - Run tickets end-to-end (single or queue mode)"
+echo "  /ticket-status     - Claude command: ticket status (also available as CLI)"
 echo "  /stack-rebase      - Rebase a stacked PR chain"
 echo "  /ears-requirements - EARS requirements ideation"
 echo ""
+echo "CLI tools:"
+echo "  ticket-status      - View/manage ticket stacks (run directly in terminal)"
+echo ""
 echo "Configure your dev directory in ~/.claude/dev-root.json"
+echo "Set JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN for the CLI"
