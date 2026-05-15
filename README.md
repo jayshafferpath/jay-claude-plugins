@@ -57,6 +57,33 @@ ClaudeStackComplete        -- all tickets in stack finished (added to stack cont
 - `ClaudePlanNeedsApproval` → review plan, apply `ClaudePlanApproved`
 - `ClaudeNeedsReview` → review PR, iterate, move ticket to Done
 
+## Stack Architecture
+
+Jira is the source of truth for stack structure — git has no knowledge of it.
+
+### How stacks are defined
+
+A **stack container** is a Story, Task, or Epic in Jira. Its subtasks (or Epic children) form the stack. Ordering comes from Jira issue links: each ticket declares what it "is blocked by" within the same container. A topological sort of those links produces the execution and promotion order.
+
+### Feature branch model
+
+During development, tickets are stacked as git branches: each branch is based on the previous ticket's branch, accumulating ancestor changes. All PRs target a shared feature branch (identified by a `branch:*` label on the container). This means ticket-3's branch contains ticket-1 + ticket-2 + ticket-3 changes.
+
+### Promotion to main
+
+`/promote-to-main` walks the stack in dependency order and promotes each ticket individually:
+
+1. **Isolate** — `git rebase --onto origin/main {previous-ticket-branch} {current-ticket-branch}` strips ancestor commits, leaving only this ticket's diff on top of main.
+2. **PR** — Opens a PR from the rebased branch directly to main.
+3. **Gate** — Stops and waits for the PR to merge before advancing.
+4. **Repeat** — After merge, the next ticket is rebased onto the now-updated main.
+
+This works because once ticket-N merges to main, ticket-N+1's rebase strips ticket-N's commits (which are now in main anyway), leaving a clean diff of just ticket-N+1's changes.
+
+### Why Jira, not git
+
+Git branches don't encode ordering or dependency — they're just pointers. The stack needs a data structure that answers "what comes before this?" and "what's the container?" Jira's parent/child relationships and issue links provide both, making the stack portable across worktrees, machines, and agents.
+
 ## Configuration
 
 The queue uses `~/.claude/dev-root.json` to locate repo clones. Tickets need a `repo:` label (e.g., `repo:my-backend`) that maps to a subdirectory under the dev root.
