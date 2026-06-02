@@ -23,6 +23,29 @@ for cmd in "$SCRIPT_DIR"/commands/*.md; do
   echo "  Linked $name"
 done
 
+# Install agents
+AGENTS_DIR="$HOME/.claude/agents"
+mkdir -p "$AGENTS_DIR"
+
+echo ""
+echo "Installing agents..."
+
+for agent in "$SCRIPT_DIR"/agents/*.md; do
+  [ -f "$agent" ] || continue
+  name=$(basename "$agent")
+  target="$AGENTS_DIR/$name"
+
+  if [ -L "$target" ]; then
+    rm "$target"
+  elif [ -f "$target" ]; then
+    echo "  Backing up existing $name -> $name.bak"
+    mv "$target" "$target.bak"
+  fi
+
+  ln -s "$agent" "$target"
+  echo "  Linked $name"
+done
+
 # Install dev-root.json config
 DEV_ROOT_SRC="$SCRIPT_DIR/dev-root.json"
 DEV_ROOT_TARGET="$HOME/.claude/dev-root.json"
@@ -55,6 +78,9 @@ echo "  /ticket-work       - Run tickets end-to-end (single or queue mode)"
 echo "  /ticket-status     - Claude command: ticket status (also available as CLI)"
 echo "  /stack-rebase      - Rebase a stacked PR chain"
 echo "  /ears-requirements - EARS requirements ideation"
+echo ""
+echo "Agents available:"
+echo "  @planner           - Decompose Confluence docs into Gherkin-based Jira backlog"
 echo ""
 echo "CLI tools:"
 echo "  ticket-status      - View/manage ticket stacks (run directly in terminal)"

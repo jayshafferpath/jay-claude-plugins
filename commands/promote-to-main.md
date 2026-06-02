@@ -208,55 +208,43 @@ git push --force-with-lease origin {BRANCH_NAME}
 gh pr list --head {BRANCH_NAME} --base main --json number,url
 ```
 
-If a PR already exists, skip to 5d.
+If a PR already exists, skip to 5e.
 
-### 5b: Get PR Description
+### 5b: Generate PR Description with /jay-pr-description
 
-Fetch the original PR title and body from the feature-branch PR (already merged):
-
-```bash
-gh pr list --head {BRANCH_NAME} --base {FEATURE_BRANCH} --state merged --json title,body --jq '.[0]'
-```
-
-- **If found**: reuse the original title and body, appending a stack context section:
-  ```markdown
-  {ORIGINAL_BODY}
-
-  ## Stack Context
-
-  Promoted from feature branch `{FEATURE_BRANCH}` to main.
-  Part of {CONTAINER_KEY} — ticket {N} of {TOTAL} being promoted.
-  ```
-
-- **If not found** (no previous PR exists): fall back to generating from the Jira ticket:
-  - Title: ticket summary
-  - Body:
-    ```markdown
-    ## Summary
-
-    {TICKET_SUMMARY}
-
-    ## Stack Context
-
-    Promoted from feature branch `{FEATURE_BRANCH}` to main.
-    Part of {CONTAINER_KEY} — ticket {N} of {TOTAL} being promoted.
-
-    ## Test plan
-    - [ ] CI passes
-    - [ ] Changes verified
-
-    🤖 Generated with [Claude Code](https://claude.com/claude-code)
-    ```
+1. Make sure we are in the repo root: `cd {REPO_ROOT}`
+2. Ensure the ticket branch is checked out: `git checkout {BRANCH_NAME}`
+3. Use the Skill tool to run skill `jay-pr-description`
+4. Read the generated PR description file (`./pr.md`)
 
 ### 5c: Create PR
 
+Using the title and body from `pr.md`:
+
 ```bash
-gh pr create --base main --title "{TITLE}" --body "{BODY}"
+gh pr create --base main --title "{PR_TITLE}" --body "{PR_BODY}"
 ```
 
-Use a HEREDOC for the body.
+Use a HEREDOC for the body. Append a stack context section to the body:
 
-### 5d: Store PR Info
+```markdown
+{PR_BODY_FROM_pr.md}
+
+## Stack Context
+
+Promoted from feature branch `{FEATURE_BRANCH}` to main.
+Part of {CONTAINER_KEY} — ticket {N} of {TOTAL} being promoted.
+```
+
+### 5d: Copilot Review Comments
+
+After creating the PR, run a single pass to address Copilot review comments:
+
+1. Make sure we are in the repo root: `cd {REPO_ROOT}`
+2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
+3. If pr-watch made changes and pushed, note the updated state.
+
+### 5e: Store PR Info
 
 ```bash
 gh pr view {BRANCH_NAME} --json number,url
@@ -264,7 +252,31 @@ gh pr view {BRANCH_NAME} --json number,url
 
 Store `PR_NUMBER` and `PR_URL`.
 
-### 5e: Update Jira
+### 5f: Post PR Review Summary Comment
+
+1. If a PR review plan file exists in `.claude/plans/` (matching `pr-review-*.md` or `pr-{KEY}*.md`), read it.
+2. Build a summary comment:
+   ```
+   ## Claude Code Review Summary
+
+   ### Issues Found
+   - **{issue title}**: {brief description} — **{resolved|open}**
+   ...
+
+   ### Resolutions
+   - {issue}: {what was changed to fix it}
+   ...
+
+   N issues found, M resolved.
+   ```
+3. Post the comment to the PR:
+   ```bash
+   gh pr comment {BRANCH_NAME} --body "{REVIEW_SUMMARY}"
+   ```
+   Use a HEREDOC for the body.
+4. If no review plan file exists, skip this step.
+
+### 5g: Update Jira
 
 1. Add comment: "PR to main opened: {PR_URL}. Promoting from feature branch `{FEATURE_BRANCH}`."
    - Use `mcp__atlassian__addCommentToJiraIssue`
