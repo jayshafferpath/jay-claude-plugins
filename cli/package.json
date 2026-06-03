@@ -4,7 +4,9 @@
   "description": "CLI to view and manage Claude ticket stacks in Jira",
   "type": "module",
   "bin": {
-    "ticket-status": "./bin/ticket-status.js"
+    "ticket-status": "./bin/ticket-status.js",
+    "sync-checklist": "./bin/sync-checklist.js",
+    "sync-plan": "./bin/sync-plan.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js"

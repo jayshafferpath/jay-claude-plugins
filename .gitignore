@@ -1,0 +1,4 @@
+node_modules/
+dashboard/dist/
+dashboard/node_modules/
+.plans/

@@ -90,3 +90,51 @@ export async function removeLabel(key, label) {
 export async function swapLabel(key, remove, add) {
   await editIssue(key, { labels: [{ remove }, { add }] });
 }
+
+export async function getComments(key) {
+  const creds = auth();
+  const res = await fetch(
+    `${baseUrl(creds)}/issue/${key}/comment?orderBy=-created`,
+    { headers: headers(creds) }
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira getComments failed (${res.status}): ${body}`);
+  }
+
+  const data = await res.json();
+  return data.comments || [];
+}
+
+export async function addComment(key, adfBody) {
+  const creds = auth();
+  const res = await fetch(`${baseUrl(creds)}/issue/${key}/comment`, {
+    method: "POST",
+    headers: headers(creds),
+    body: JSON.stringify({ body: adfBody }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira addComment failed (${res.status}): ${body}`);
+  }
+
+  return res.json();
+}
+
+export async function updateComment(key, commentId, adfBody) {
+  const creds = auth();
+  const res = await fetch(`${baseUrl(creds)}/issue/${key}/comment/${commentId}`, {
+    method: "PUT",
+    headers: headers(creds),
+    body: JSON.stringify({ body: adfBody }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira updateComment failed (${res.status}): ${body}`);
+  }
+
+  return res.json();
+}
