@@ -23,10 +23,15 @@ export function findBranch(ticketKey, repoRoot) {
 
 export function findWorktree(ticketKey, repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return null;
-  const candidate = join(repoRoot, "..", ticketKey);
-  if (existsSync(candidate)) {
-    const gitDir = run("git rev-parse --git-dir", candidate);
-    if (gitDir) return candidate;
+  const candidates = [
+    join(repoRoot, "..", ticketKey),
+    join(repoRoot, ticketKey),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      const gitDir = run("git rev-parse --git-dir", candidate);
+      if (gitDir) return candidate;
+    }
   }
   return null;
 }
@@ -43,6 +48,35 @@ export function getPrInfo(branchName, cwd) {
   } catch {
     return null;
   }
+}
+
+export function getRepoSlug(cwd) {
+  if (!cwd) return null;
+  const result = run("gh repo view --json nameWithOwner --jq .nameWithOwner", cwd);
+  return result || null;
+}
+
+export function getPrDetails(branchName, cwd) {
+  if (!branchName || !cwd) return null;
+  const result = run(
+    `gh pr view ${branchName} --json number,url,state,title,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,reviews,mergeable,headRefName,baseRefName`,
+    cwd
+  );
+  if (!result) return null;
+  try {
+    return JSON.parse(result);
+  } catch {
+    return null;
+  }
+}
+
+export function getPrDiffStat(branchName, cwd) {
+  if (!branchName || !cwd) return null;
+  const result = run(
+    `gh pr diff ${branchName} --stat`,
+    cwd
+  );
+  return result || null;
 }
 
 export function getWorktreeList(repoRoot) {

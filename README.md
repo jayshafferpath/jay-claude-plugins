@@ -106,6 +106,26 @@ ticket-status
 
 Requires environment variables: `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_DOMAIN`.
 
+### Web Dashboard
+
+Browser-based dashboard with the same data as `ticket-status` plus expandable detail panels per ticket (checklist progress, PR links, branch/worktree info, dependency graph, execution/review progress bars).
+
+```bash
+cd dashboard
+npm install
+npm run dev
+```
+
+Opens at `http://localhost:5173`. The API server runs on port 3789; Vite proxies `/api` requests to it automatically.
+
+**Features:**
+- Stack tree view with state badges (colored by lifecycle stage)
+- Click-to-expand ticket detail panels
+- Approve plan / approve PR buttons (per-ticket and bulk)
+- Auto-refresh every 30 seconds
+
+**Requires** the same environment variables as `ticket-status`: `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_DOMAIN`.
+
 ## Install
 
 ```bash

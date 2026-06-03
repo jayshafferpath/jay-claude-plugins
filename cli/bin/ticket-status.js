@@ -5,10 +5,10 @@ import chalk from "chalk";
 import { loadDevRoot } from "../lib/config.js";
 import { searchIssues, getIssue, swapLabel } from "../lib/jira.js";
 import { findBranch, findWorktree, getPrInfo } from "../lib/git.js";
-import { readChecklist, readReviewPlan, readExecutionPlan } from "../lib/checklist.js";
+import { readChecklistFromJira, readExecutionPlanFromJira } from "../lib/checklist.js";
 import { labelState, actionHint, topologicalSort } from "../lib/util.js";
 import { renderTree, renderSummary, renderVerbose } from "../lib/render.js";
-import { readdirSync, existsSync } from "fs";
+import { existsSync } from "fs";
 import { join } from "path";
 
 const DEV_ROOT = loadDevRoot();
@@ -281,9 +281,9 @@ async function verboseMode(ticketKey) {
   const branch = findBranch(ticketKey, repoRoot);
   const worktree = findWorktree(ticketKey, repoRoot);
   const pr = getPrInfo(branch, repoRoot || worktree);
-  const checklist = readChecklist(worktree, ticketKey);
-  const reviewPlan = readReviewPlan(worktree, ticketKey);
-  const execPlan = readExecutionPlan(worktree, ticketKey);
+  const checklist = await readChecklistFromJira(ticketKey);
+  const execPlan = await readExecutionPlanFromJira(ticketKey);
+  const reviewPlan = null;
 
   console.log(
     renderVerbose({

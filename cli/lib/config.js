@@ -6,7 +6,9 @@ export function loadDevRoot() {
   const configPath = join(homedir(), ".claude", "dev-root.json");
   try {
     const raw = readFileSync(configPath, "utf-8");
-    return JSON.parse(raw).root;
+    const root = JSON.parse(raw).root;
+    if (!root) return null;
+    return root.startsWith("~") ? root.replace("~", homedir()) : root;
   } catch {
     return null;
   }

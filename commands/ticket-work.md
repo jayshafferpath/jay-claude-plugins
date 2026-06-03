@@ -11,6 +11,8 @@ allowed-tools:
   - Bash(ls *)
   - Bash(gh *)
   - Bash(mkdir *)
+  - Bash(sync-checklist *)
+  - Bash(sync-plan *)
   - Read
   - Write
   - Skill
@@ -789,6 +791,12 @@ Where each `{STEPN}` is `x` if seeded as done, or a space if not.
 
 Work through each unchecked step in order. After completing each step, immediately update the checklist file by changing `- [ ]` to `- [x]` for that step. This ensures idempotency if the process is interrupted.
 
+After updating the checklist file, sync the checklist to Jira:
+```bash
+sync-checklist {TICKET_KEY} {WORK_DIR}
+```
+This posts/updates a single managed comment on the Jira ticket showing current checklist progress.
+
 ---
 
 ### Step S4.1: Plan generated with /jira-start
@@ -807,7 +815,11 @@ Otherwise:
    - `update`: `{"labels": [{"remove": "ClaudePlanning"}, {"add": "ClaudePlanNeedsApproval"}]}`
 5. Post a Jira comment with a summary of the plan (approach overview, key implementation steps, and if stacked: "Stacked on {BASE_BRANCH}"). Footer: "Awaiting approval. Add label `ClaudePlanApproved` to proceed."
    - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
-6. Mark step 1 as `[x]` in the checklist file
+6. Sync the plan to Jira as a managed comment:
+   ```bash
+   sync-plan {TICKET_KEY} {WORK_DIR}
+   ```
+7. Mark step 1 as `[x]` in the checklist file
 
 ---
 
@@ -915,7 +927,10 @@ Execution follows test-driven development: for each plan task, write a failing t
 
    #### 6d: Mark task complete in plan file
 
-   Update the plan file to mark this task as `[x]`.
+   Update the plan file to mark this task as `[x]`, then sync the plan to Jira:
+   ```bash
+   sync-plan {TICKET_KEY} {WORK_DIR}
+   ```
 
 7. After all tasks are processed:
    - Run the full test suite one final time to confirm everything passes
