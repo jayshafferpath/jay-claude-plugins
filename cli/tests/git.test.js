@@ -20,6 +20,9 @@ const {
   getWorktreeList,
   isAncestor,
   isMergedInto,
+  getStageCommits,
+  hasStageCommit,
+  getLastStageCommitSha,
 } = await import("../lib/git.js");
 
 describe("findBranch", () => {
@@ -272,5 +275,105 @@ describe("isMergedInto", () => {
       throw new Error("fail");
     });
     expect(isMergedInto("feat-1", "main", "/repo")).toBe(false);
+  });
+});
+
+describe("getStageCommits", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns empty array when ticketKey is falsy", () => {
+    expect(getStageCommits(null, "/repo")).toEqual([]);
+  });
+
+  it("returns empty array when cwd is falsy", () => {
+    expect(getStageCommits("TICK-1", null)).toEqual([]);
+  });
+
+  it("parses stage commit messages from git log", () => {
+    execSync.mockReturnValue(
+      "abc1234 [TICK-1] execute: TDD implementation\ndef5678 [TICK-1] plan: generated",
+    );
+    expect(getStageCommits("TICK-1", "/repo")).toEqual([
+      "execute: TDD implementation",
+      "plan: generated",
+    ]);
+  });
+
+  it("returns empty array when command fails", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(getStageCommits("TICK-1", "/repo")).toEqual([]);
+  });
+
+  it("returns empty array when no matches", () => {
+    execSync.mockReturnValue("");
+    expect(getStageCommits("TICK-1", "/repo")).toEqual([]);
+  });
+});
+
+describe("hasStageCommit", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when ticketKey is falsy", () => {
+    expect(hasStageCommit(null, "plan", "/repo")).toBe(false);
+  });
+
+  it("returns false when stagePrefix is falsy", () => {
+    expect(hasStageCommit("TICK-1", null, "/repo")).toBe(false);
+  });
+
+  it("returns true when matching commit exists", () => {
+    execSync.mockReturnValue("abc1234 [TICK-1] plan: generated");
+    expect(hasStageCommit("TICK-1", "plan", "/repo")).toBe(true);
+  });
+
+  it("returns false when command returns empty string", () => {
+    execSync.mockReturnValue("");
+    expect(hasStageCommit("TICK-1", "plan", "/repo")).toBe(false);
+  });
+
+  it("returns false when command throws", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(hasStageCommit("TICK-1", "plan", "/repo")).toBe(false);
+  });
+});
+
+describe("getLastStageCommitSha", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when ticketKey is falsy", () => {
+    expect(getLastStageCommitSha(null, "main", "/repo")).toBeNull();
+  });
+
+  it("returns SHA of last stage commit when found", () => {
+    execSync.mockReturnValue("abc123def456");
+    expect(getLastStageCommitSha("TICK-1", "main", "/repo")).toBe(
+      "abc123def456",
+    );
+  });
+
+  it("falls back to merge-base when no stage commits", () => {
+    execSync
+      .mockReturnValueOnce("")
+      .mockReturnValueOnce("base789abc");
+    expect(getLastStageCommitSha("TICK-1", "main", "/repo")).toBe(
+      "base789abc",
+    );
+  });
+
+  it("returns null when both git log and merge-base fail", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(getLastStageCommitSha("TICK-1", "main", "/repo")).toBeNull();
   });
 });

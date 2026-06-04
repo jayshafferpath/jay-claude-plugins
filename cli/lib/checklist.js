@@ -81,3 +81,38 @@ export async function readPlanSectionsFromJira(ticketKey) {
   if (!comment) return null;
   return parsePlanSectionsFromComment(comment.body);
 }
+
+export async function markPlanTaskDone(ticketKey, taskLabel) {
+  const result = await readPlanSectionsFromJira(ticketKey);
+  if (!result) throw new Error(`No plan found in Jira for ${ticketKey}`);
+
+  let found = false;
+  for (const section of result.sections) {
+    for (const task of section.tasks) {
+      if (task.label === taskLabel && !task.done) {
+        task.done = true;
+        found = true;
+        break;
+      }
+    }
+    if (found) break;
+  }
+
+  if (!found) throw new Error(`Task not found or already done: "${taskLabel}"`);
+
+  const adfBody = planToAdf(result.sections, PLAN_MARKER);
+  const comments = await getComments(ticketKey);
+  const existing = findMarkerComment(comments, PLAN_MARKER);
+
+  if (existing) {
+    await updateComment(ticketKey, existing.id, adfBody);
+  } else {
+    await addComment(ticketKey, adfBody);
+  }
+
+  return {
+    sections: result.sections,
+    total: result.total,
+    completed: result.completed + 1,
+  };
+}
