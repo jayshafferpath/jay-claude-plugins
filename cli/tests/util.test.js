@@ -1,5 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { actionHint, labelState, topologicalSort } from "../lib/util.js";
+
+vi.mock("fs", () => ({
+  existsSync: vi.fn(),
+  readdirSync: vi.fn(() => []),
+}));
+
+vi.mock("child_process", () => ({
+  execSync: vi.fn(),
+}));
+
+const { detectWorkDir, resolveRepoRoot } = await import("../lib/util.js");
 
 describe("labelState", () => {
   it("returns the highest-priority matching state", () => {
@@ -36,5 +50,64 @@ describe("topologicalSort", () => {
     const tickets = [{ key: "X" }, { key: "Y" }];
     const result = topologicalSort(tickets, []);
     expect(result).toEqual(["X", "Y"]);
+  });
+});
+
+describe("resolveRepoRoot", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when devRoot is falsy", () => {
+    expect(resolveRepoRoot(["repo:my-app"], null)).toBeNull();
+  });
+
+  it("returns null when no repo: label found", () => {
+    expect(resolveRepoRoot(["ClaudeWork"], "/dev")).toBeNull();
+  });
+
+  it("returns the path when directory exists", () => {
+    existsSync.mockReturnValue(true);
+    expect(resolveRepoRoot(["repo:my-app"], "/dev")).toBe(
+      join("/dev", "my-app"),
+    );
+  });
+
+  it("returns null when directory does not exist", () => {
+    existsSync.mockReturnValue(false);
+    expect(resolveRepoRoot(["repo:my-app"], "/dev")).toBeNull();
+  });
+});
+
+describe("detectWorkDir", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns workDir when file exists at explicit path", () => {
+    existsSync.mockReturnValue(true);
+    expect(detectWorkDir("/work", ".claude/plans/jira-T-1.md")).toBe("/work");
+  });
+
+  it("falls back to git repo root when file exists there", () => {
+    existsSync.mockImplementation(
+      (p) => p === join("/repo", ".claude/plans/jira-T-1.md"),
+    );
+    execSync.mockReturnValue("/repo\n");
+    expect(detectWorkDir("/work", ".claude/plans/jira-T-1.md")).toBe("/repo");
+  });
+
+  it("returns null when file not found anywhere", () => {
+    existsSync.mockReturnValue(false);
+    execSync.mockReturnValue("/repo\n");
+    expect(detectWorkDir("/work", ".claude/plans/jira-T-1.md")).toBeNull();
+  });
+
+  it("returns null when git command fails", () => {
+    existsSync.mockReturnValue(false);
+    execSync.mockImplementation(() => {
+      throw new Error("not a git repo");
+    });
+    expect(detectWorkDir("/work", ".claude/plans/jira-T-1.md")).toBeNull();
   });
 });
