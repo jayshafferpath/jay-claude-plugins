@@ -6,6 +6,8 @@ export function TicketDetail({ ticketKey, onAction }) {
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showRawPlan, setShowRawPlan] = useState(false);
+  const [reviewRequested, setReviewRequested] = useState(false);
+  const [reviewError, setReviewError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -32,6 +34,7 @@ export function TicketDetail({ ticketKey, onAction }) {
 
   const canApprovePlan = detail.stateLabel === "ClaudePlanNeedsApproval";
   const canApprovePR = detail.stateLabel === "ClaudeStackReady";
+  const canRequestReview = !!detail.pr;
 
   return (
     <div className="detail-panel">
@@ -230,7 +233,7 @@ export function TicketDetail({ ticketKey, onAction }) {
         )}
       </div>
 
-      {(canApprovePlan || canApprovePR) && (
+      {(canApprovePlan || canApprovePR || canRequestReview) && (
         <div className="detail-actions">
           {canApprovePlan && (
             <button
@@ -247,6 +250,27 @@ export function TicketDetail({ ticketKey, onAction }) {
             >
               Ready for PR
             </button>
+          )}
+          {canRequestReview && (
+            <button
+              className="btn btn--primary"
+              disabled={reviewRequested}
+              onClick={async () => {
+                setReviewError(null);
+                const res = await fetch(`/api/tickets/${ticketKey}/request-review`, { method: "POST" });
+                const data = await res.json();
+                if (data.ok) {
+                  setReviewRequested(true);
+                } else {
+                  setReviewError(data.error);
+                }
+              }}
+            >
+              {reviewRequested ? "Review Requested" : "Request Review"}
+            </button>
+          )}
+          {reviewError && (
+            <span className="action-error">{reviewError}</span>
           )}
         </div>
       )}

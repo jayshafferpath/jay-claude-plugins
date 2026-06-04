@@ -1,17 +1,5 @@
-import { readFileSync } from "fs";
-import { join } from "path";
-import { homedir } from "os";
-
 export function loadDevRoot() {
-  const configPath = join(homedir(), ".claude", "dev-root.json");
-  try {
-    const raw = readFileSync(configPath, "utf-8");
-    const root = JSON.parse(raw).root;
-    if (!root) return null;
-    return root.startsWith("~") ? root.replace("~", homedir()) : root;
-  } catch {
-    return null;
-  }
+  return process.env.DEV_ROOT || null;
 }
 
 export function getJiraAuth() {

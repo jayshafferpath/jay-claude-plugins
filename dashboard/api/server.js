@@ -1,6 +1,9 @@
+import { loadEnv } from "../../cli/lib/env.js";
+loadEnv();
+
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { searchIssues, getIssue, swapLabel } from "../../cli/lib/jira.js";
+import { searchIssues, getIssue, swapLabel, getComments, addComment } from "../../cli/lib/jira.js";
 import {
   findBranch,
   findWorktree,
@@ -15,7 +18,7 @@ import {
 } from "../../cli/lib/checklist.js";
 import { labelState, actionHint, topologicalSort } from "../../cli/lib/util.js";
 import { loadDevRoot, getJiraAuth } from "../../cli/lib/config.js";
-import { existsSync } from "fs";
+import { existsSync, readFileSync } from "fs";
 import { join } from "path";
 
 const DEV_ROOT = loadDevRoot();
@@ -318,6 +321,74 @@ app.get("/api/tickets/:key/pr-details", async (request) => {
     })),
     diffStat,
   };
+});
+
+const REVIEW_REQUESTED_MARKER = "[claude-review-requested]";
+
+app.post("/api/tickets/:key/request-review", async (request) => {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (!webhookUrl) {
+    return { ok: false, error: "SLACK_WEBHOOK_URL not set" };
+  }
+
+  const { key } = request.params;
+  const issue = await getIssue(key);
+  const labels = issue.fields.labels || [];
+
+  let repoRoot = null;
+  const repoLabel = labels.find((l) => l.startsWith("repo:"));
+  if (repoLabel && DEV_ROOT) {
+    const repoName = repoLabel.slice(5);
+    const candidate = join(DEV_ROOT, repoName);
+    if (existsSync(candidate)) repoRoot = candidate;
+  }
+
+  const branch = findBranch(key, repoRoot);
+  const worktree = findWorktree(key, repoRoot);
+  const cwd = repoRoot || worktree;
+  const details = cwd && branch ? getPrDetails(branch, cwd) : null;
+
+  if (!details) {
+    return { ok: false, error: "No PR found for this ticket" };
+  }
+
+  const comments = await getComments(key);
+  const alreadyRequested = comments.find((c) => {
+    const text = JSON.stringify(c.body);
+    return text.includes(REVIEW_REQUESTED_MARKER) && text.includes(details.url);
+  });
+
+  if (alreadyRequested) {
+    return { ok: true, alreadyRequested: true };
+  }
+
+  const text = `:pr-review-request: ${details.title}\n${details.url}`;
+
+  const res = await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
+  if (!res.ok) {
+    return { ok: false, error: `Slack responded ${res.status}` };
+  }
+
+  await addComment(key, {
+    version: 1,
+    type: "doc",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          { type: "text", text: `${REVIEW_REQUESTED_MARKER} `, marks: [{ type: "code" }] },
+          { type: "text", text: `Review requested: ${details.url}` },
+        ],
+      },
+    ],
+  });
+
+  return { ok: true };
 });
 
 app.listen({ port: 3789 }, (err) => {

@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { loadEnv } from "../lib/env.js";
+loadEnv();
+
 import { createInterface } from "readline";
 import chalk from "chalk";
 import { loadDevRoot } from "../lib/config.js";
