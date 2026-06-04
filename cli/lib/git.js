@@ -114,3 +114,32 @@ export function getWorktreeList(repoRoot) {
   if (current.path) worktrees.push(current);
   return worktrees;
 }
+
+export function getStageCommits(ticketKey, cwd) {
+  if (!ticketKey || !cwd) return [];
+  const result = run(`git log --oneline --grep="^\\[${ticketKey}\\]"`, cwd);
+  if (!result) return [];
+  return result
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^\w+ \[.+?\] (.+)$/);
+      return match ? match[1] : line;
+    });
+}
+
+export function hasStageCommit(ticketKey, stagePrefix, cwd) {
+  if (!ticketKey || !stagePrefix || !cwd) return false;
+  const result = run(
+    `git log --oneline --grep="^\\[${ticketKey}\\] ${stagePrefix}:"`,
+    cwd,
+  );
+  return result !== null && result.trim().length > 0;
+}
+
+export function getLastStageCommitSha(ticketKey, baseBranch, cwd) {
+  if (!ticketKey || !cwd) return null;
+  const sha = run(`git log --grep="^\\[${ticketKey}\\]" -1 --format="%H"`, cwd);
+  if (sha) return sha;
+  return run(`git merge-base HEAD origin/${baseBranch || "main"}`, cwd);
+}

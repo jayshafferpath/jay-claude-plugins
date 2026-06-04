@@ -567,7 +567,7 @@ Determine if we are already in the correct worktree:
 - If the basename **does not match**: we are in the main repo (or a different worktree).
   - Set `REPO_ROOT` = `CURRENT_ROOT`
   - Set `WORK_DIR` = `{REPO_ROOT}/../{TICKET_KEY}`
-  - If a checklist file already exists at `{WORK_DIR}/.claude/plans/ticket-work-{TICKET_KEY}.md`, read `BRANCH_NAME` from its `branch:` frontmatter field
+  - `BRANCH_NAME` will be resolved from `resolve-stack` output in S1c
 
 ### S1b: Get Atlassian Cloud ID
 
@@ -631,7 +631,7 @@ cd {REPO_ROOT}
 ```
 
 Set `WORK_DIR` = `{REPO_ROOT}`
-Set `PLANS_DIR` = `{REPO_ROOT}/.claude/plans`
+Set `PLANS_DIR` = `{REPO_ROOT}/.claude/plans` (used only for PR review plans in S4.6/S4.7)
 
 ### S2b: Worktree Mode (not `SERIAL_MODE`)
 
@@ -665,66 +665,107 @@ After this step, all subsequent work happens inside `WORK_DIR`:
 cd {WORK_DIR}
 ```
 
-Set `PLANS_DIR` = `{WORK_DIR}/.claude/plans`
+Set `PLANS_DIR` = `{WORK_DIR}/.claude/plans` (used only for PR review plans in S4.6/S4.7)
 
-## S3: Load or Create Checklist
+## S3: Load or Resume Checklist
 
-The checklist file lives at `{WORK_DIR}/.claude/plans/ticket-work-{TICKET_KEY}.md`.
-
-Check if the file already exists:
-- **If it exists**: read it and parse the checklist state (`[x]` vs `[ ]`). Resume from the first unchecked step.
-- **If it does not exist**: create it, seeding from current Jira + artifact state (see below).
-
-### S3a: Create the plans directory
-
-```bash
-mkdir -p {WORK_DIR}/.claude/plans
-```
-
-### S3b: Seed and write the checklist file
+The checklist lives as a managed Jira comment (tagged with `[claude-checklist-sync]` marker). No local checklist file is created.
 
 Run:
 ```bash
-seed-checklist {TICKET_KEY} --work-dir {WORK_DIR} --branch {BRANCH_NAME} --base-branch {BASE_BRANCH} --pr-target {PR_TARGET} --summary "{SUMMARY}" {--feature-branch {FEATURE_BRANCH} if set} {--serial if SERIAL_MODE}
+seed-checklist {TICKET_KEY} --work-dir {WORK_DIR} --branch {BRANCH_NAME} --base-branch {BASE_BRANCH} --pr-target {PR_TARGET} --summary "{SUMMARY}" {--feature-branch {FEATURE_BRANCH} if set} {--serial if SERIAL_MODE} --jira-source
 ```
 
-Parse the JSON output. Write the `markdown` field to `{WORK_DIR}/.claude/plans/ticket-work-{TICKET_KEY}.md`.
+Parse the JSON output:
+- If `source` is `"jira"`: the checklist was read from an existing Jira comment. Resume from the first unchecked step.
+- If `source` is `"seeded"`: the checklist was freshly created (seeded from Jira labels and git stage commits) and written to Jira. Start from the first unchecked step.
 
-The script inspects Jira labels and local file state to determine which steps are already done, producing a pre-seeded checklist. Steps 12 and 13 are never pre-seeded.
+Store the `steps` array in memory for step tracking throughout S4.
+
+## Stage Squash Protocol
+
+Each lifecycle stage (S4.1 through S4.7) produces exactly one squash commit on the ticket branch when it completes.
+
+**Before beginning each stage:**
+1. Record current HEAD:
+   ```bash
+   STAGE_START_SHA=$(git rev-parse HEAD)
+   ```
+
+**After a stage completes successfully:**
+1. Check if new commits exist since STAGE_START_SHA:
+   ```bash
+   git log --oneline {STAGE_START_SHA}..HEAD
+   ```
+2. If output is non-empty (new commits exist), squash all commits since STAGE_START_SHA:
+   ```bash
+   git reset --soft {STAGE_START_SHA} && git commit -m "[{TICKET_KEY}] {stage_name}"
+   ```
+3. If no new commits: skip squash (no-op stage).
+4. Push to origin (use `--force-with-lease` since squash rewrites history):
+   ```bash
+   git push origin {BRANCH_NAME} --force-with-lease
+   ```
+
+**Stage commit messages:**
+- S4.1: `[{TICKET_KEY}] plan: generated`
+- S4.3: `[{TICKET_KEY}] execute: TDD implementation`
+- S4.4: `[{TICKET_KEY}] verify: acceptance criteria`
+- S4.5: `[{TICKET_KEY}] refactor: code cleanup`
+- S4.6+S4.7: `[{TICKET_KEY}] review: PR fixes applied`
+
+**On resume (deriving STAGE_START_SHA):**
+
+If resuming mid-stage (the stage squash has not yet been applied), derive STAGE_START_SHA:
+```bash
+STAGE_START_SHA=$(git log --grep="^\[{TICKET_KEY}\]" -1 --format="%H")
+```
+If no stage commits exist yet (empty output), use the branch base:
+```bash
+STAGE_START_SHA=$(git merge-base HEAD origin/{BASE_BRANCH})
+```
+
+This allows the agent to continue mid-stage work and squash everything once the stage finishes.
 
 ## S4: Execute Checklist
 
-Work through each unchecked step in order. After completing each step, immediately update the checklist file by changing `- [ ]` to `- [x]` for that step. This ensures idempotency if the process is interrupted.
+Work through each unchecked step in order. After completing each step:
 
-After updating the checklist file, sync the checklist to Jira:
-```bash
-sync-checklist {TICKET_KEY} {WORK_DIR}
-```
-This posts/updates a single managed comment on the Jira ticket showing current checklist progress.
+1. Mark it as done in the in-memory steps array and sync to Jira:
+   ```bash
+   sync-checklist {TICKET_KEY} --steps '{JSON_STEPS_ARRAY}'
+   ```
+2. Push the branch to origin:
+   ```bash
+   git push origin {BRANCH_NAME}
+   ```
+
+This ensures the remote always has the latest committed state, supporting idempotent resume from any machine.
+
+Additionally, apply the Stage Squash Protocol at each stage boundary (record HEAD before, squash after). The push happens **after** the squash, so the remote receives the clean squashed commit.
 
 ---
 
 ### Step S4.1: Plan generated with /jira-start
 
-**Skip if**: step 1 is already checked `[x]`.
+**Skip if**: step 1 is already checked `[x]`, OR a plan already exists in Jira (check via `sync-plan {TICKET_KEY} --read` returning data), OR git log contains `[{TICKET_KEY}] plan:` stage commit.
 
-Check if a plan file already exists at `{PLANS_DIR}/jira-{TICKET_KEY}.md`. If it does and has content, skip running jira-start and just mark this step complete.
-
-Otherwise:
-1. Add `ClaudePlanning` label:
+1. Record `STAGE_START_SHA` (Stage Squash Protocol).
+2. Add `ClaudePlanning` label:
    - Use `mcp__atlassian__editJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
    - `update`: `{"labels": [{"add": "ClaudePlanning"}]}`
-2. Use the Skill tool to run skill `jira-start` with args `{TICKET_KEY} --base {BASE_BRANCH}`
-3. Verify the plan file was created at `{PLANS_DIR}/jira-{TICKET_KEY}.md`
-4. Update Jira labels:
-   - `update`: `{"labels": [{"remove": "ClaudePlanning"}, {"add": "ClaudePlanNeedsApproval"}]}`
-5. Post a Jira comment with a summary of the plan (approach overview, key implementation steps, and if stacked: "Stacked on {BASE_BRANCH}"). Footer: "Awaiting approval. Add label `ClaudePlanApproved` to proceed."
-   - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
-6. Sync the plan to Jira as a managed comment:
+3. Use the Skill tool to run skill `jira-start` with args `{TICKET_KEY} --base {BASE_BRANCH}`
+4. Sync the plan file to Jira as a managed comment:
    ```bash
-   sync-plan {TICKET_KEY} {WORK_DIR}
+   sync-plan {TICKET_KEY} --file {PLANS_DIR}/jira-{TICKET_KEY}.md
    ```
-7. Mark step 1 as `[x]` in the checklist file
+   (jira-start writes a local file — this syncs it to Jira. The local file is now disposable.)
+5. Update Jira labels:
+   - `update`: `{"labels": [{"remove": "ClaudePlanning"}, {"add": "ClaudePlanNeedsApproval"}]}`
+6. Post a Jira comment with a summary of the plan (approach overview, key implementation steps, and if stacked: "Stacked on {BASE_BRANCH}"). Footer: "Awaiting approval. Add label `ClaudePlanApproved` to proceed."
+   - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+7. Mark step 1 as done in the steps array and sync checklist to Jira.
+8. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] plan: generated`.
 
 ---
 
@@ -733,9 +774,9 @@ Otherwise:
 **Skip if**: step 2 is already checked `[x]`.
 
 Check the ticket's current labels:
-- If `ClaudePlanApproved` is present: mark step 2 as `[x]` and continue.
+- If `ClaudePlanApproved` is present: mark step 2 as done, sync checklist to Jira, and continue.
 - If `ClaudePlanNeedsApproval` is present (or no approval label):
-  - Display the plan file content (or a summary) so the user can review it
+  - Read the plan from Jira (`sync-plan {TICKET_KEY} --read`) and display a summary so the user can review it
   - Tell the user:
     ```
     Plan is ready for review.
@@ -746,7 +787,7 @@ Check the ticket's current labels:
     ```
   - If the user types "approve" or similar affirmative:
     - Use `mcp__atlassian__editJiraIssue` to add `ClaudePlanApproved` and remove `ClaudePlanNeedsApproval`
-    - Mark step 2 as `[x]`
+    - Mark step 2 as done and sync checklist to Jira.
   - Otherwise: **stop here**. The command will resume from this step on next run.
 
 ---
@@ -756,6 +797,8 @@ Check the ticket's current labels:
 **Skip if**: step 3 is already checked `[x]`.
 
 Execution follows test-driven development: for each plan task, write a failing test derived from the Gherkin acceptance criteria first (Red), then implement to make it pass (Green), then refactor. Tests are written in the project's native test framework.
+
+0. Record `STAGE_START_SHA` (Stage Squash Protocol). If resuming mid-stage, derive from git log per protocol.
 
 1. Update Jira labels:
    - Remove all other `Claude*` workflow labels (except `ClaudeWork`)
@@ -771,7 +814,11 @@ Execution follows test-driven development: for each plan task, write a failing t
    - Identify test file naming conventions (e.g., `*.test.ts`, `*_test.go`, `test_*.py`)
    - Identify test directory structure (e.g., `__tests__/`, `tests/`, colocated)
 
-5. **Read the plan file** at `{PLANS_DIR}/jira-{TICKET_KEY}.md`. Parse the task list.
+5. **Read the execution plan from Jira:**
+   ```bash
+   sync-plan {TICKET_KEY} --read
+   ```
+   Parse the JSON output — it contains `sections` with `tasks` arrays. Each task has `label` and `done` fields.
 
 6. **For each plan task, execute the Red-Green-Refactor cycle:**
 
@@ -830,22 +877,24 @@ Execution follows test-driven development: for each plan task, write a failing t
      git add -A && git commit -m "Refactor: {task title}"
      ```
 
-   #### 6d: Mark task complete in plan file
+   #### 6d: Mark task complete in Jira
 
-   Update the plan file to mark this task as `[x]`, then sync the plan to Jira:
+   Mark the task as done in the Jira plan comment:
    ```bash
-   sync-plan {TICKET_KEY} {WORK_DIR}
+   sync-plan {TICKET_KEY} --mark-done "{task_label}"
    ```
 
 7. After all tasks are processed:
    - Run the full test suite one final time to confirm everything passes
    - Run `git status` — if there are uncommitted changes, stage and commit
-8. Re-read the plan file to verify tasks are complete
+8. Re-read the plan from Jira (`sync-plan {TICKET_KEY} --read`) to verify tasks are complete
 9. Post a Jira comment summarizing execution results:
    "TDD execution finished.\n\nTasks:\n- [x] Task 1 title (N tests)\n- [x] Task 2 title (N tests)\n- [ ] Task 3 title (incomplete)\n\nCompleted N/M tasks. Total tests written: T."
    - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
 10. If all tasks complete:
-    - Mark step 3 as `[x]` (keep `ClaudeExecuting` label — it will be replaced by `ClaudeStackReady` in step 8)
+    - Mark step 3 as done and sync checklist to Jira.
+    - Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] execute: TDD implementation`.
+    - (Keep `ClaudeExecuting` label — it will be replaced by `ClaudeStackReady` in step 8)
 11. If tasks are incomplete:
     - Update Jira labels: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeFailed"}]}`
     - **Stop here** (user must investigate)
@@ -857,6 +906,8 @@ Execution follows test-driven development: for each plan task, write a failing t
 **Skip if**: step 4 is already checked `[x]`.
 
 TDD execution (S4.3) should have produced tests for every Gherkin scenario. This step confirms full coverage — no scenarios were missed and all tests pass.
+
+0. Record `STAGE_START_SHA` (Stage Squash Protocol).
 
 1. Fetch the ticket description using `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
 2. Extract all Gherkin scenarios from the description (look for `Given`/`When`/`Then` blocks, or fenced code blocks tagged `gherkin` or `feature`)
@@ -881,7 +932,8 @@ TDD execution (S4.3) should have produced tests for every Gherkin scenario. This
      {N}/{M} scenarios fully covered by tests.
      ```
 5. If ALL scenarios have corresponding tests and all tests pass:
-   - Mark step 4 as `[x]`
+   - Mark step 4 as done and sync checklist to Jira.
+   - Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] verify: acceptance criteria`.
    - Post a Jira comment: "TDD verification passed. All {N} Gherkin scenarios are covered by tests. Full suite green."
      - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
 6. If a scenario has no corresponding test (was missed during TDD):
@@ -900,6 +952,8 @@ TDD execution (S4.3) should have produced tests for every Gherkin scenario. This
 
 After TDD execution and acceptance verification, run a targeted refactoring pass on the code changed by this ticket. The refactor agent identifies CRAP score hotspots, DRY violations, and structural smells — then implements approved fixes.
 
+0. Record `STAGE_START_SHA` (Stage Squash Protocol).
+
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Get the list of files changed on this branch:
    ```bash
@@ -915,7 +969,8 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
      ```
    - If tests fail: revert the refactoring commits (`git revert --no-commit HEAD~N..HEAD` where N = number of refactor commits), commit, and note in Jira that refactoring was skipped due to test failures.
    - If tests pass: proceed.
-5. Mark step 5 as `[x]`
+5. Mark step 5 as done and sync checklist to Jira.
+6. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] refactor: code cleanup`.
 
 ---
 
@@ -923,9 +978,12 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
 
 **Skip if**: step 6 is already checked `[x]`.
 
+0. Record `STAGE_START_SHA` (Stage Squash Protocol — shared with S4.7, squash happens after S4.7).
+
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
-2. Use the Skill tool to run skill `pr-review`
-3. Mark step 6 as `[x]`
+2. Ensure plans directory exists: `mkdir -p {PLANS_DIR}`
+3. Use the Skill tool to run skill `pr-review`
+4. Mark step 6 as done and sync checklist to Jira.
 
 ---
 
@@ -936,7 +994,8 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `pr-execute-plan`
 3. After execution: stage and commit any changes if present
-4. Mark step 7 as `[x]`
+4. Mark step 7 as done and sync checklist to Jira.
+5. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] review: PR fixes applied` (covers S4.6+S4.7).
 
 ---
 
@@ -950,11 +1009,11 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    - `update`: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeStackReady"}]}`
 2. Post a Jira comment: "Code review complete. Stack unblocked — downstream tickets may begin."
    - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
-3. Mark step 8 as `[x]`
+3. Mark step 8 as done and sync checklist to Jira.
 
 **If `FEATURE_BRANCH` is set**: verify all review issues are resolved, then merge into the local feature branch.
 
-   1. **Verify review is clean**: Read the PR review plan file from `{WORK_DIR}/.claude/plans/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`). Parse all items in the plan:
+   1. **Verify review is clean**: Read the PR review plan file from `{PLANS_DIR}/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`). Parse all items in the plan:
       - If any issues are marked unresolved or incomplete: set `ClaudeFailed` label, post a Jira comment listing the unresolved issues, and **stop**.
       - Display: "Review has unresolved issues. Fix them and re-run `/ticket-work {TICKET_KEY}`."
       - Only proceed if ALL issues identified by the review have been resolved.
@@ -977,7 +1036,7 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    6. Return to the ticket's working directory:
       - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
       - If worktree mode: `cd {WORK_DIR}`
-   7. Mark steps 9-13 as `[x]` (not applicable for feature branch workflow)
+   7. Mark steps 9-13 as done and sync checklist to Jira (not applicable for feature branch workflow).
    8. Post a Jira comment: "Merged into feature branch `{FEATURE_BRANCH}`."
       - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
    9. Update Jira labels:
@@ -1008,7 +1067,7 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
 **Skip if**: step 9 is already checked `[x]`.
 
 Check the ticket's current labels:
-- If `ClaudePRApproved` is present: mark step 9 as `[x]` and continue.
+- If `ClaudePRApproved` is present: mark step 9 as done, sync checklist to Jira, and continue.
 - If `ClaudeStackReady` is present (or no PR approval label):
   - Tell the user:
     ```
@@ -1020,7 +1079,7 @@ Check the ticket's current labels:
     ```
   - If the user types "approve pr" or similar affirmative:
     - Use `mcp__atlassian__editJiraIssue` to add `ClaudePRApproved` and remove `ClaudeStackReady`
-    - Mark step 9 as `[x]`
+    - Mark step 9 as done and sync checklist to Jira.
   - Otherwise: **stop here**. The command will resume from this step on next run.
 
 ---
@@ -1031,7 +1090,7 @@ Check the ticket's current labels:
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `jay-pr-description`
-3. Mark step 10 as `[x]`
+3. Mark step 10 as done and sync checklist to Jira.
 
 ---
 
@@ -1047,7 +1106,7 @@ Check the ticket's current labels:
 3. Parse the JSON output. Store `pr.url` as `PR_URL`.
 4. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudePRApproved"}, {"add": "ClaudeNeedsReview"}]}`
-5. Mark step 11 as `[x]`
+5. Mark step 11 as done and sync checklist to Jira.
 
 ---
 
@@ -1060,7 +1119,7 @@ After pushing the PR, Copilot may leave review comments. This step runs a single
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
 3. If pr-watch made changes and pushed, update `HEAD_SHA`
-4. Mark step 12 as `[x]`
+4. Mark step 12 as done and sync checklist to Jira.
 
 ---
 
@@ -1073,7 +1132,7 @@ After pushing the PR, Copilot may leave review comments. This step runs a single
    ```bash
    post-review-summary {BRANCH_NAME} --plans-dir .claude/plans --ticket-key {TICKET_KEY}
    ```
-3. If the output shows `posted: true`, mark step 13 as `[x]`.
+3. If the output shows `posted: true`, mark step 13 as done and sync checklist to Jira.
 4. If `posted: false` with reason `no_plan_file`, mark step 13 as `[x]` anyway (nothing to post).
 
 ---
@@ -1130,10 +1189,11 @@ If **no** eligible downstream tickets are found:
 
 ## Error Handling
 
-- If any step fails, the checklist preserves progress. Re-running the command will resume from the failed step.
+- If any step fails, the Jira checklist preserves progress. Re-running the command will resume from the failed step (read from Jira).
 - Worktree already exists: reuse it (don't recreate).
 - Branch already exists: check it out in the worktree.
 - PR already exists: push updates to it rather than creating a new one.
-- Plan file already exists: skip /jira-start (don't overwrite existing plan).
+- Plan already exists in Jira: skip /jira-start (don't overwrite existing plan).
 - On failure at step S4.3 (execution): Jira label is set to `ClaudeFailed`. User must investigate, fix, remove `ClaudeFailed` label, then re-run.
 - In queue mode: never stop due to a single ticket failure. Each agent handles its own error state.
+- If interrupted mid-stage (squash not yet applied): on resume, Claude detects uncommitted stage work (commits since the last stage marker) and continues the stage, then squashes when done. The STAGE_START_SHA is derived from git log per the Stage Squash Protocol.

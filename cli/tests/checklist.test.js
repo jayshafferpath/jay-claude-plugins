@@ -32,6 +32,7 @@ const {
   readChecklistFromJira,
   readExecutionPlanFromJira,
   readPlanSectionsFromJira,
+  markPlanTaskDone,
 } = await import("../lib/checklist.js");
 
 const CHECKLIST_MD = `---
@@ -500,5 +501,98 @@ describe("readPlanSectionsFromJira", () => {
     ]);
     const result = await readPlanSectionsFromJira("TICK-1");
     expect(result).toBeNull();
+  });
+});
+
+describe("markPlanTaskDone", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  const planComment = {
+    id: "55",
+    body: {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "[claude-plan-sync] " }],
+        },
+        {
+          type: "heading",
+          attrs: { level: 3 },
+          content: [{ type: "text", text: "Phase 1" }],
+        },
+        {
+          type: "bulletList",
+          content: [
+            {
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "✅ Create schema" }],
+                },
+              ],
+            },
+            {
+              type: "listItem",
+              content: [
+                {
+                  type: "paragraph",
+                  content: [{ type: "text", text: "⬜ Add migration" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  };
+
+  it("marks the specified task as done and updates Jira", async () => {
+    getComments.mockResolvedValue([planComment]);
+    updateComment.mockResolvedValue({});
+    const result = await markPlanTaskDone("TICK-1", "Add migration");
+    expect(result.completed).toBe(2);
+    expect(result.total).toBe(2);
+    expect(result.sections[0].tasks[1].done).toBe(true);
+    expect(updateComment).toHaveBeenCalledWith(
+      "TICK-1",
+      "55",
+      expect.objectContaining({ type: "doc" }),
+    );
+  });
+
+  it("throws when no plan exists in Jira", async () => {
+    getComments.mockResolvedValue([]);
+    await expect(markPlanTaskDone("TICK-1", "anything")).rejects.toThrow(
+      "No plan found in Jira for TICK-1",
+    );
+  });
+
+  it("throws when task label not found", async () => {
+    getComments.mockResolvedValue([planComment]);
+    await expect(
+      markPlanTaskDone("TICK-1", "Nonexistent task"),
+    ).rejects.toThrow('Task not found or already done: "Nonexistent task"');
+  });
+
+  it("throws when task is already done", async () => {
+    getComments.mockResolvedValue([planComment]);
+    await expect(markPlanTaskDone("TICK-1", "Create schema")).rejects.toThrow(
+      'Task not found or already done: "Create schema"',
+    );
+  });
+
+  it("creates new comment when no existing plan comment", async () => {
+    const noMarkerComments = [{ id: "1", body: { type: "doc", content: [] } }];
+    getComments
+      .mockResolvedValueOnce([planComment])
+      .mockResolvedValueOnce(noMarkerComments);
+    addComment.mockResolvedValue({});
+    const result = await markPlanTaskDone("TICK-1", "Add migration");
+    expect(result.completed).toBe(2);
+    expect(addComment).toHaveBeenCalled();
   });
 });

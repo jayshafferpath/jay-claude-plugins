@@ -84,6 +84,20 @@ This works because once ticket-N merges to main, ticket-N+1's rebase strips tick
 
 Git branches don't encode ordering or dependency — they're just pointers. The stack needs a data structure that answers "what comes before this?" and "what's the container?" Jira's parent/child relationships and issue links provide both, making the stack portable across worktrees, machines, and agents.
 
+## Project Structure
+
+```
+commands/       Claude Code slash commands (symlinked to ~/.claude/commands/)
+agents/         Claude Code agents (symlinked to ~/.claude/agents/)
+cli/            Node.js CLI tools and shared libraries
+  bin/          Executable scripts
+  lib/          Shared modules (Jira client, git helpers, config, etc.)
+  tests/        Vitest test suite
+dashboard/      Web dashboard (Vite + browser UI)
+  api/          Dashboard backend
+  ui/           Dashboard frontend
+```
+
 ## Install
 
 ```bash
@@ -121,7 +135,16 @@ All config lives in `.env` files. Two are loaded (neither overrides existing env
 
 The queue uses `DEV_ROOT` to locate repo clones. Tickets need a `repo:` label (e.g., `repo:my-backend`) that maps to a subdirectory under the dev root. For example, if `DEV_ROOT=/home/you/dev` and a ticket has `repo:my-backend`, the repo is at `/home/you/dev/my-backend`.
 
+## Agents
+
+| Agent | Description |
+|---|---|
+| `@planner` | Decompose Confluence documentation into Gherkin-based Epics, Stories, and Subtasks in Jira |
+| `@refactor` | Analyze code for CRAP score, DRY violations, and refactoring opportunities |
+
 ## CLI Tools
+
+All CLI tools live in `cli/` and are installed globally via `npm link` during setup.
 
 ### `ticket-status`
 
@@ -130,6 +153,19 @@ Terminal CLI for viewing and managing Claude ticket stacks in Jira.
 ```bash
 ticket-status
 ```
+
+### Automation scripts
+
+These are called by the commands/agents during ticket execution:
+
+| Script | Description |
+|---|---|
+| `sync-checklist` | Sync checklist state between Jira and local plan |
+| `sync-plan` | Sync plan content to Jira ticket description |
+| `resolve-stack` | Resolve stack ordering from Jira issue links |
+| `ensure-pr` | Create or update a draft PR for the current branch |
+| `post-review-summary` | Post a PR review summary as a Jira comment |
+| `seed-checklist` | Initialize a checklist on a Jira ticket from a plan |
 
 ### Web Dashboard
 
@@ -140,6 +176,18 @@ cd dashboard && npm install && npm run dev
 ```
 
 Opens at `http://localhost:5173`.
+
+## Development
+
+```bash
+cd cli
+npm install
+npm test            # run tests (vitest)
+npm run lint        # check with biome
+npm run lint:fix    # auto-fix lint issues
+```
+
+Tests require 90% branch coverage (enforced in CI).
 
 ## Prerequisites
 
