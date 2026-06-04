@@ -1,8 +1,8 @@
 import chalk from "chalk";
-import { labelState, actionHint } from "./util.js";
+import { actionHint, labelState } from "./util.js";
 
 const STATE_COLORS = {
-  "FAILED": chalk.red,
+  FAILED: chalk.red,
   "PR open": chalk.green,
   "PR approved": chalk.cyan,
   "stack ready": chalk.yellow,
@@ -10,8 +10,8 @@ const STATE_COLORS = {
   "plan approved": chalk.cyan,
   "plan ready": chalk.yellow,
   "planning...": chalk.blue,
-  "ready": chalk.gray,
-  "unknown": chalk.dim,
+  ready: chalk.gray,
+  unknown: chalk.dim,
 };
 
 export function renderTree(stacks) {
@@ -19,9 +19,7 @@ export function renderTree(stacks) {
 
   for (const stack of stacks) {
     lines.push("");
-    lines.push(
-      chalk.bold(`${stack.containerKey}: ${stack.containerSummary}`)
-    );
+    lines.push(chalk.bold(`${stack.containerKey}: ${stack.containerSummary}`));
 
     for (let i = 0; i < stack.tickets.length; i++) {
       const t = stack.tickets[i];
@@ -67,13 +65,11 @@ export function renderSummary(stacks) {
 
   if (planPending.length) {
     lines.push(
-      chalk.yellow(`Plan approvals pending: ${planPending.join(", ")}`)
+      chalk.yellow(`Plan approvals pending: ${planPending.join(", ")}`),
     );
   }
   if (prPending.length) {
-    lines.push(
-      chalk.yellow(`PR approvals pending: ${prPending.join(", ")}`)
-    );
+    lines.push(chalk.yellow(`PR approvals pending: ${prPending.join(", ")}`));
   }
   if (failed.length) {
     lines.push(chalk.red(`Failed: ${failed.join(", ")}`));
@@ -87,7 +83,22 @@ export function renderSummary(stacks) {
 
 export function renderVerbose(ticket) {
   const lines = [];
-  const { key, summary, stack, baseChain, branch, worktree, pr, status, labels, checklist, reviewPlan, execPlan, blocks, blockedBy } = ticket;
+  const {
+    key,
+    summary,
+    stack,
+    baseChain,
+    branch,
+    worktree,
+    pr,
+    status,
+    labels,
+    checklist,
+    reviewPlan,
+    execPlan,
+    blocks,
+    blockedBy,
+  } = ticket;
 
   lines.push("");
   lines.push(chalk.bold(`${key}: ${summary}`));
@@ -103,7 +114,9 @@ export function renderVerbose(ticket) {
     lines.push(`PR:         —`);
   }
 
-  lines.push(`Jira:       ${status} | Labels: ${labels.filter(l => l.startsWith("Claude")).join(", ") || "none"}`);
+  lines.push(
+    `Jira:       ${status} | Labels: ${labels.filter((l) => l.startsWith("Claude")).join(", ") || "none"}`,
+  );
   lines.push("");
 
   if (checklist) {
@@ -122,7 +135,9 @@ export function renderVerbose(ticket) {
         extra = chalk.dim(` (${reviewPlan.total} issues found)`);
       }
       if (step.num === 5 && reviewPlan) {
-        extra = chalk.dim(` (${reviewPlan.resolved} resolved, ${reviewPlan.open} open)`);
+        extra = chalk.dim(
+          ` (${reviewPlan.resolved} resolved, ${reviewPlan.open} open)`,
+        );
       }
 
       let marker = "";
@@ -136,7 +151,9 @@ export function renderVerbose(ticket) {
     }
   } else {
     const state = labelState(labels);
-    lines.push("Checklist:  (no checklist file — state inferred from Jira labels)");
+    lines.push(
+      "Checklist:  (no checklist file — state inferred from Jira labels)",
+    );
     lines.push(`  Current: ${state.display}`);
   }
 

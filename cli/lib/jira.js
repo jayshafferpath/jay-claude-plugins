@@ -4,7 +4,7 @@ function auth() {
   const creds = getJiraAuth();
   if (!creds) {
     throw new Error(
-      "Missing Jira credentials. Set JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_DOMAIN env vars."
+      "Missing Jira credentials. Set JIRA_EMAIL, JIRA_API_TOKEN, and JIRA_DOMAIN env vars.",
     );
   }
   return creds;
@@ -12,7 +12,7 @@ function auth() {
 
 function headers(creds) {
   const encoded = Buffer.from(`${creds.email}:${creds.token}`).toString(
-    "base64"
+    "base64",
   );
   return {
     Authorization: `Basic ${encoded}`,
@@ -54,7 +54,7 @@ export async function getIssue(key) {
   const creds = auth();
   const res = await fetch(
     `${baseUrl(creds)}/issue/${key}?fields=summary,status,labels,issuelinks,parent,issuetype,assignee`,
-    { headers: headers(creds) }
+    { headers: headers(creds) },
   );
 
   if (!res.ok) {
@@ -95,7 +95,7 @@ export async function getComments(key) {
   const creds = auth();
   const res = await fetch(
     `${baseUrl(creds)}/issue/${key}/comment?orderBy=-created`,
-    { headers: headers(creds) }
+    { headers: headers(creds) },
   );
 
   if (!res.ok) {
@@ -125,11 +125,14 @@ export async function addComment(key, adfBody) {
 
 export async function updateComment(key, commentId, adfBody) {
   const creds = auth();
-  const res = await fetch(`${baseUrl(creds)}/issue/${key}/comment/${commentId}`, {
-    method: "PUT",
-    headers: headers(creds),
-    body: JSON.stringify({ body: adfBody }),
-  });
+  const res = await fetch(
+    `${baseUrl(creds)}/issue/${key}/comment/${commentId}`,
+    {
+      method: "PUT",
+      headers: headers(creds),
+      body: JSON.stringify({ body: adfBody }),
+    },
+  );
 
   if (!res.ok) {
     const body = await res.text();

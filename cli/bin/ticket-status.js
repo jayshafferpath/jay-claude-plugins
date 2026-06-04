@@ -1,18 +1,22 @@
 #!/usr/bin/env node
 
 import { loadEnv } from "../lib/env.js";
+
 loadEnv();
 
-import { createInterface } from "readline";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { createInterface } from "node:readline";
 import chalk from "chalk";
+import {
+  readChecklistFromJira,
+  readExecutionPlanFromJira,
+} from "../lib/checklist.js";
 import { loadDevRoot } from "../lib/config.js";
-import { searchIssues, getIssue, swapLabel } from "../lib/jira.js";
 import { findBranch, findWorktree, getPrInfo } from "../lib/git.js";
-import { readChecklistFromJira, readExecutionPlanFromJira } from "../lib/checklist.js";
-import { labelState, actionHint, topologicalSort } from "../lib/util.js";
-import { renderTree, renderSummary, renderVerbose } from "../lib/render.js";
-import { existsSync } from "fs";
-import { join } from "path";
+import { getIssue, searchIssues, swapLabel } from "../lib/jira.js";
+import { renderSummary, renderTree, renderVerbose } from "../lib/render.js";
+import { topologicalSort } from "../lib/util.js";
 
 const DEV_ROOT = loadDevRoot();
 const args = process.argv.slice(2);
@@ -54,7 +58,7 @@ ${chalk.dim("Actions (interactive):")}
 async function treeMode() {
   const issues = await searchIssues(
     'labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done',
-    ["key", "summary", "status", "labels", "issuelinks", "parent", "issuetype"]
+    ["key", "summary", "status", "labels", "issuelinks", "parent", "issuetype"],
   );
 
   if (!issues.length) {
@@ -88,11 +92,16 @@ async function buildStacks(issues) {
       }
     } else {
       const epicLink = fields.issuelinks?.find(
-        (l) => l.type?.name === "Epic" || l.outwardIssue?.fields?.issuetype?.name === "Epic"
+        (l) =>
+          l.type?.name === "Epic" ||
+          l.outwardIssue?.fields?.issuetype?.name === "Epic",
       );
       if (epicLink?.outwardIssue) {
         containerKey = epicLink.outwardIssue.key;
-        containerCache.set(containerKey, epicLink.outwardIssue.fields?.summary || "");
+        containerCache.set(
+          containerKey,
+          epicLink.outwardIssue.fields?.summary || "",
+        );
       }
     }
 
@@ -121,11 +130,11 @@ async function buildStacks(issues) {
           i.key === k &&
           (i.fields.status?.statusCategory?.key === "done" ||
             i.fields.labels?.includes("ClaudeStackReady") ||
-            i.fields.labels?.includes("ClaudeNeedsReview"))
+            i.fields.labels?.includes("ClaudeNeedsReview")),
       );
 
     const unfinishedBlockers = blockers.filter(
-      (b) => issues.some((i) => i.key === b) && !isFinished(b)
+      (b) => issues.some((i) => i.key === b) && !isFinished(b),
     );
 
     grouped.get(containerKey).push({
@@ -162,8 +171,10 @@ async function interactiveLoop(stacks) {
   const prompt = () =>
     new Promise((resolve) => {
       rl.question(
-        chalk.dim("\nActions: (p KEY) plan, (r KEY) PR, (ap) all plans, (ar) all PRs, (v KEY) verbose, (q) quit\n> "),
-        resolve
+        chalk.dim(
+          "\nActions: (p KEY) plan, (r KEY) PR, (ap) all plans, (ar) all PRs, (v KEY) verbose, (q) quit\n> ",
+        ),
+        resolve,
       );
     });
 
@@ -180,25 +191,39 @@ async function interactiveLoop(stacks) {
     const keyArg = parts[1]?.toUpperCase();
 
     if (cmd === "p" && keyArg) {
-      const ticket = allTickets.find((t) => t.key === keyArg || t.key.endsWith(`-${keyArg}`));
+      const ticket = allTickets.find(
+        (t) => t.key === keyArg || t.key.endsWith(`-${keyArg}`),
+      );
       if (!ticket) {
-        console.log(chalk.red(`Ticket ${keyArg} not found in current results.`));
+        console.log(
+          chalk.red(`Ticket ${keyArg} not found in current results.`),
+        );
         continue;
       }
       if (!ticket.labels.includes("ClaudePlanNeedsApproval")) {
         console.log(chalk.red(`${ticket.key} is not awaiting plan approval.`));
         continue;
       }
-      await swapLabel(ticket.key, "ClaudePlanNeedsApproval", "ClaudePlanApproved");
-      ticket.labels = ticket.labels.filter((l) => l !== "ClaudePlanNeedsApproval");
+      await swapLabel(
+        ticket.key,
+        "ClaudePlanNeedsApproval",
+        "ClaudePlanApproved",
+      );
+      ticket.labels = ticket.labels.filter(
+        (l) => l !== "ClaudePlanNeedsApproval",
+      );
       ticket.labels.push("ClaudePlanApproved");
       console.log(chalk.green(`Approved plan for ${ticket.key}`));
       console.log(renderTree(stacks));
       console.log(renderSummary(stacks));
     } else if (cmd === "r" && keyArg) {
-      const ticket = allTickets.find((t) => t.key === keyArg || t.key.endsWith(`-${keyArg}`));
+      const ticket = allTickets.find(
+        (t) => t.key === keyArg || t.key.endsWith(`-${keyArg}`),
+      );
       if (!ticket) {
-        console.log(chalk.red(`Ticket ${keyArg} not found in current results.`));
+        console.log(
+          chalk.red(`Ticket ${keyArg} not found in current results.`),
+        );
         continue;
       }
       if (!ticket.labels.includes("ClaudeStackReady")) {
@@ -212,7 +237,9 @@ async function interactiveLoop(stacks) {
       console.log(renderTree(stacks));
       console.log(renderSummary(stacks));
     } else if (cmd === "ap") {
-      const pending = allTickets.filter((t) => t.labels.includes("ClaudePlanNeedsApproval"));
+      const pending = allTickets.filter((t) =>
+        t.labels.includes("ClaudePlanNeedsApproval"),
+      );
       if (!pending.length) {
         console.log(chalk.dim("No plans pending approval."));
         continue;
@@ -222,11 +249,17 @@ async function interactiveLoop(stacks) {
         t.labels = t.labels.filter((l) => l !== "ClaudePlanNeedsApproval");
         t.labels.push("ClaudePlanApproved");
       }
-      console.log(chalk.green(`Approved plans for: ${pending.map((t) => t.key).join(", ")}`));
+      console.log(
+        chalk.green(
+          `Approved plans for: ${pending.map((t) => t.key).join(", ")}`,
+        ),
+      );
       console.log(renderTree(stacks));
       console.log(renderSummary(stacks));
     } else if (cmd === "ar") {
-      const pending = allTickets.filter((t) => t.labels.includes("ClaudeStackReady"));
+      const pending = allTickets.filter((t) =>
+        t.labels.includes("ClaudeStackReady"),
+      );
       if (!pending.length) {
         console.log(chalk.dim("No PRs pending approval."));
         continue;
@@ -236,13 +269,19 @@ async function interactiveLoop(stacks) {
         t.labels = t.labels.filter((l) => l !== "ClaudeStackReady");
         t.labels.push("ClaudePRApproved");
       }
-      console.log(chalk.green(`Approved PRs for: ${pending.map((t) => t.key).join(", ")}`));
+      console.log(
+        chalk.green(
+          `Approved PRs for: ${pending.map((t) => t.key).join(", ")}`,
+        ),
+      );
       console.log(renderTree(stacks));
       console.log(renderSummary(stacks));
     } else if (cmd === "v" && keyArg) {
       await verboseMode(keyArg);
     } else {
-      console.log(chalk.dim("Unknown action. Try: p KEY, r KEY, ap, ar, v KEY, q"));
+      console.log(
+        chalk.dim("Unknown action. Try: p KEY, r KEY, ap, ar, v KEY, q"),
+      );
     }
   }
 }
@@ -254,7 +293,9 @@ async function verboseMode(ticketKey) {
   const status = fields.status?.name || "Unknown";
 
   const parent = fields.parent;
-  const isSubtask = ["Sub-task", "Subtask"].includes(fields.issuetype?.name || "");
+  const isSubtask = ["Sub-task", "Subtask"].includes(
+    fields.issuetype?.name || "",
+  );
   let stack = null;
   if (isSubtask && parent) {
     stack = `${parent.key} (${parent.fields?.summary || ""})`;
@@ -304,7 +345,7 @@ async function verboseMode(ticketKey) {
       execPlan,
       blocks: outwardLinks,
       blockedBy: inwardLinks,
-    })
+    }),
   );
 
   if (!args.length || args[0].toUpperCase() !== ticketKey) return;
@@ -313,7 +354,8 @@ async function verboseMode(ticketKey) {
   const prompt = () =>
     new Promise((resolve) => {
       const actions = [];
-      if (labels.includes("ClaudePlanNeedsApproval")) actions.push("(p) approve plan");
+      if (labels.includes("ClaudePlanNeedsApproval"))
+        actions.push("(p) approve plan");
       if (labels.includes("ClaudeStackReady")) actions.push("(r) approve PR");
       actions.push("(q) quit");
       rl.question(chalk.dim(`\nActions: ${actions.join(", ")}\n> `), resolve);
@@ -331,7 +373,11 @@ async function verboseMode(ticketKey) {
         console.log(chalk.red("Not awaiting plan approval."));
         continue;
       }
-      await swapLabel(ticketKey, "ClaudePlanNeedsApproval", "ClaudePlanApproved");
+      await swapLabel(
+        ticketKey,
+        "ClaudePlanNeedsApproval",
+        "ClaudePlanApproved",
+      );
       console.log(chalk.green(`Approved plan for ${ticketKey}`));
       rl.close();
       return;
