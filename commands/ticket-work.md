@@ -744,13 +744,13 @@ Use the Jira labels (from S1c) and artifact checks to determine initial state:
 |-------|-----------|---------------------|
 | Plan exists | File `{PLANS_DIR}/jira-{TICKET_KEY}.md` exists and has content | Step 1 |
 | Plan approved | Jira label `ClaudePlanApproved` is present, OR label `ClaudeExecuting` / `ClaudeStackReady` / `ClaudePRApproved` / `ClaudeNeedsReview` is present (implies approval already happened) | Steps 1, 2 |
-| Plan executed | Jira label `ClaudeStackReady` / `ClaudePRApproved` / `ClaudeNeedsReview` is present, OR label `ClaudeExecuting` is present AND all plan tasks are marked complete in the plan file | Steps 1, 2, 3, 4 |
-| PR review plan exists | A PR review plan file exists in `{WORK_DIR}/.claude/plans/` matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md` | Steps 1-5 |
-| Stack ready | Jira label `ClaudeStackReady` or `ClaudePRApproved` or `ClaudeNeedsReview` is present | Steps 1-7 |
-| PR approved | Jira label `ClaudePRApproved` or `ClaudeNeedsReview` is present | Steps 1-8 |
-| PR exists | `gh pr view {BRANCH_NAME} --json number 2>/dev/null` succeeds | Steps 1-10 |
+| Plan executed | Jira label `ClaudeStackReady` / `ClaudePRApproved` / `ClaudeNeedsReview` is present, OR label `ClaudeExecuting` is present AND all plan tasks are marked complete in the plan file | Steps 1, 2, 3, 4, 5 |
+| PR review plan exists | A PR review plan file exists in `{WORK_DIR}/.claude/plans/` matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md` | Steps 1-6 |
+| Stack ready | Jira label `ClaudeStackReady` or `ClaudePRApproved` or `ClaudeNeedsReview` is present | Steps 1-8 |
+| PR approved | Jira label `ClaudePRApproved` or `ClaudeNeedsReview` is present | Steps 1-9 |
+| PR exists | `gh pr view {BRANCH_NAME} --json number 2>/dev/null` succeeds | Steps 1-11 |
 
-Apply in reverse order (check the most-advanced state first) so you mark the correct set. Steps 11 and 12 are never pre-seeded — they always run fresh if unchecked.
+Apply in reverse order (check the most-advanced state first) so you mark the correct set. Steps 12 and 13 are never pre-seeded — they always run fresh if unchecked.
 
 ### S3c: Write the checklist file
 
@@ -775,14 +775,15 @@ created: {ISO_TIMESTAMP}
 - [{STEP2}] 2. Plan approved
 - [{STEP3}] 3. Plan executed with /plan-execute
 - [{STEP4}] 4. Acceptance criteria verified against Gherkin
-- [{STEP5}] 5. PR review plan generated with /pr-review
-- [{STEP6}] 6. PR review plan executed with /pr-execute-plan
-- [{STEP7}] 7. Stack ready (unblocks downstream) — TERMINAL STATE
-- [{STEP8}] 8. PR approved
-- [{STEP9}] 9. PR description and title generated with /jay-pr-description
-- [{STEP10}] 10. PR pushed as draft
-- [ ] 11. Copilot review comments resolved
-- [ ] 12. PR review summary posted
+- [{STEP5}] 5. Refactoring pass with @refactor agent
+- [{STEP6}] 6. PR review plan generated with /pr-review
+- [{STEP7}] 7. PR review plan executed with /pr-execute-plan
+- [{STEP8}] 8. Stack ready (unblocks downstream) — TERMINAL STATE
+- [{STEP9}] 9. PR approved
+- [{STEP10}] 10. PR description and title generated with /jay-pr-description
+- [{STEP11}] 11. PR pushed as draft
+- [ ] 12. Copilot review comments resolved
+- [ ] 13. PR review summary posted
 ```
 
 Where each `{STEPN}` is `x` if seeded as done, or a space if not.
@@ -940,7 +941,7 @@ Execution follows test-driven development: for each plan task, write a failing t
    "TDD execution finished.\n\nTasks:\n- [x] Task 1 title (N tests)\n- [x] Task 2 title (N tests)\n- [ ] Task 3 title (incomplete)\n\nCompleted N/M tasks. Total tests written: T."
    - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
 10. If all tasks complete:
-    - Mark step 3 as `[x]` (keep `ClaudeExecuting` label — it will be replaced by `ClaudeStackReady` in step 7)
+    - Mark step 3 as `[x]` (keep `ClaudeExecuting` label — it will be replaced by `ClaudeStackReady` in step 8)
 11. If tasks are incomplete:
     - Update Jira labels: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeFailed"}]}`
     - **Stop here** (user must investigate)
@@ -989,30 +990,55 @@ TDD execution (S4.3) should have produced tests for every Gherkin scenario. This
 
 ---
 
-### Step S4.5: PR review plan generated with /pr-review
+### Step S4.5: Refactoring pass with @refactor agent
 
 **Skip if**: step 5 is already checked `[x]`.
 
+After TDD execution and acceptance verification, run a targeted refactoring pass on the code changed by this ticket. The refactor agent identifies CRAP score hotspots, DRY violations, and structural smells — then implements approved fixes.
+
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
-2. Use the Skill tool to run skill `pr-review`
-3. Mark step 5 as `[x]`
+2. Get the list of files changed on this branch:
+   ```bash
+   git diff {BASE_BRANCH}...HEAD --name-only --diff-filter=ACMR
+   ```
+3. Launch the refactor agent targeting only the changed files:
+   - Use the Agent tool with `subagent_type: "refactor"`
+   - Prompt: "Analyze the following files for CRAP score, DRY violations, and refactoring opportunities. These were changed as part of ticket {TICKET_KEY}. Only flag issues introduced or worsened by this branch's changes — don't report pre-existing issues in unchanged code. Implement any refactorings that are clearly beneficial (reduce complexity, eliminate duplication) without changing behavior. Skip anything marginal or subjective. Files: {FILE_LIST}"
+4. After the refactor agent completes:
+   - Run the full test suite to confirm nothing broke:
+     ```bash
+     {TEST_COMMAND}
+     ```
+   - If tests fail: revert the refactoring commits (`git revert --no-commit HEAD~N..HEAD` where N = number of refactor commits), commit, and note in Jira that refactoring was skipped due to test failures.
+   - If tests pass: proceed.
+5. Mark step 5 as `[x]`
 
 ---
 
-### Step S4.6: PR review plan executed with /pr-execute-plan
+### Step S4.6: PR review plan generated with /pr-review
 
 **Skip if**: step 6 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
-2. Use the Skill tool to run skill `pr-execute-plan`
-3. After execution: stage and commit any changes if present
-4. Mark step 6 as `[x]`
+2. Use the Skill tool to run skill `pr-review`
+3. Mark step 6 as `[x]`
 
 ---
 
-### Step S4.7: Stack ready
+### Step S4.7: PR review plan executed with /pr-execute-plan
 
 **Skip if**: step 7 is already checked `[x]`.
+
+1. Make sure we are in the working directory: `cd {WORK_DIR}`
+2. Use the Skill tool to run skill `pr-execute-plan`
+3. After execution: stage and commit any changes if present
+4. Mark step 7 as `[x]`
+
+---
+
+### Step S4.8: Stack ready
+
+**Skip if**: step 8 is already checked `[x]`.
 
 This step marks the ticket as stack-ready, which unblocks downstream tickets without requiring a PR to be opened.
 
@@ -1020,7 +1046,7 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    - `update`: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeStackReady"}]}`
 2. Post a Jira comment: "Code review complete. Stack unblocked — downstream tickets may begin."
    - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
-3. Mark step 7 as `[x]`
+3. Mark step 8 as `[x]`
 
 **If `FEATURE_BRANCH` is set**: verify all review issues are resolved, then merge into the local feature branch.
 
@@ -1047,7 +1073,7 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    6. Return to the ticket's working directory:
       - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
       - If worktree mode: `cd {WORK_DIR}`
-   7. Mark steps 8-12 as `[x]` (not applicable for feature branch workflow)
+   7. Mark steps 9-13 as `[x]` (not applicable for feature branch workflow)
    8. Post a Jira comment: "Merged into feature branch `{FEATURE_BRANCH}`."
       - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
    9. Update Jira labels:
@@ -1073,12 +1099,12 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
 
 ---
 
-### Step S4.8: PR approved
+### Step S4.9: PR approved
 
-**Skip if**: step 8 is already checked `[x]`.
+**Skip if**: step 9 is already checked `[x]`.
 
 Check the ticket's current labels:
-- If `ClaudePRApproved` is present: mark step 8 as `[x]` and continue.
+- If `ClaudePRApproved` is present: mark step 9 as `[x]` and continue.
 - If `ClaudeStackReady` is present (or no PR approval label):
   - Tell the user:
     ```
@@ -1090,24 +1116,24 @@ Check the ticket's current labels:
     ```
   - If the user types "approve pr" or similar affirmative:
     - Use `mcp__atlassian__editJiraIssue` to add `ClaudePRApproved` and remove `ClaudeStackReady`
-    - Mark step 8 as `[x]`
+    - Mark step 9 as `[x]`
   - Otherwise: **stop here**. The command will resume from this step on next run.
 
 ---
 
-### Step S4.9: PR description and title generated with /jay-pr-description
+### Step S4.10: PR description and title generated with /jay-pr-description
 
-**Skip if**: step 9 is already checked `[x]`.
+**Skip if**: step 10 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `jay-pr-description`
-3. Mark step 9 as `[x]`
+3. Mark step 10 as `[x]`
 
 ---
 
-### Step S4.10: PR pushed as draft
+### Step S4.11: PR pushed as draft
 
-**Skip if**: step 10 is already checked `[x]`.
+**Skip if**: step 11 is already checked `[x]`.
 
 1. Check if a PR already exists for this branch:
    ```bash
@@ -1118,7 +1144,7 @@ Check the ticket's current labels:
       ```bash
       cd {WORK_DIR} && git push -u origin {BRANCH_NAME}
       ```
-   b. Read the generated PR description file (from step S4.9 output or `./pr.md` if it exists)
+   b. Read the generated PR description file (from step S4.10 output or `./pr.md` if it exists)
    c. Create a draft PR targeting `{PR_TARGET}`:
       ```bash
       gh pr create --draft --base {PR_TARGET} --title "{PR_TITLE}" --body "{PR_BODY}"
@@ -1130,26 +1156,26 @@ Check the ticket's current labels:
    ```
 4. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudePRApproved"}, {"add": "ClaudeNeedsReview"}]}`
-5. Mark step 10 as `[x]`
+5. Mark step 11 as `[x]`
 
 ---
 
-### Step S4.11: Copilot review comments resolved
+### Step S4.12: Copilot review comments resolved
 
-**Skip if**: step 11 is already checked `[x]`.
+**Skip if**: step 12 is already checked `[x]`.
 
 After pushing the PR, Copilot may leave review comments. This step runs a single automated pass to address and resolve them.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
 3. If pr-watch made changes and pushed, update `HEAD_SHA`
-4. Mark step 11 as `[x]`
+4. Mark step 12 as `[x]`
 
 ---
 
-### Step S4.12: Post PR review summary comment
+### Step S4.13: Post PR review summary comment
 
-**Skip if**: step 12 is already checked `[x]`.
+**Skip if**: step 13 is already checked `[x]`.
 
 1. Read the PR review plan file from `{WORK_DIR}/.claude/plans/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`)
 2. Build a summary comment in the following format:
@@ -1170,7 +1196,7 @@ After pushing the PR, Copilot may leave review comments. This step runs a single
    ```bash
    gh pr comment {BRANCH_NAME} --body "{REVIEW_SUMMARY}"
    ```
-4. Mark step 12 as `[x]`
+4. Mark step 13 as `[x]`
 
 ---
 
@@ -1192,7 +1218,7 @@ All steps completed. PR is ready for human review.
 
 ## S6: Continue to Next Ticket in Stack
 
-After reaching stack-ready (step 6) or completing all steps, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
+After reaching stack-ready (step 8) or completing all steps, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
 
 ### S6a: Find Downstream Tickets
 

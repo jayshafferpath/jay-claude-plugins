@@ -26,7 +26,7 @@ export function App() {
 
   useEffect(() => {
     fetchStacks();
-    const interval = setInterval(fetchStacks, 30000);
+    const interval = setInterval(fetchStacks, 10000);
     return () => clearInterval(interval);
   }, [fetchStacks]);
 
