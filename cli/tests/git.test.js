@@ -18,6 +18,8 @@ const {
   getPrDetails,
   getPrDiffStat,
   getWorktreeList,
+  isAncestor,
+  isMergedInto,
 } = await import("../lib/git.js");
 
 describe("findBranch", () => {
@@ -219,5 +221,56 @@ describe("getWorktreeList", () => {
       throw new Error("fail");
     });
     expect(getWorktreeList("/repo")).toEqual([]);
+  });
+});
+
+describe("isAncestor", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when ancestor is falsy", () => {
+    expect(isAncestor(null, "main", "/repo")).toBe(false);
+  });
+
+  it("returns true when command succeeds", () => {
+    execSync.mockReturnValue("");
+    expect(isAncestor("feat-1", "main", "/repo")).toBe(true);
+  });
+
+  it("returns false when command throws", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("not ancestor");
+    });
+    expect(isAncestor("feat-1", "main", "/repo")).toBe(false);
+  });
+});
+
+describe("isMergedInto", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when branch is falsy", () => {
+    expect(isMergedInto(null, "main", "/repo")).toBe(false);
+  });
+
+  it("returns true when branch appears in merged list", () => {
+    execSync.mockReturnValue(
+      "  origin/feat-1\n  origin/feat-2\n  origin/main\n",
+    );
+    expect(isMergedInto("feat-1", "main", "/repo")).toBe(true);
+  });
+
+  it("returns false when branch not in merged list", () => {
+    execSync.mockReturnValue("  origin/other\n  origin/main\n");
+    expect(isMergedInto("feat-1", "main", "/repo")).toBe(false);
+  });
+
+  it("returns false when command throws", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(isMergedInto("feat-1", "main", "/repo")).toBe(false);
   });
 });

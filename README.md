@@ -1,6 +1,6 @@
 # jay-claude-plugins
 
-Personal Claude Code commands for Jira ticket automation, PR workflows, and stacked PR management.
+Claude Code commands for Jira ticket automation, PR workflows, and stacked PR management.
 
 ## Commands
 
@@ -84,55 +84,62 @@ This works because once ticket-N merges to main, ticket-N+1's rebase strips tick
 
 Git branches don't encode ordering or dependency — they're just pointers. The stack needs a data structure that answers "what comes before this?" and "what's the container?" Jira's parent/child relationships and issue links provide both, making the stack portable across worktrees, machines, and agents.
 
-## Configuration
-
-The queue uses `~/.claude/dev-root.json` to locate repo clones. Tickets need a `repo:` label (e.g., `repo:my-backend`) that maps to a subdirectory under the dev root.
-
-```json
-{
-  "root": "/path/to/dev"
-}
-```
-
-## CLI Tools
-
-### `ticket-status`
-
-Terminal CLI for viewing and managing Claude ticket stacks in Jira. Provides a dashboard view of in-progress stacks without needing to open Claude Code.
-
-```bash
-ticket-status
-```
-
-Requires environment variables: `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_DOMAIN`.
-
-### Web Dashboard
-
-Browser-based dashboard with the same data as `ticket-status` plus expandable detail panels per ticket (checklist progress, PR links, branch/worktree info, dependency graph, execution/review progress bars).
-
-```bash
-cd dashboard
-npm install
-npm run dev
-```
-
-Opens at `http://localhost:5173`. The API server runs on port 3789; Vite proxies `/api` requests to it automatically.
-
-**Features:**
-- Stack tree view with state badges (colored by lifecycle stage)
-- Click-to-expand ticket detail panels
-- Approve plan / approve PR buttons (per-ticket and bulk)
-- Auto-refresh every 30 seconds
-
-**Requires** the same environment variables as `ticket-status`: `JIRA_EMAIL`, `JIRA_API_TOKEN`, `JIRA_DOMAIN`.
-
 ## Install
 
 ```bash
 ./install.sh
 ```
 
-Symlinks commands into `~/.claude/commands/`, copies `dev-root.json` to `~/.claude/`, and installs the `ticket-status` CLI via npm link. Existing files are backed up as `.bak`.
+This will:
+1. Symlink commands into `~/.claude/commands/` and agents into `~/.claude/agents/`
+2. Create `.env` from `.env.example` (project-level credentials)
+3. Create `~/.claude/.env` (machine-level config like `DEV_ROOT`)
+4. Install the `ticket-status` CLI via `npm link`
+
+After running, edit:
+- **`.env`** — set your Jira credentials
+- **`~/.claude/.env`** — set `DEV_ROOT` to your dev directory (parent of all repo clones)
+
+## Configuration
+
+All config lives in `.env` files. Two are loaded (neither overrides existing env vars):
+
+1. **`.env`** (project root) — Jira credentials, project-specific settings
+2. **`~/.claude/.env`** — machine-level settings shared across projects
+
+### Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `JIRA_EMAIL` | Yes | Your Atlassian account email |
+| `JIRA_API_TOKEN` | Yes | [API token](https://id.atlassian.com/manage-profile/security/api-tokens) |
+| `JIRA_DOMAIN` | Yes | e.g. `your-org.atlassian.net` |
+| `DEV_ROOT` | Yes | Path to parent directory of all repo clones |
+| `SLACK_WEBHOOK_URL` | No | Slack webhook for notifications |
+
+### Dev root
+
+The queue uses `DEV_ROOT` to locate repo clones. Tickets need a `repo:` label (e.g., `repo:my-backend`) that maps to a subdirectory under the dev root. For example, if `DEV_ROOT=/home/you/dev` and a ticket has `repo:my-backend`, the repo is at `/home/you/dev/my-backend`.
+
+## CLI Tools
+
+### `ticket-status`
+
+Terminal CLI for viewing and managing Claude ticket stacks in Jira.
+
+```bash
+ticket-status
+```
+
+### Web Dashboard
+
+Browser-based dashboard with stack tree views, state badges, approval buttons, and auto-refresh.
+
+```bash
+cd dashboard && npm install && npm run dev
+```
+
+Opens at `http://localhost:5173`.
 
 ## Prerequisites
 

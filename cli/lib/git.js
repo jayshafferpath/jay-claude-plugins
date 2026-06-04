@@ -80,6 +80,22 @@ export function getPrDiffStat(branchName, cwd) {
   return result || null;
 }
 
+export function isAncestor(ancestor, descendant, cwd) {
+  if (!ancestor || !descendant || !cwd) return false;
+  const result = run(
+    `git merge-base --is-ancestor origin/${ancestor} origin/${descendant}`,
+    cwd,
+  );
+  return result !== null;
+}
+
+export function isMergedInto(branch, target, cwd) {
+  if (!branch || !target || !cwd) return false;
+  const result = run(`git branch -r --merged origin/${target}`, cwd);
+  if (!result) return false;
+  return result.split("\n").some((line) => line.trim() === `origin/${branch}`);
+}
+
 export function getWorktreeList(repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return [];
   const result = run("git worktree list --porcelain", repoRoot);

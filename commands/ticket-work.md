@@ -13,6 +13,10 @@ allowed-tools:
   - Bash(mkdir *)
   - Bash(sync-checklist *)
   - Bash(sync-plan *)
+  - Bash(resolve-stack *)
+  - Bash(ensure-pr *)
+  - Bash(post-review-summary *)
+  - Bash(seed-checklist *)
   - Read
   - Write
   - Skill
@@ -137,8 +141,7 @@ Triggered when a stack container key is passed that has both `ClaudeStackComplet
 2. `FEATURE_BRANCH` = value from `branch:` label (minus prefix)
 3. Detect `REPO_ROOT`:
    - Look for `repo:` label on the container issue
-   - Read `~/.claude/dev-root.json` for `DEV_ROOT`
-   - `REPO_ROOT` = `{DEV_ROOT}/{repo_name}`
+   - `REPO_ROOT` = `{DEV_ROOT}/{repo_name}` (where `DEV_ROOT` comes from env)
 4. Fetch latest:
    ```bash
    cd {REPO_ROOT} && git fetch origin
@@ -206,24 +209,12 @@ Work through each unchecked step in order. After completing each step, immediate
 
 **Skip if**: step 2 is already checked `[x]`.
 
-1. Check if a PR already exists for this branch:
+1. Make sure we are in the repo root: `cd {REPO_ROOT}`
+2. Run:
    ```bash
-   gh pr view {FEATURE_BRANCH} --json number,url 2>/dev/null
+   ensure-pr {FEATURE_BRANCH} --base main --body-file ./pr.md --draft
    ```
-2. If no PR exists:
-   a. Push the branch:
-      ```bash
-      cd {REPO_ROOT} && git push -u origin {FEATURE_BRANCH}
-      ```
-   b. Read the generated PR description (from step C3.1 output or `./pr.md` if it exists)
-   c. Create a draft PR targeting `main`:
-      ```bash
-      gh pr create --draft --base main --title "{PR_TITLE}" --body "{PR_BODY}"
-      ```
-3. If a PR already exists: ensure latest is pushed:
-   ```bash
-   cd {REPO_ROOT} && git push
-   ```
+3. Parse the JSON output. Store `pr.url` as `PR_URL`.
 4. Post a Jira comment on `{CONTAINER_KEY}`: "Draft PR opened for feature branch `{FEATURE_BRANCH}` → main: {PR_URL}"
    - Use `mcp__atlassian__addCommentToJiraIssue`
 5. Mark step 2 as `[x]`
@@ -269,26 +260,12 @@ Work through each unchecked step in order. After completing each step, immediate
 
 **Skip if**: step 6 is already checked `[x]`.
 
-1. Read the PR review plan file from `{REPO_ROOT}/.claude/plans/` (matching `pr-review-*.md`)
-2. Build a summary comment:
-   ```
-   ## Claude Code Review Summary
-
-   ### Issues Found
-   - **{issue title}**: {brief description} — **{resolved|open}**
-   ...
-
-   ### Resolutions
-   - {issue}: {what was changed to fix it}
-   ...
-
-   N issues found, M resolved.
-   ```
-3. Post the comment to the PR:
+1. Make sure we are in the repo root: `cd {REPO_ROOT}`
+2. Run:
    ```bash
-   gh pr comment {FEATURE_BRANCH} --body "{REVIEW_SUMMARY}"
+   post-review-summary {FEATURE_BRANCH} --plans-dir .claude/plans --ticket-key {CONTAINER_KEY}
    ```
-4. Mark step 6 as `[x]`
+3. Mark step 6 as `[x]`
 
 ---
 
@@ -335,13 +312,7 @@ Used by both Mode B (full discovery) and Mode A (multiple tickets from argument 
 
 ### Q1b: Load Dev Root
 
-Read `~/.claude/dev-root.json`:
-```json
-{
-  "root": "/path/to/dev"
-}
-```
-Store the `root` value as `DEV_ROOT`. This is the parent directory containing all repo clones. Repo names from `repo:` labels map directly to subdirectories: `{DEV_ROOT}/{repo_name}`.
+`DEV_ROOT` is set via `.env` or `~/.claude/.env`. It is the parent directory containing all repo clones. Repo names from `repo:` labels map directly to subdirectories: `{DEV_ROOT}/{repo_name}`.
 
 ## Q2: Discover Eligible Tickets
 
@@ -391,27 +362,19 @@ For each ticket, find the label starting with `repo:` (e.g., `repo:my-backend`).
 
 ## Q4: Gate on Stack Dependencies
 
-For each ticket:
+For each ticket, run:
+```bash
+resolve-stack {KEY} --repo-root {REPO_ROOT}
+```
 
-1. Use `mcp__atlassian__getJiraIssue` to get issue links and determine the **stack container**:
-   - If the ticket is a **subtask** (has a `parent` field that is a Story/Task, not an Epic): the stack container is the parent Story key. Stack siblings are other subtasks of that parent.
-   - Otherwise: the stack container is the ticket's Epic key. Stack siblings are other tickets linked to the same Epic.
-2. Find inward "is blocked by" links
-3. For each blocker that shares the same stack container:
-   - A blocker is "finished" if its Jira status category is "done" (statusCategory.key == "done") OR it has the `ClaudeStackReady` label (code review complete, stack unblocked) OR it has the `ClaudeNeedsReview` label (PR has been pushed)
-   - **Feature branch merge gate**: If `FEATURE_BRANCH` is set and the blocker is "finished" per the above, additionally verify the blocker's branch has been merged into the feature branch:
-     ```bash
-     git merge-base --is-ancestor origin/{BLOCKER_BRANCH} origin/{FEATURE_BRANCH}
-     ```
-     If this check fails (exit code non-zero), the blocker is NOT considered finished — its code has not yet landed in the feature branch.
-   - If ANY same-stack blocker is NOT finished: **skip this ticket**
-   - Display: "Skipping {KEY}: waiting on {BLOCKER_KEY} to be merged into {FEATURE_BRANCH}"
-4. Detect **feature branch**: fetch the stack container issue, look for a `branch:` label. If found, `FEATURE_BRANCH` = label value (minus `branch:` prefix). Otherwise `FEATURE_BRANCH` = null.
-5. Determine base branch:
-   - Same-stack blocker exists that is finished AND `FEATURE_BRANCH` is set: base = `FEATURE_BRANCH` (blocker's changes are already in the feature branch)
-   - Same-stack blocker exists that is finished AND no feature branch: base = blocker's ticket key
-   - No same-stack blocker and `FEATURE_BRANCH` is set: base = `FEATURE_BRANCH`
-   - No same-stack blocker and no feature branch: base = `main`
+Parse the JSON output. Find the ticket's entry in the `stack` array. Use:
+- `FEATURE_BRANCH` = `container.featureBranch`
+- `BASE_BRANCH` = ticket's `baseBranch`
+- `BRANCH_NAME` = ticket's `branch` (or `{KEY}` if null)
+
+If the ticket's `eligible` is `false`:
+- **skip this ticket**
+- Display: "Skipping {KEY}: waiting on {unblockedBlockers[0]}"
 
 ## Q5: Prepare Working Directories (Sequential)
 
@@ -510,15 +473,8 @@ For each done ticket:
 
 1. Use `mcp__atlassian__getJiraIssue` to get outward "blocks" links
 2. Determine the **stack container** (subtask → parent Story key, otherwise → Epic key)
-3. For each blocked ticket sharing the same stack container:
-   - Get blocked ticket via `mcp__atlassian__getJiraIssue`
-   - Check if ALL of its same-stack "is blocked by" dependencies are "finished" (status category "done" OR has `ClaudeStackReady` label OR has `ClaudeNeedsReview` label)
-   - **Feature branch merge gate**: If `FEATURE_BRANCH` is set, additionally verify each finished blocker's branch has been merged into the feature branch:
-     ```bash
-     git merge-base --is-ancestor origin/{BLOCKER_BRANCH} origin/{FEATURE_BRANCH}
-     ```
-     If this check fails for any blocker, that dependency is NOT considered met.
-   - If all dependencies met (including merge gate) AND blocked ticket does NOT already have any of: `ClaudePlanning`, `ClaudePlanNeedsApproval`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`:
+3. For each blocked ticket sharing the same stack container, run `resolve-stack {BLOCKED_KEY} --repo-root {REPO_ROOT}` and check the blocked ticket's entry:
+   - If `eligible` is `true` AND the ticket does NOT already have any progress labels (`ClaudePlanning`, `ClaudePlanNeedsApproval`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`):
      - Verify blocked ticket is assigned to current user
      - If not assigned: skip and display "Skipping promotion of {BLOCKED_KEY}: not assigned to me"
      - Add `ClaudeReady` label: `update`: `{"labels": [{"add": "ClaudeReady"}]}`
@@ -618,36 +574,27 @@ Determine if we are already in the correct worktree:
 - Use `mcp__atlassian__getAccessibleAtlassianResources`
 - Store first resource `id` as `CLOUD_ID`
 
-### S1c: Fetch Ticket Data
+### S1c: Resolve Stack Context
 
-- Use `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
-- Store: summary, status, labels, issue links, epic/parent key
-- **Ensure `ClaudeWork` label**: If the ticket does not already have the `ClaudeWork` label, add it using `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "ClaudeWork"}]}`. This ensures every ticket processed by ticket-work is durably tagged.
-- Derive `BRANCH_NAME`: `BRANCH_NAME` = `{TICKET_KEY}` (e.g., `NEV-123`)
-  - If a branch already exists for this ticket (check with `git branch --list '{TICKET_KEY}*'`), use the existing branch name instead to avoid creating duplicates
-- Determine the **stack container**:
-  - If the ticket is a **subtask** (has a `parent` field that is a Story/Task, not an Epic): the stack container is the parent Story key. Stack siblings are other subtasks of that parent.
-  - Otherwise: the stack container is the ticket's Epic key. Stack siblings are other tickets linked to the same Epic.
-- Detect **feature branch** (from stack container labels):
-  - Fetch the stack container issue (parent Story or Epic) via `mcp__atlassian__getJiraIssue`
-  - Look for a label starting with `branch:` (e.g., `branch:feature-user-auth`)
-  - If found, strip the `branch:` prefix → `FEATURE_BRANCH` (e.g., `feature-user-auth`)
-  - If not found: `FEATURE_BRANCH` = `null` (standard workflow, tickets base off `main`)
-- Determine `BASE_BRANCH`:
-  - Check same-stack "is blocked by" links
-  - A blocker is "finished" if its Jira status category is "done" OR has `ClaudeStackReady` label OR has `ClaudeNeedsReview` label
-  - **Feature branch merge gate**: If `FEATURE_BRANCH` is set and a blocker is "finished" per the above, additionally verify the blocker's branch has been merged into the feature branch:
-    ```bash
-    git merge-base --is-ancestor origin/{BLOCKER_BRANCH} origin/{FEATURE_BRANCH}
-    ```
-    If this check fails (exit code non-zero), the blocker is NOT considered finished — do not start work. Display: "Blocked: {BLOCKER_KEY} not yet merged into {FEATURE_BRANCH}" and **stop**.
-  - If a blocker exists and is finished (including merge gate) AND `FEATURE_BRANCH` is set: `BASE_BRANCH` = `FEATURE_BRANCH` (blocker's changes are already in the feature branch)
-  - If a blocker exists and is finished (including merge gate) AND no feature branch: `BASE_BRANCH` = blocker's ticket key
-  - Otherwise if `FEATURE_BRANCH` is set: `BASE_BRANCH` = `FEATURE_BRANCH`
-  - Otherwise: `BASE_BRANCH` = `main`
-- Determine `PR_TARGET`:
-  - If `FEATURE_BRANCH` is set: `PR_TARGET` = `FEATURE_BRANCH`
-  - Otherwise: `PR_TARGET` = `BASE_BRANCH`
+Run:
+```bash
+resolve-stack {TICKET_KEY} --repo-root {CURRENT_ROOT} --fetch
+```
+
+Parse the JSON output. Extract:
+- `FEATURE_BRANCH` = `container.featureBranch` (null if standard workflow)
+- Find the input ticket in the `stack` array (where `key == TICKET_KEY`)
+- `BRANCH_NAME` = ticket's `branch` field (or `{TICKET_KEY}` if null)
+- `BASE_BRANCH` = ticket's `baseBranch`
+- `PR_TARGET` = ticket's `prTarget`
+- `CONTAINER_KEY` = `container.key`
+- `SUMMARY` = ticket's `summary`
+- `labels` = ticket's `labels` array
+
+If the ticket's `eligible` is `false` and `unblockedBlockers` is non-empty:
+- Display: "Blocked: waiting on {unblockedBlockers[0]}" and **stop**.
+
+- **Ensure `ClaudeWork` label**: If the ticket does not already have the `ClaudeWork` label, add it using `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "ClaudeWork"}]}`.
 
 ## S2: Ensure Working Directory Ready
 
@@ -734,59 +681,16 @@ Check if the file already exists:
 mkdir -p {WORK_DIR}/.claude/plans
 ```
 
-### S3b: Seed checklist from current state
+### S3b: Seed and write the checklist file
 
-When creating a **new** checklist (file didn't exist), infer which steps are already done. This ensures compatibility when a previous run already progressed the ticket.
-
-Use the Jira labels (from S1c) and artifact checks to determine initial state:
-
-| Check | Condition | Steps to mark `[x]` |
-|-------|-----------|---------------------|
-| Plan exists | File `{PLANS_DIR}/jira-{TICKET_KEY}.md` exists and has content | Step 1 |
-| Plan approved | Jira label `ClaudePlanApproved` is present, OR label `ClaudeExecuting` / `ClaudeStackReady` / `ClaudePRApproved` / `ClaudeNeedsReview` is present (implies approval already happened) | Steps 1, 2 |
-| Plan executed | Jira label `ClaudeStackReady` / `ClaudePRApproved` / `ClaudeNeedsReview` is present, OR label `ClaudeExecuting` is present AND all plan tasks are marked complete in the plan file | Steps 1, 2, 3, 4, 5 |
-| PR review plan exists | A PR review plan file exists in `{WORK_DIR}/.claude/plans/` matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md` | Steps 1-6 |
-| Stack ready | Jira label `ClaudeStackReady` or `ClaudePRApproved` or `ClaudeNeedsReview` is present | Steps 1-8 |
-| PR approved | Jira label `ClaudePRApproved` or `ClaudeNeedsReview` is present | Steps 1-9 |
-| PR exists | `gh pr view {BRANCH_NAME} --json number 2>/dev/null` succeeds | Steps 1-11 |
-
-Apply in reverse order (check the most-advanced state first) so you mark the correct set. Steps 12 and 13 are never pre-seeded — they always run fresh if unchecked.
-
-### S3c: Write the checklist file
-
-Write the file using the seeded state:
-
-```markdown
----
-ticket: {TICKET_KEY}
-branch: {BRANCH_NAME}
-summary: {SUMMARY}
-base_branch: {BASE_BRANCH}
-feature_branch: {FEATURE_BRANCH}
-pr_target: {PR_TARGET}
-work_dir: {WORK_DIR}
-serial: {SERIAL_MODE}
-created: {ISO_TIMESTAMP}
----
-
-# {TICKET_KEY} - Work Checklist
-
-- [{STEP1}] 1. Plan generated with /jira-start
-- [{STEP2}] 2. Plan approved
-- [{STEP3}] 3. Plan executed with /plan-execute
-- [{STEP4}] 4. Acceptance criteria verified against Gherkin
-- [{STEP5}] 5. Refactoring pass with @refactor agent
-- [{STEP6}] 6. PR review plan generated with /pr-review
-- [{STEP7}] 7. PR review plan executed with /pr-execute-plan
-- [{STEP8}] 8. Stack ready (unblocks downstream) — TERMINAL STATE
-- [{STEP9}] 9. PR approved
-- [{STEP10}] 10. PR description and title generated with /jay-pr-description
-- [{STEP11}] 11. PR pushed as draft
-- [ ] 12. Copilot review comments resolved
-- [ ] 13. PR review summary posted
+Run:
+```bash
+seed-checklist {TICKET_KEY} --work-dir {WORK_DIR} --branch {BRANCH_NAME} --base-branch {BASE_BRANCH} --pr-target {PR_TARGET} --summary "{SUMMARY}" {--feature-branch {FEATURE_BRANCH} if set} {--serial if SERIAL_MODE}
 ```
 
-Where each `{STEPN}` is `x` if seeded as done, or a space if not.
+Parse the JSON output. Write the `markdown` field to `{WORK_DIR}/.claude/plans/ticket-work-{TICKET_KEY}.md`.
+
+The script inspects Jira labels and local file state to determine which steps are already done, producing a pre-seeded checklist. Steps 12 and 13 are never pre-seeded.
 
 ## S4: Execute Checklist
 
@@ -1135,25 +1039,12 @@ Check the ticket's current labels:
 
 **Skip if**: step 11 is already checked `[x]`.
 
-1. Check if a PR already exists for this branch:
+1. Make sure we are in the working directory: `cd {WORK_DIR}`
+2. Run:
    ```bash
-   gh pr view {BRANCH_NAME} --json number,url 2>/dev/null
+   ensure-pr {BRANCH_NAME} --base {PR_TARGET} --body-file ./pr.md --draft
    ```
-2. If no PR exists:
-   a. Push the branch:
-      ```bash
-      cd {WORK_DIR} && git push -u origin {BRANCH_NAME}
-      ```
-   b. Read the generated PR description file (from step S4.10 output or `./pr.md` if it exists)
-   c. Create a draft PR targeting `{PR_TARGET}`:
-      ```bash
-      gh pr create --draft --base {PR_TARGET} --title "{PR_TITLE}" --body "{PR_BODY}"
-      ```
-      Use the title and body from the pr-description output.
-3. If a PR already exists: just ensure the latest is pushed:
-   ```bash
-   cd {WORK_DIR} && git push
-   ```
+3. Parse the JSON output. Store `pr.url` as `PR_URL`.
 4. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudePRApproved"}, {"add": "ClaudeNeedsReview"}]}`
 5. Mark step 11 as `[x]`
@@ -1177,26 +1068,13 @@ After pushing the PR, Copilot may leave review comments. This step runs a single
 
 **Skip if**: step 13 is already checked `[x]`.
 
-1. Read the PR review plan file from `{WORK_DIR}/.claude/plans/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`)
-2. Build a summary comment in the following format:
-   ```
-   ## Claude Code Review Summary
-
-   ### Issues Found
-   - **{issue title}**: {brief description} — **{resolved|open}**
-   ...
-
-   ### Resolutions
-   - {issue}: {what was changed to fix it}
-   ...
-
-   N issues found, M resolved.
-   ```
-3. Post the comment to the PR:
+1. Make sure we are in the working directory: `cd {WORK_DIR}`
+2. Run:
    ```bash
-   gh pr comment {BRANCH_NAME} --body "{REVIEW_SUMMARY}"
+   post-review-summary {BRANCH_NAME} --plans-dir .claude/plans --ticket-key {TICKET_KEY}
    ```
-4. Mark step 13 as `[x]`
+3. If the output shows `posted: true`, mark step 13 as `[x]`.
+4. If `posted: false` with reason `no_plan_file`, mark step 13 as `[x]` anyway (nothing to post).
 
 ---
 
@@ -1220,25 +1098,15 @@ All steps completed. PR is ready for human review.
 
 After reaching stack-ready (step 8) or completing all steps, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
 
-### S6a: Find Downstream Tickets
+### S6a: Find Eligible Downstream Tickets
 
-1. Use `mcp__atlassian__getJiraIssue` to get the completed ticket's outward "blocks" links
-2. Determine the **stack container** (subtask → parent Story key, otherwise → Epic key)
-3. Filter to blocked tickets that share the same stack container
+Run `resolve-stack {TICKET_KEY} --repo-root {REPO_ROOT}` to refresh the stack state after this ticket completed.
 
-### S6b: Check Eligibility
+From the `stack` array, find tickets that come after the current ticket and have `eligible == true`. These are the downstream tickets now unblocked.
 
-For each downstream ticket in the same stack:
-
-1. Use `mcp__atlassian__getJiraIssue` to fetch the blocked ticket
-2. Verify it is assigned to the current user — if not, skip it
-3. Check ALL of its same-stack "is blocked by" dependencies are "finished" (status category "done" OR has `ClaudeStackReady` label OR has `ClaudeNeedsReview` label)
-4. **Feature branch merge gate**: If `FEATURE_BRANCH` is set, additionally verify each finished blocker's branch has been merged into the feature branch:
-   ```bash
-   git merge-base --is-ancestor origin/{BLOCKER_BRANCH} origin/{FEATURE_BRANCH}
-   ```
-   If this check fails for any blocker, that dependency is NOT considered met — skip the downstream ticket.
-5. Skip tickets that already have any of: `ClaudePlanning`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`
+Filter out:
+- Tickets not assigned to the current user
+- Tickets that already have any progress label (`ClaudePlanning`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`)
 
 ### S6c: Promote and Run Next Ticket
 

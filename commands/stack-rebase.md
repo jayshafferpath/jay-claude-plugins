@@ -12,37 +12,29 @@ allowed-tools:
   - Bash(git worktree *)
   - Bash(git diff *)
   - Bash(gh pr edit *)
+  - Bash(resolve-stack *)
 ---
 
 # Stack Rebase - Cascade rebase through a stacked PR chain
 
 Given a ticket key, rebase all downstream stacked tickets (connected via "blocks" links within the same stack container — either an Epic or a parent Story for subtasks).
 
-## Step 1: Get Atlassian Cloud ID
+## Step 1: Resolve Stack
 
-- Use `mcp__atlassian__getAccessibleAtlassianResources`
-- Extract `id` from first resource — store as `CLOUD_ID`
+Run:
+```bash
+resolve-stack {given_ticket_key} --fetch
+```
 
-## Step 2: Build the Stack Chain
+Parse the JSON output. Extract:
+- `CONTAINER_KEY` = `container.key`
+- `CONTAINER_TYPE` = `container.type`
+- `STACK_CHAIN` = `stack` array (topologically sorted with branch names)
+- `REPO_ROOT` = `container.repoRoot`
 
-Starting from the given ticket key, walk the full stack in both directions:
+Find the given ticket's index in `STACK_CHAIN` (from `ticketIndex`).
 
-### 2a: Walk Upstream
-
-1. Use `mcp__atlassian__getJiraIssue` to get the ticket with issue links
-2. Determine the **stack container**:
-   - If the ticket is a **subtask** (has a `parent` field that is a Story/Task, not an Epic): the stack container is the parent Story key (`CONTAINER_KEY`). Stack siblings are other subtasks of that parent.
-   - Otherwise: the stack container is the ticket's Epic key (`CONTAINER_KEY`). Stack siblings are other tickets linked to the same Epic.
-3. Follow "is blocked by" links where the blocker shares the same stack container
-4. Repeat until you find a ticket with no same-stack blocker — this is the **stack root**
-
-### 2b: Walk Downstream from Root
-
-1. Starting from the stack root, follow outward "blocks" links where the blocked ticket shares the same stack container
-2. Build an ordered list: `[root, next, next, ...]`
-3. Store as `STACK_CHAIN`
-
-### 2c: Display the Stack
+### Display the Stack
 
 ```
 Stack detected ({CONTAINER_TYPE}: {CONTAINER_KEY}):
@@ -55,15 +47,10 @@ Starting rebase from: {given_ticket_key}
 
 ## Step 3: Determine Rebase Scenario
 
-Check whether the given ticket's branch has been merged into main:
+Check the given ticket's entry in `STACK_CHAIN` — use its `mergedIntoMain` field from the resolve-stack output:
 
-```bash
-git fetch origin
-git branch -r --merged origin/main | grep origin/{given_ticket_key}
-```
-
-- **Scenario A — Branch merged to main**: The branch appears in merged list
-- **Scenario B — Branch updated (not merged)**: The branch exists but is not merged
+- **Scenario A — Branch merged to main**: `mergedIntoMain` is `true`
+- **Scenario B — Branch updated (not merged)**: `mergedIntoMain` is `false`
 
 Display: "Scenario: {A or B} — {merged to main / branch updated}"
 
