@@ -1,0 +1,211 @@
+import { describe, expect, it } from "vitest";
+import { buildStacks } from "../lib/stacks.js";
+
+function issue(key, opts = {}) {
+  return {
+    key,
+    fields: {
+      summary: opts.summary || `Summary for ${key}`,
+      labels: opts.labels || [],
+      parent: opts.parent || null,
+      issuetype: { name: opts.issuetype || "Task" },
+      issuelinks: opts.issuelinks || [],
+      status: opts.status || { statusCategory: { key: "indeterminate" } },
+    },
+  };
+}
+
+describe("buildStacks", () => {
+  it("groups standalone issues into a Standalone stack", () => {
+    const issues = [issue("A-1"), issue("A-2")];
+    const stacks = buildStacks(issues);
+    expect(stacks).toHaveLength(1);
+    expect(stacks[0].containerKey).toBe("Standalone");
+    expect(stacks[0].tickets).toHaveLength(2);
+  });
+
+  it("groups subtasks under their parent", () => {
+    const issues = [
+      issue("SUB-1", {
+        issuetype: "Sub-task",
+        parent: { key: "PARENT-1", fields: { summary: "Parent task" } },
+      }),
+      issue("SUB-2", {
+        issuetype: "Subtask",
+        parent: { key: "PARENT-1", fields: { summary: "Parent task" } },
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    expect(stacks).toHaveLength(1);
+    expect(stacks[0].containerKey).toBe("PARENT-1");
+    expect(stacks[0].containerSummary).toBe("Parent task");
+    expect(stacks[0].tickets).toHaveLength(2);
+  });
+
+  it("groups issues linked to an epic under that epic", () => {
+    const issues = [
+      issue("T-1", {
+        issuelinks: [
+          {
+            type: { name: "Epic" },
+            outwardIssue: {
+              key: "EPIC-1",
+              fields: { summary: "My Epic", issuetype: { name: "Epic" } },
+            },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    expect(stacks).toHaveLength(1);
+    expect(stacks[0].containerKey).toBe("EPIC-1");
+    expect(stacks[0].containerSummary).toBe("My Epic");
+  });
+
+  it("respects blocking link ordering via topological sort", () => {
+    const issues = [
+      issue("T-3", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-2" },
+          },
+        ],
+      }),
+      issue("T-1"),
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-1" },
+          },
+          {
+            type: { outward: "blocks" },
+            outwardIssue: { key: "T-3" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const keys = stacks[0].tickets.map((t) => t.key);
+    expect(keys.indexOf("T-1")).toBeLessThan(keys.indexOf("T-2"));
+    expect(keys.indexOf("T-2")).toBeLessThan(keys.indexOf("T-3"));
+  });
+
+  it("sets waitingOn when a blocker is unfinished", () => {
+    const issues = [
+      issue("T-1"),
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-1" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
+    expect(t2.waitingOn).toBe("T-1");
+  });
+
+  it("clears waitingOn when blocker is finished (done status)", () => {
+    const issues = [
+      issue("T-1", { status: { statusCategory: { key: "done" } } }),
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-1" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
+    expect(t2.waitingOn).toBeNull();
+  });
+
+  it("clears waitingOn when blocker has ClaudeStackReady label", () => {
+    const issues = [
+      issue("T-1", { labels: ["ClaudeStackReady"] }),
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-1" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
+    expect(t2.waitingOn).toBeNull();
+  });
+
+  it("clears waitingOn when blocker has ClaudeNeedsReview label", () => {
+    const issues = [
+      issue("T-1", { labels: ["ClaudeNeedsReview"] }),
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-1" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
+    expect(t2.waitingOn).toBeNull();
+  });
+
+  it("ignores blockers not in the issue set", () => {
+    const issues = [
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "EXTERNAL-1" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
+    expect(t2.waitingOn).toBeNull();
+  });
+
+  it("sorts stacks alphabetically by containerKey", () => {
+    const issues = [
+      issue("Z-1", {
+        issuetype: "Sub-task",
+        parent: { key: "ZEBRA-1", fields: { summary: "" } },
+      }),
+      issue("A-1", {
+        issuetype: "Sub-task",
+        parent: { key: "ALPHA-1", fields: { summary: "" } },
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    expect(stacks[0].containerKey).toBe("ALPHA-1");
+    expect(stacks[1].containerKey).toBe("ZEBRA-1");
+  });
+
+  it("includes blocks array on each ticket", () => {
+    const issues = [
+      issue("T-1", {
+        issuelinks: [
+          {
+            type: { outward: "blocks" },
+            outwardIssue: { key: "T-2" },
+          },
+        ],
+      }),
+      issue("T-2"),
+    ];
+    const stacks = buildStacks(issues);
+    const t1 = stacks[0].tickets.find((t) => t.key === "T-1");
+    expect(t1.blocks).toEqual(["T-2"]);
+  });
+});

@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
-import { execSync } from "node:child_process";
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { readChecklist, syncChecklistToJira } from "../lib/checklist.js";
+import { detectWorkDir } from "../lib/util.js";
 
 const ticketKey = process.argv[2]?.toUpperCase();
 
@@ -13,36 +12,8 @@ if (!ticketKey) {
 }
 
 const workDir = process.argv[3] || process.cwd();
-
-function detectWorkDir() {
-  const explicit = join(
-    workDir,
-    ".claude",
-    "plans",
-    `ticket-work-${ticketKey}.md`,
-  );
-  if (existsSync(explicit)) return workDir;
-
-  try {
-    const repoRoot = execSync("git rev-parse --show-toplevel", {
-      cwd: workDir,
-      encoding: "utf-8",
-      stdio: ["pipe", "pipe", "pipe"],
-    }).trim();
-
-    const inRepo = join(
-      repoRoot,
-      ".claude",
-      "plans",
-      `ticket-work-${ticketKey}.md`,
-    );
-    if (existsSync(inRepo)) return repoRoot;
-  } catch {}
-
-  return null;
-}
-
-const resolvedDir = detectWorkDir();
+const relPath = join(".claude", "plans", `ticket-work-${ticketKey}.md`);
+const resolvedDir = detectWorkDir(workDir, relPath);
 
 if (!resolvedDir) {
   console.error(`No checklist found for ${ticketKey} in ${workDir}`);

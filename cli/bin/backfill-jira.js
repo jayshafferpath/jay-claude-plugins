@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 
+import { loadEnv } from "../lib/env.js";
+
+loadEnv();
+
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -8,49 +12,21 @@ import {
   syncChecklistToJira,
   syncPlanToJira,
 } from "../lib/checklist.js";
+import { loadDevRoot } from "../lib/config.js";
+import { findWorktree } from "../lib/git.js";
+import { searchIssues } from "../lib/jira.js";
 
-const TICKETS = [
-  ["NEV-426", "/Users/jayshaffer/dev/employer-backend-root/NEV-426"],
-  ["NEV-433", "/Users/jayshaffer/dev/employer-backend-root/NEV-433"],
-  ["NEV-438", "/Users/jayshaffer/dev/employer-backend-root/NEV-438"],
-  ["NEV-509", "/Users/jayshaffer/dev/employer-backend-root/NEV-509"],
-  ["NEV-517", "/Users/jayshaffer/dev/employer-backend-root/NEV-517"],
-  ["NEV-518", "/Users/jayshaffer/dev/employer-backend-root/NEV-518"],
-  ["NEV-522", "/Users/jayshaffer/dev/employer-backend-root/NEV-522"],
-  ["NEV-523", "/Users/jayshaffer/dev/employer-backend-root/NEV-523"],
-  ["NEV-526", "/Users/jayshaffer/dev/employer-backend-root/NEV-526"],
-  ["NEV-527", "/Users/jayshaffer/dev/employer-backend-root/NEV-527"],
-  ["NEV-529", "/Users/jayshaffer/dev/employer-backend-root/NEV-529"],
-  ["NEV-530", "/Users/jayshaffer/dev/employer-backend-root/NEV-530"],
-  ["NEV-566", "/Users/jayshaffer/dev/employer-backend-root/NEV-566"],
-  ["NEV-618", "/Users/jayshaffer/dev/employer-backend-root/NEV-618"],
-  ["NEV-619", "/Users/jayshaffer/dev/employer-backend-root/NEV-619"],
-  ["NEV-620", "/Users/jayshaffer/dev/employer-backend-root/NEV-620"],
-  ["NEV-621", "/Users/jayshaffer/dev/employer-backend-root/NEV-621"],
-  ["NEV-622", "/Users/jayshaffer/dev/employer-backend-root/NEV-622"],
-  ["NEV-661", "/Users/jayshaffer/dev/NEV-661"],
-  ["NEV-688", "/Users/jayshaffer/dev/employer-backend-root/NEV-688"],
-  ["NEV-690", "/Users/jayshaffer/dev/employer-backend-root/NEV-690"],
-  ["NEV-691", "/Users/jayshaffer/dev/employer-backend-root/NEV-691"],
-  ["NEV-692", "/Users/jayshaffer/dev/employer-backend-root/NEV-692"],
-  ["NEV-708", "/Users/jayshaffer/dev/employer-backend-root/NEV-708"],
-  ["NEV-804", "/Users/jayshaffer/dev/employer-backend-root/NEV-804"],
-  ["NEV-872", "/Users/jayshaffer/dev/employer-backend-root/NEV-872"],
-  ["NEV-874", "/Users/jayshaffer/dev/employer-backend-root/NEV-874"],
-  ["NEV-876", "/Users/jayshaffer/dev/employer-backend-root/NEV-876"],
-  ["NEV-877", "/Users/jayshaffer/dev/employer-backend-root/NEV-877"],
-  ["NEV-879", "/Users/jayshaffer/dev/employer-backend-root/NEV-879"],
-  ["NEV-881", "/Users/jayshaffer/dev/employer-backend-root/NEV-881"],
-  ["NEV-898", "/Users/jayshaffer/dev/NEV-898"],
-  ["NEV-902", "/Users/jayshaffer/dev/employer-backend-root/NEV-902"],
-  ["NEV-904", "/Users/jayshaffer/dev/employer-backend-root/NEV-904"],
-  ["NEV-934", "/Users/jayshaffer/dev/employer-backend-root/NEV-934"],
-  ["NEV-935", "/Users/jayshaffer/dev/employer-backend-root/NEV-935"],
-  ["NEV-937", "/Users/jayshaffer/dev/employer-backend-root/NEV-937"],
-  ["NEV-938", "/Users/jayshaffer/dev/employer-backend-root/NEV-938"],
-  ["NEV-939", "/Users/jayshaffer/dev/employer-backend-root/NEV-939"],
-  ["NEV-940", "/Users/jayshaffer/dev/employer-backend-root/NEV-940"],
-];
+const DEV_ROOT = loadDevRoot();
+
+if (!DEV_ROOT) {
+  console.error("DEV_ROOT not set. Cannot discover ticket worktrees.");
+  process.exit(1);
+}
+
+const issues = await searchIssues(
+  'labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done',
+  ["key", "labels"],
+);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -58,7 +34,22 @@ let synced = 0;
 let skipped = 0;
 let failed = 0;
 
-for (const [key, dir] of TICKETS) {
+for (const issue of issues) {
+  const key = issue.key;
+  const labels = issue.fields.labels || [];
+  const repoLabel = labels.find((l) => l.startsWith("repo:"));
+  const repoName = repoLabel ? repoLabel.slice(5) : null;
+  const repoRoot = repoName ? join(DEV_ROOT, repoName) : null;
+
+  const worktree =
+    repoRoot && existsSync(repoRoot) ? findWorktree(key, repoRoot) : null;
+
+  const dir = worktree || repoRoot;
+  if (!dir || !existsSync(dir)) {
+    skipped++;
+    continue;
+  }
+
   const checklistPath = join(dir, ".claude", "plans", `ticket-work-${key}.md`);
   const planPath = join(dir, ".claude", "plans", `jira-${key}.md`);
 
