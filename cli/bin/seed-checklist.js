@@ -139,9 +139,7 @@ try {
         done,
       }));
       await syncChecklistToJira(ticketKey, stepsOutput);
-      console.log(
-        JSON.stringify({ steps: stepsOutput, source: "seeded" }),
-      );
+      console.log(JSON.stringify({ steps: stepsOutput, source: "seeded" }));
     }
   } else {
     const steps = await seedSteps();

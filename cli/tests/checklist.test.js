@@ -580,15 +580,13 @@ describe("markPlanTaskDone", () => {
 
   it("throws when task is already done", async () => {
     getComments.mockResolvedValue([planComment]);
-    await expect(
-      markPlanTaskDone("TICK-1", "Create schema"),
-    ).rejects.toThrow('Task not found or already done: "Create schema"');
+    await expect(markPlanTaskDone("TICK-1", "Create schema")).rejects.toThrow(
+      'Task not found or already done: "Create schema"',
+    );
   });
 
   it("creates new comment when no existing plan comment", async () => {
-    const noMarkerComments = [
-      { id: "1", body: { type: "doc", content: [] } },
-    ];
+    const noMarkerComments = [{ id: "1", body: { type: "doc", content: [] } }];
     getComments
       .mockResolvedValueOnce([planComment])
       .mockResolvedValueOnce(noMarkerComments);

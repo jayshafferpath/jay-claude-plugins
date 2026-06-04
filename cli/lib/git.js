@@ -117,15 +117,15 @@ export function getWorktreeList(repoRoot) {
 
 export function getStageCommits(ticketKey, cwd) {
   if (!ticketKey || !cwd) return [];
-  const result = run(
-    `git log --oneline --grep="^\\[${ticketKey}\\]"`,
-    cwd,
-  );
+  const result = run(`git log --oneline --grep="^\\[${ticketKey}\\]"`, cwd);
   if (!result) return [];
-  return result.split("\n").filter(Boolean).map((line) => {
-    const match = line.match(/^\w+ \[.+?\] (.+)$/);
-    return match ? match[1] : line;
-  });
+  return result
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const match = line.match(/^\w+ \[.+?\] (.+)$/);
+      return match ? match[1] : line;
+    });
 }
 
 export function hasStageCommit(ticketKey, stagePrefix, cwd) {
@@ -139,10 +139,7 @@ export function hasStageCommit(ticketKey, stagePrefix, cwd) {
 
 export function getLastStageCommitSha(ticketKey, baseBranch, cwd) {
   if (!ticketKey || !cwd) return null;
-  const sha = run(
-    `git log --grep="^\\[${ticketKey}\\]" -1 --format="%H"`,
-    cwd,
-  );
+  const sha = run(`git log --grep="^\\[${ticketKey}\\]" -1 --format="%H"`, cwd);
   if (sha) return sha;
   return run(`git merge-base HEAD origin/${baseBranch || "main"}`, cwd);
 }

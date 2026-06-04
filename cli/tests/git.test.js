@@ -362,12 +362,8 @@ describe("getLastStageCommitSha", () => {
   });
 
   it("falls back to merge-base when no stage commits", () => {
-    execSync
-      .mockReturnValueOnce("")
-      .mockReturnValueOnce("base789abc");
-    expect(getLastStageCommitSha("TICK-1", "main", "/repo")).toBe(
-      "base789abc",
-    );
+    execSync.mockReturnValueOnce("").mockReturnValueOnce("base789abc");
+    expect(getLastStageCommitSha("TICK-1", "main", "/repo")).toBe("base789abc");
   });
 
   it("returns null when both git log and merge-base fail", () => {
