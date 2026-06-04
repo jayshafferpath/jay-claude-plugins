@@ -1,8 +1,13 @@
 #!/usr/bin/env node
 
-import { readFileSync, existsSync } from "fs";
-import { join } from "path";
-import { readChecklist, readExecutionPlanRaw, syncChecklistToJira, syncPlanToJira } from "../lib/checklist.js";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import {
+  readChecklist,
+  readExecutionPlanRaw,
+  syncChecklistToJira,
+  syncPlanToJira,
+} from "../lib/checklist.js";
 
 const TICKETS = [
   ["NEV-426", "/Users/jayshaffer/dev/employer-backend-root/NEV-426"],
@@ -68,7 +73,7 @@ for (const [key, dir] of TICKETS) {
   try {
     if (hasChecklist) {
       const checklist = readChecklist(dir, key);
-      if (checklist && checklist.steps.length) {
+      if (checklist?.steps.length) {
         await syncChecklistToJira(key, checklist.steps);
         const done = checklist.steps.filter((s) => s.done).length;
         console.log(`✓ ${key} checklist: ${done}/${checklist.steps.length}`);
@@ -95,4 +100,6 @@ for (const [key, dir] of TICKETS) {
   }
 }
 
-console.log(`\nDone. Synced: ${synced}, Skipped: ${skipped}, Failed: ${failed}`);
+console.log(
+  `\nDone. Synced: ${synced}, Skipped: ${skipped}, Failed: ${failed}`,
+);

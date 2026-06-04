@@ -1,10 +1,14 @@
-import { execSync } from "child_process";
-import { existsSync } from "fs";
-import { join } from "path";
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 function run(cmd, cwd) {
   try {
-    return execSync(cmd, { cwd, encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+    return execSync(cmd, {
+      cwd,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
   } catch {
     return null;
   }
@@ -38,10 +42,7 @@ export function findWorktree(ticketKey, repoRoot) {
 
 export function getPrInfo(branchName, cwd) {
   if (!branchName || !cwd) return null;
-  const result = run(
-    `gh pr view ${branchName} --json number,url,state`,
-    cwd
-  );
+  const result = run(`gh pr view ${branchName} --json number,url,state`, cwd);
   if (!result) return null;
   try {
     return JSON.parse(result);
@@ -52,7 +53,10 @@ export function getPrInfo(branchName, cwd) {
 
 export function getRepoSlug(cwd) {
   if (!cwd) return null;
-  const result = run("gh repo view --json nameWithOwner --jq .nameWithOwner", cwd);
+  const result = run(
+    "gh repo view --json nameWithOwner --jq .nameWithOwner",
+    cwd,
+  );
   return result || null;
 }
 
@@ -60,7 +64,7 @@ export function getPrDetails(branchName, cwd) {
   if (!branchName || !cwd) return null;
   const result = run(
     `gh pr view ${branchName} --json number,url,state,title,additions,deletions,changedFiles,reviewDecision,statusCheckRollup,reviews,mergeable,headRefName,baseRefName`,
-    cwd
+    cwd,
   );
   if (!result) return null;
   try {
@@ -72,10 +76,7 @@ export function getPrDetails(branchName, cwd) {
 
 export function getPrDiffStat(branchName, cwd) {
   if (!branchName || !cwd) return null;
-  const result = run(
-    `gh pr diff ${branchName} --stat`,
-    cwd
-  );
+  const result = run(`gh pr diff ${branchName} --stat`, cwd);
   return result || null;
 }
 

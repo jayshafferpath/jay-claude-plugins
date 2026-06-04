@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
-import { execSync } from "child_process";
+import { execSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { readExecutionPlanRaw, syncPlanToJira } from "../lib/checklist.js";
 
 const ticketKey = process.argv[2]?.toUpperCase();
@@ -50,7 +50,9 @@ try {
   await syncPlanToJira(ticketKey, planContent);
   const tasks = (planContent.match(/^- \[[ x]\]/gm) || []).length;
   const completed = (planContent.match(/^- \[x\]/gm) || []).length;
-  console.log(`Synced plan to ${ticketKey}: ${completed}/${tasks} tasks complete.`);
+  console.log(
+    `Synced plan to ${ticketKey}: ${completed}/${tasks} tasks complete.`,
+  );
 } catch (err) {
   console.error(`Failed to sync plan: ${err.message}`);
   process.exit(1);

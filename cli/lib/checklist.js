@@ -1,8 +1,8 @@
-import { readFileSync, existsSync } from "fs";
-import { execSync } from "child_process";
-import { join } from "path";
+import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { addComment, getComments, updateComment } from "./jira.js";
 import { glob } from "./util.js";
-import { getComments, addComment, updateComment } from "./jira.js";
 
 function parseChecklist(content) {
   const steps = [];
@@ -42,7 +42,11 @@ function gitShow(branch, filePath, cwd) {
   }
 }
 
-export function readChecklist(worktreeDir, ticketKey, { branch, repoRoot } = {}) {
+export function readChecklist(
+  worktreeDir,
+  ticketKey,
+  { branch, repoRoot } = {},
+) {
   const relPath = `.claude/plans/ticket-work-${ticketKey}.md`;
 
   if (worktreeDir) {
@@ -60,7 +64,11 @@ export function readChecklist(worktreeDir, ticketKey, { branch, repoRoot } = {})
   return null;
 }
 
-export function readReviewPlan(worktreeDir, ticketKey, { branch, repoRoot } = {}) {
+export function readReviewPlan(
+  worktreeDir,
+  _ticketKey,
+  { branch, repoRoot } = {},
+) {
   if (worktreeDir) {
     const plansDir = join(worktreeDir, ".claude", "plans");
     if (existsSync(plansDir)) {
@@ -92,7 +100,11 @@ function parseReviewContent(content) {
   return { total: issues, resolved, open: issues - resolved };
 }
 
-export function readExecutionPlan(worktreeDir, ticketKey, { branch, repoRoot } = {}) {
+export function readExecutionPlan(
+  worktreeDir,
+  ticketKey,
+  { branch, repoRoot } = {},
+) {
   const relPath = `.claude/plans/jira-${ticketKey}.md`;
 
   if (worktreeDir) {
@@ -121,10 +133,17 @@ const CHECKLIST_MARKER = "[claude-checklist-sync]";
 function checklistToAdf(steps) {
   const items = steps.map((s) => ({
     type: "listItem",
-    content: [{
-      type: "paragraph",
-      content: [{ type: "text", text: `${s.done ? "✅" : "⬜"} ${s.num}. ${s.label}` }],
-    }],
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: `${s.done ? "✅" : "⬜"} ${s.num}. ${s.label}`,
+          },
+        ],
+      },
+    ],
   }));
 
   return {
@@ -134,8 +153,16 @@ function checklistToAdf(steps) {
       {
         type: "paragraph",
         content: [
-          { type: "text", text: `${CHECKLIST_MARKER} `, marks: [{ type: "code" }] },
-          { type: "text", text: "Execution checklist", marks: [{ type: "strong" }] },
+          {
+            type: "text",
+            text: `${CHECKLIST_MARKER} `,
+            marks: [{ type: "code" }],
+          },
+          {
+            type: "text",
+            text: "Execution checklist",
+            marks: [{ type: "strong" }],
+          },
         ],
       },
       { type: "bulletList", content: items },
@@ -144,7 +171,7 @@ function checklistToAdf(steps) {
 }
 
 export async function syncChecklistToJira(ticketKey, steps) {
-  if (!steps || !steps.length) return;
+  if (!steps?.length) return;
 
   const adfBody = checklistToAdf(steps);
 
@@ -207,10 +234,14 @@ function planToAdf(sections) {
 
     const items = section.tasks.map((t) => ({
       type: "listItem",
-      content: [{
-        type: "paragraph",
-        content: [{ type: "text", text: `${t.done ? "✅" : "⬜"} ${t.label}` }],
-      }],
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            { type: "text", text: `${t.done ? "✅" : "⬜"} ${t.label}` },
+          ],
+        },
+      ],
     }));
 
     content.push({ type: "bulletList", content: items });
@@ -219,7 +250,11 @@ function planToAdf(sections) {
   return { version: 1, type: "doc", content };
 }
 
-export function readExecutionPlanRaw(worktreeDir, ticketKey, { branch, repoRoot } = {}) {
+export function readExecutionPlanRaw(
+  worktreeDir,
+  ticketKey,
+  { branch, repoRoot } = {},
+) {
   const relPath = `.claude/plans/jira-${ticketKey}.md`;
 
   if (worktreeDir) {
@@ -346,7 +381,7 @@ function parsePlanSectionsFromComment(adfBody) {
   const sections = [];
   let currentSection = null;
 
-  if (!adfBody || !adfBody.content) return null;
+  if (!adfBody?.content) return null;
 
   for (const node of adfBody.content) {
     if (node.type === "heading") {
@@ -370,7 +405,10 @@ function parsePlanSectionsFromComment(adfBody) {
   if (!withTasks.length) return null;
 
   const total = withTasks.reduce((sum, s) => sum + s.tasks.length, 0);
-  const completed = withTasks.reduce((sum, s) => sum + s.tasks.filter((t) => t.done).length, 0);
+  const completed = withTasks.reduce(
+    (sum, s) => sum + s.tasks.filter((t) => t.done).length,
+    0,
+  );
 
   return { sections: withTasks, total, completed };
 }
