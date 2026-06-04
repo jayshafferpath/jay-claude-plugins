@@ -16,10 +16,9 @@ import {
   readExecutionPlanFromJira,
   readPlanSectionsFromJira,
 } from "../../cli/lib/checklist.js";
-import { labelState, actionHint, topologicalSort } from "../../cli/lib/util.js";
+import { buildStacks as buildStacksCore } from "../../cli/lib/stacks.js";
+import { labelState, actionHint, resolveRepoRoot } from "../../cli/lib/util.js";
 import { loadDevRoot, getJiraAuth } from "../../cli/lib/config.js";
-import { existsSync, readFileSync } from "fs";
-import { join } from "path";
 
 const DEV_ROOT = loadDevRoot();
 const JIRA_DOMAIN = getJiraAuth()?.domain || null;
@@ -28,87 +27,20 @@ const app = Fastify({ logger: true });
 await app.register(cors, { origin: true });
 
 async function buildStacks(issues) {
-  const containerCache = new Map();
-  const containerLabels = new Map();
-  const grouped = new Map();
-  const blockingLinks = [];
+  const stacks = buildStacksCore(issues);
 
-  for (const issue of issues) {
-    const key = issue.key;
-    const fields = issue.fields;
-    const labels = fields.labels || [];
-    const parent = fields.parent;
-    const issuetype = fields.issuetype?.name || "";
-
-    let containerKey = null;
-    if (parent && ["Sub-task", "Subtask"].includes(issuetype)) {
-      containerKey = parent.key;
-      if (!containerCache.has(containerKey)) {
-        containerCache.set(containerKey, parent.fields?.summary || "");
-      }
-    } else {
-      const epicLink = fields.issuelinks?.find(
-        (l) =>
-          l.type?.name === "Epic" ||
-          l.outwardIssue?.fields?.issuetype?.name === "Epic"
-      );
-      if (epicLink?.outwardIssue) {
-        containerKey = epicLink.outwardIssue.key;
-        containerCache.set(
-          containerKey,
-          epicLink.outwardIssue.fields?.summary || ""
-        );
-      }
-    }
-
-    if (!containerKey) containerKey = "Standalone";
-    if (!containerCache.has(containerKey)) {
-      containerCache.set(containerKey, "");
-    }
-
-    if (!grouped.has(containerKey)) grouped.set(containerKey, []);
-
-    const blockers = (fields.issuelinks || [])
-      .filter((l) => l.type?.inward === "is blocked by" && l.inwardIssue)
-      .map((l) => l.inwardIssue.key);
-
-    const blocks = (fields.issuelinks || [])
-      .filter((l) => l.type?.outward === "blocks" && l.outwardIssue)
-      .map((l) => l.outwardIssue.key);
-
-    for (const blocker of blockers) {
-      blockingLinks.push({ from: blocker, to: key });
-    }
-
-    const isFinished = (k) =>
-      issues.some(
-        (i) =>
-          i.key === k &&
-          (i.fields.status?.statusCategory?.key === "done" ||
-            i.fields.labels?.includes("ClaudeStackReady") ||
-            i.fields.labels?.includes("ClaudeNeedsReview"))
-      );
-
-    const unfinishedBlockers = blockers.filter(
-      (b) => issues.some((i) => i.key === b) && !isFinished(b)
-    );
-
-    const state = labelState(labels);
-
-    grouped.get(containerKey).push({
-      key,
-      summary: fields.summary,
-      labels,
-      blockers,
-      blocks,
-      waitingOn: unfinishedBlockers.length ? unfinishedBlockers[0] : null,
-      state: state.display,
-      stateLabel: state.label,
-      actionHint: actionHint(state.label),
-    });
+  for (const ticket of stacks.flatMap((s) => s.tickets)) {
+    const state = labelState(ticket.labels);
+    ticket.state = state.display;
+    ticket.stateLabel = state.label;
+    ticket.actionHint = actionHint(state.label);
   }
 
-  const containerKeys = [...grouped.keys()].filter((k) => k !== "Standalone");
+  const containerKeys = stacks
+    .map((s) => s.containerKey)
+    .filter((k) => k !== "Standalone");
+
+  const containerLabels = new Map();
   await Promise.all(
     containerKeys.map(async (key) => {
       try {
@@ -117,47 +49,26 @@ async function buildStacks(issues) {
       } catch {
         containerLabels.set(key, []);
       }
-    })
+    }),
   );
 
-  const allTickets = [...grouped.values()].flat();
+  const allTickets = stacks.flatMap((s) => s.tickets);
   await Promise.all(
     allTickets.map(async (ticket) => {
-      const repoLabel = ticket.labels.find((l) => l.startsWith("repo:"));
-      let repoRoot = null;
-      if (repoLabel && DEV_ROOT) {
-        const repoName = repoLabel.slice(5);
-        const candidate = join(DEV_ROOT, repoName);
-        if (existsSync(candidate)) repoRoot = candidate;
-      }
+      const repoRoot = resolveRepoRoot(ticket.labels, DEV_ROOT);
       const branch = findBranch(ticket.key, repoRoot);
       const worktree = findWorktree(ticket.key, repoRoot);
       const pr = getPrInfo(branch, repoRoot || worktree);
       ticket.pr = pr ? { url: pr.url, state: pr.state } : null;
-    })
+    }),
   );
 
-  const stacks = [];
-  for (const [containerKey, tickets] of grouped) {
-    const sorted = topologicalSort(tickets, blockingLinks);
-    const orderedTickets = sorted
-      .map((k) => tickets.find((t) => t.key === k))
-      .filter(Boolean);
-    const remaining = tickets.filter((t) => !sorted.includes(t.key));
-
-    const labels = containerLabels.get(containerKey) || [];
+  for (const stack of stacks) {
+    const labels = containerLabels.get(stack.containerKey) || [];
     const branchLabel = labels.find((l) => l.startsWith("branch:"));
-    const featureBranch = branchLabel ? branchLabel.slice(7) : null;
-
-    stacks.push({
-      containerKey,
-      containerSummary: containerCache.get(containerKey) || "",
-      featureBranch,
-      tickets: [...orderedTickets, ...remaining],
-    });
+    stack.featureBranch = branchLabel ? branchLabel.slice(7) : null;
   }
 
-  stacks.sort((a, b) => a.containerKey.localeCompare(b.containerKey));
   return stacks;
 }
 
@@ -200,13 +111,7 @@ app.get("/api/tickets/:key", async (request) => {
     .filter((l) => l.type?.outward === "blocks" && l.outwardIssue)
     .map((l) => l.outwardIssue.key);
 
-  let repoRoot = null;
-  const repoLabel = labels.find((l) => l.startsWith("repo:"));
-  if (repoLabel && DEV_ROOT) {
-    const repoName = repoLabel.slice(5);
-    const candidate = join(DEV_ROOT, repoName);
-    if (existsSync(candidate)) repoRoot = candidate;
-  }
+  const repoRoot = resolveRepoRoot(labels, DEV_ROOT);
 
   const branch = findBranch(key, repoRoot);
   const worktree = findWorktree(key, repoRoot);
@@ -273,14 +178,7 @@ app.get("/api/tickets/:key/pr-details", async (request) => {
   const { key } = request.params;
   const issue = await getIssue(key);
   const labels = issue.fields.labels || [];
-
-  let repoRoot = null;
-  const repoLabel = labels.find((l) => l.startsWith("repo:"));
-  if (repoLabel && DEV_ROOT) {
-    const repoName = repoLabel.slice(5);
-    const candidate = join(DEV_ROOT, repoName);
-    if (existsSync(candidate)) repoRoot = candidate;
-  }
+  const repoRoot = resolveRepoRoot(labels, DEV_ROOT);
 
   const branch = findBranch(key, repoRoot);
   const worktree = findWorktree(key, repoRoot);
@@ -334,14 +232,7 @@ app.post("/api/tickets/:key/request-review", async (request) => {
   const { key } = request.params;
   const issue = await getIssue(key);
   const labels = issue.fields.labels || [];
-
-  let repoRoot = null;
-  const repoLabel = labels.find((l) => l.startsWith("repo:"));
-  if (repoLabel && DEV_ROOT) {
-    const repoName = repoLabel.slice(5);
-    const candidate = join(DEV_ROOT, repoName);
-    if (existsSync(candidate)) repoRoot = candidate;
-  }
+  const repoRoot = resolveRepoRoot(labels, DEV_ROOT);
 
   const branch = findBranch(key, repoRoot);
   const worktree = findWorktree(key, repoRoot);

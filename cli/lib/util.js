@@ -1,4 +1,6 @@
-import { readdirSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { existsSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 
 export function glob(dir, pattern) {
   try {
@@ -32,6 +34,32 @@ export function actionHint(stateLabel) {
   if (stateLabel === "ClaudeStackReady") return "ready for PR?";
   if (stateLabel === "ClaudeFailed") return "investigate";
   return null;
+}
+
+export function detectWorkDir(workDir, relPath) {
+  const explicit = join(workDir, relPath);
+  if (existsSync(explicit)) return workDir;
+
+  try {
+    const repoRoot = execSync("git rev-parse --show-toplevel", {
+      cwd: workDir,
+      encoding: "utf-8",
+      stdio: ["pipe", "pipe", "pipe"],
+    }).trim();
+
+    const inRepo = join(repoRoot, relPath);
+    if (existsSync(inRepo)) return repoRoot;
+  } catch {}
+
+  return null;
+}
+
+export function resolveRepoRoot(labels, devRoot) {
+  if (!devRoot) return null;
+  const repoLabel = labels.find((l) => l.startsWith("repo:"));
+  if (!repoLabel) return null;
+  const candidate = join(devRoot, repoLabel.slice(5));
+  return existsSync(candidate) ? candidate : null;
 }
 
 export function topologicalSort(tickets, links) {
