@@ -10,7 +10,9 @@ vi.mock("fs", () => ({
   readFileSync: vi.fn(),
 }));
 
-const { checkPrExists, pushBranch, ensurePr } = await import("../lib/pr.js");
+const { checkPrExists, pushBranch, createPr, ensurePr } = await import(
+  "../lib/pr.js"
+);
 
 describe("checkPrExists", () => {
   beforeEach(() => {
@@ -156,5 +158,75 @@ describe("ensurePr", () => {
     });
     expect(result.action).toBe("push_failed");
     expect(result.pushed).toBe(false);
+  });
+
+  it("returns create_failed when gh pr create fails", () => {
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("gh pr list")) return "[]";
+      if (cmd.includes("git push")) return "";
+      if (cmd.includes("gh pr create")) throw new Error("create failed");
+      return "";
+    });
+
+    const result = ensurePr({
+      branch: "feat",
+      base: "main",
+      title: "Test",
+      cwd: "/repo",
+    });
+    expect(result.action).toBe("create_failed");
+    expect(result.pr).toBeNull();
+    expect(result.pushed).toBe(true);
+  });
+
+  it("handles bodyFile not found gracefully", () => {
+    readFileSync.mockImplementation(() => {
+      throw new Error("ENOENT");
+    });
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("gh pr list")) return "[]";
+      if (cmd.includes("git push")) return "";
+      if (cmd.includes("gh pr create")) return "http://pr/13";
+      if (cmd.includes("gh pr view"))
+        return '{"number":13,"url":"http://pr/13","state":"OPEN"}';
+      return "";
+    });
+
+    const result = ensurePr({
+      branch: "feat",
+      base: "main",
+      bodyFile: "/nonexistent/pr.md",
+      cwd: "/repo",
+    });
+    expect(result.action).toBe("created");
+    expect(result.pr.number).toBe(13);
+  });
+});
+
+describe("checkPrExists", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null on invalid JSON", () => {
+    execSync.mockReturnValue("not json");
+    expect(checkPrExists("feat", "main", "/repo")).toBeNull();
+  });
+});
+
+describe("createPr", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when gh pr view returns invalid JSON", () => {
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("gh pr create")) return "http://pr/1";
+      if (cmd.includes("gh pr view")) return "not json";
+      return "";
+    });
+    expect(
+      createPr("feat", "main", "title", "body", false, "/repo"),
+    ).toBeNull();
   });
 });

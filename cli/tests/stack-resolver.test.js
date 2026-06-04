@@ -301,4 +301,166 @@ describe("resolveStack", () => {
     expect(sub2.eligible).toBe(false);
     expect(sub2.unblockedBlockers).toEqual(["SUB-1"]);
   });
+
+  it("reports in-progress status for ClaudePlanning ticket", async () => {
+    getIssue.mockResolvedValue({
+      key: "T-1",
+      fields: issueFields({
+        labels: ["ClaudePlanning"],
+      }),
+    });
+
+    const result = await resolveStack("T-1");
+    expect(result.stack[0].status).toBe("in-progress");
+  });
+
+  it("computes baseBranch as main when no blocker and no feature branch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack[0];
+    expect(sub1.baseBranch).toBe("main");
+    expect(sub1.prTarget).toBe("main");
+    expect(result.container.featureBranch).toBeNull();
+  });
+
+  it("uses Epic JQL branch for Epic containers", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "T-1") {
+        return {
+          key: "T-1",
+          fields: issueFields({
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { name: "Epic" },
+                outwardIssue: {
+                  key: "EPIC-1",
+                  fields: { summary: "My Epic", issuetype: { name: "Epic" } },
+                },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "T-1",
+        fields: issueFields({
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
+    expect(result.container.key).toBe("EPIC-1");
+    expect(result.container.type).toBe("Epic");
+  });
+
+  it("computes baseBranch as blocker key when finished blocker and no feature branch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-2") {
+        return {
+          key: "SUB-2",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: { key: "SUB-1" },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeStackReady"],
+          issuelinks: [
+            { type: { outward: "blocks" }, outwardIssue: { key: "SUB-2" } },
+          ],
+        }),
+      },
+      {
+        key: "SUB-2",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [
+            {
+              type: { inward: "is blocked by" },
+              inwardIssue: { key: "SUB-1" },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });
+    const sub2 = result.stack.find((t) => t.key === "SUB-2");
+    expect(sub2.baseBranch).toBe("SUB-1");
+    expect(sub2.prTarget).toBe("SUB-1");
+  });
 });
