@@ -65,40 +65,20 @@ describe("loadEnv", () => {
     expect(process.env.DEV_ROOT).toBe("/x");
   });
 
-  it("loads slackWebhookUrl from dev-root.json", async () => {
+  it("loads from ~/.claude/.env as fallback", async () => {
     readFileSync.mockImplementation((path) => {
-      if (path.toString().endsWith(".env")) throw new Error("no .env");
-      if (path.toString().endsWith("dev-root.json")) {
-        return JSON.stringify({
-          slackWebhookUrl: "http://slack",
-          root: "/dev",
-        });
+      if (path.toString().includes(".claude/.env")) {
+        return "DEV_ROOT=/home/dev\n";
       }
       throw new Error("not found");
     });
 
     const { loadEnv } = await import("../lib/env.js");
     loadEnv();
-    expect(process.env.SLACK_WEBHOOK_URL).toBe("http://slack");
-    expect(process.env.DEV_ROOT).toBe("/dev");
+    expect(process.env.DEV_ROOT).toBe("/home/dev");
   });
 
-  it("handles tilde in dev-root.json root path", async () => {
-    readFileSync.mockImplementation((path) => {
-      if (path.toString().endsWith(".env")) throw new Error("no .env");
-      if (path.toString().endsWith("dev-root.json")) {
-        return JSON.stringify({ root: "~/projects" });
-      }
-      throw new Error("not found");
-    });
-
-    const { loadEnv } = await import("../lib/env.js");
-    loadEnv();
-    expect(process.env.DEV_ROOT).toContain("projects");
-    expect(process.env.DEV_ROOT).not.toContain("~");
-  });
-
-  it("survives missing .env and dev-root.json", async () => {
+  it("survives missing .env files", async () => {
     readFileSync.mockImplementation(() => {
       throw new Error("not found");
     });

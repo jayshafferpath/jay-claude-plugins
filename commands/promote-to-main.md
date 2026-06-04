@@ -10,6 +10,9 @@ allowed-tools:
   - Bash(cd *)
   - Bash(ls *)
   - Bash(gh *)
+  - Bash(resolve-stack *)
+  - Bash(ensure-pr *)
+  - Bash(post-review-summary *)
   - Read
   - Write
   - Skill
@@ -35,56 +38,22 @@ Optional flags:
 
 ## Step 1: Initialize
 
-### 1a: Get Atlassian Cloud ID
+### 1a: Resolve Stack with resolve-stack
 
-- Use `mcp__atlassian__getAccessibleAtlassianResources`
-- Store first resource `id` as `CLOUD_ID`
+Run:
+```bash
+resolve-stack {ARGUMENT_KEY} --fetch
+```
 
-### 1b: Resolve Stack Container
+Parse the JSON output. Extract:
+- `CONTAINER_KEY` = `container.key`
+- `FEATURE_BRANCH` = `container.featureBranch`
+- `REPO_ROOT` = `container.repoRoot`
+- `STACK_ORDER` = `stack` array (already topologically sorted, with branch names resolved)
 
-Use `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={ARGUMENT_KEY}`.
+If `FEATURE_BRANCH` is null: display "No feature branch label found on {CONTAINER_KEY}. Nothing to promote." and **stop**.
 
-- If it's a Story/Task with subtasks or an Epic: it IS the container. `CONTAINER_KEY` = `{ARGUMENT_KEY}`.
-- If it's a subtask: `CONTAINER_KEY` = parent Story key.
-- If it's a regular issue with an Epic link: `CONTAINER_KEY` = Epic key.
-
-### 1c: Detect Feature Branch
-
-Fetch the container issue labels. Look for `branch:*` label.
-- If found: `FEATURE_BRANCH` = label value (strip `branch:` prefix)
-- If not found: display "No feature branch label found on {CONTAINER_KEY}. Nothing to promote." and **stop**.
-
-### 1d: Load Dev Root
-
-Read `~/.claude/dev-root.json` → `DEV_ROOT`. Resolve `REPO_ROOT` from the container's `repo:` label (or the first ticket's `repo:` label).
-
----
-
-## Step 2: Build Stack Order
-
-### 2a: Find All Tickets in Stack
-
-- If container is a Story/Task: search `parent = {CONTAINER_KEY}`
-- If container is an Epic: search `"Epic Link" = {CONTAINER_KEY} OR parent = {CONTAINER_KEY}`
-
-Store all ticket keys.
-
-### 2b: Walk Dependencies to Build Order
-
-For each ticket, fetch issue links and find "is blocked by" / "blocks" relationships within the stack (same container).
-
-Build a topologically sorted list based on "is blocked by" links:
-- Tickets with no same-stack blockers come first
-- Each subsequent ticket is ordered after all its blockers
-
-Store as `STACK_ORDER` — a list of `{KEY, SUMMARY, BRANCH_NAME}`.
-
-### 2c: Resolve Branch Names
-
-For each ticket in `STACK_ORDER`:
-1. Check for existing branch: `git branch --list '{KEY}*'` (in `REPO_ROOT`)
-2. If found, store as `BRANCH_NAME`
-3. If not found: display "Warning: no branch found for {KEY}, skipping" and remove from list
+Filter out tickets from `STACK_ORDER` where `branch` is null — display "Warning: no branch found for {KEY}, skipping" for each.
 
 ### 2d: Display Stack
 
@@ -202,41 +171,31 @@ git push --force-with-lease origin {BRANCH_NAME}
 
 ## Step 5: Open PR to Main
 
-### 5a: Check for Existing PR
-
-```bash
-gh pr list --head {BRANCH_NAME} --base main --json number,url
-```
-
-If a PR already exists, skip to 5e.
-
-### 5b: Generate PR Description with /jay-pr-description
+### 5a: Generate PR Description
 
 1. Make sure we are in the repo root: `cd {REPO_ROOT}`
 2. Ensure the ticket branch is checked out: `git checkout {BRANCH_NAME}`
 3. Use the Skill tool to run skill `jay-pr-description`
-4. Read the generated PR description file (`./pr.md`)
+4. Append a stack context section to `./pr.md`:
+   ```markdown
 
-### 5c: Create PR
+   ## Stack Context
 
-Using the title and body from `pr.md`:
+   Promoted from feature branch `{FEATURE_BRANCH}` to main.
+   Part of {CONTAINER_KEY} — ticket {N} of {TOTAL} being promoted.
+   ```
 
+### 5b: Create or Update PR
+
+Run:
 ```bash
-gh pr create --base main --title "{PR_TITLE}" --body "{PR_BODY}"
+ensure-pr {BRANCH_NAME} --base main --body-file ./pr.md
 ```
 
-Use a HEREDOC for the body. Append a stack context section to the body:
+Parse the JSON output. Store `pr.number` as `PR_NUMBER` and `pr.url` as `PR_URL`.
+If `action` is `"exists"`, the PR was already open — skip to 5d.
 
-```markdown
-{PR_BODY_FROM_pr.md}
-
-## Stack Context
-
-Promoted from feature branch `{FEATURE_BRANCH}` to main.
-Part of {CONTAINER_KEY} — ticket {N} of {TOTAL} being promoted.
-```
-
-### 5d: Copilot Review Comments
+### 5c: Copilot Review Comments
 
 After creating the PR, run a single pass to address Copilot review comments:
 
@@ -244,37 +203,14 @@ After creating the PR, run a single pass to address Copilot review comments:
 2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
 3. If pr-watch made changes and pushed, note the updated state.
 
-### 5e: Store PR Info
+### 5d: Post PR Review Summary Comment
 
+Run:
 ```bash
-gh pr view {BRANCH_NAME} --json number,url
+post-review-summary {BRANCH_NAME} --plans-dir .claude/plans --ticket-key {KEY}
 ```
 
-Store `PR_NUMBER` and `PR_URL`.
-
-### 5f: Post PR Review Summary Comment
-
-1. If a PR review plan file exists in `.claude/plans/` (matching `pr-review-*.md` or `pr-{KEY}*.md`), read it.
-2. Build a summary comment:
-   ```
-   ## Claude Code Review Summary
-
-   ### Issues Found
-   - **{issue title}**: {brief description} — **{resolved|open}**
-   ...
-
-   ### Resolutions
-   - {issue}: {what was changed to fix it}
-   ...
-
-   N issues found, M resolved.
-   ```
-3. Post the comment to the PR:
-   ```bash
-   gh pr comment {BRANCH_NAME} --body "{REVIEW_SUMMARY}"
-   ```
-   Use a HEREDOC for the body.
-4. If no review plan file exists, skip this step.
+If output shows `posted: false` with reason `no_plan_file`, skip (nothing to post).
 
 ### 5g: Update Jira
 

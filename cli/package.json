@@ -6,7 +6,11 @@
   "bin": {
     "ticket-status": "./bin/ticket-status.js",
     "sync-checklist": "./bin/sync-checklist.js",
-    "sync-plan": "./bin/sync-plan.js"
+    "sync-plan": "./bin/sync-plan.js",
+    "resolve-stack": "./bin/resolve-stack.js",
+    "ensure-pr": "./bin/ensure-pr.js",
+    "post-review-summary": "./bin/post-review-summary.js",
+    "seed-checklist": "./bin/seed-checklist.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",

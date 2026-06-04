@@ -1,7 +1,9 @@
 node_modules/
 dashboard/dist/
 dashboard/node_modules/
+dashboard/.vite/
 .plans/
 .env
 dev-root.json
 coverage/
+.claude/settings.local.json

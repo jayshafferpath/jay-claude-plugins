@@ -22,7 +22,8 @@ function headers(creds) {
 }
 
 function baseUrl(creds) {
-  return `https://${creds.domain}/rest/api/3`;
+  const protocol = process.env.JIRA_PROTOCOL || "https";
+  return `${protocol}://${creds.domain}/rest/api/3`;
 }
 
 export async function searchIssues(jql, fields = []) {

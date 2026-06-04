@@ -46,18 +46,21 @@ for agent in "$SCRIPT_DIR"/agents/*.md; do
   echo "  Linked $name"
 done
 
-# Install dev-root.json config
-DEV_ROOT_SRC="$SCRIPT_DIR/dev-root.json"
-DEV_ROOT_TARGET="$HOME/.claude/dev-root.json"
-if [ -f "$DEV_ROOT_SRC" ]; then
-  if [ -f "$DEV_ROOT_TARGET" ] && [ ! -L "$DEV_ROOT_TARGET" ]; then
-    echo "  dev-root.json already exists at $DEV_ROOT_TARGET, skipping"
-    echo "  Edit $DEV_ROOT_TARGET to set your dev directory"
-  else
-    [ -L "$DEV_ROOT_TARGET" ] && rm "$DEV_ROOT_TARGET"
-    cp "$DEV_ROOT_SRC" "$DEV_ROOT_TARGET"
-    echo "  Copied dev-root.json (edit ~/.claude/dev-root.json to set your dev directory)"
-  fi
+# Create .env from example if not present (project-level)
+if [ ! -f "$SCRIPT_DIR/.env" ] && [ -f "$SCRIPT_DIR/.env.example" ]; then
+  cp "$SCRIPT_DIR/.env.example" "$SCRIPT_DIR/.env"
+  echo "  Created .env from template — fill in your credentials"
+fi
+
+# Create ~/.claude/.env for machine-level config if not present
+MACHINE_ENV="$HOME/.claude/.env"
+if [ ! -f "$MACHINE_ENV" ]; then
+  cat > "$MACHINE_ENV" <<'EOF'
+# Machine-level config (shared across all projects using jay-claude-plugins)
+# DEV_ROOT=/path/to/your/dev/directory
+# SLACK_WEBHOOK_URL=
+EOF
+  echo "  Created $MACHINE_ENV — set DEV_ROOT to your dev directory"
 fi
 
 # Install CLI tools
@@ -86,5 +89,6 @@ echo ""
 echo "CLI tools:"
 echo "  ticket-status      - View/manage ticket stacks (run directly in terminal)"
 echo ""
-echo "Configure your dev directory in ~/.claude/dev-root.json"
-echo "Set JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN for the CLI"
+echo "Next steps:"
+echo "  1. Edit .env — set JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN"
+echo "  2. Edit ~/.claude/.env — set DEV_ROOT to your dev directory"
