@@ -55,6 +55,8 @@ The agent accepts either:
 - A **Jira Epic key** → decompose a skeleton Epic into Stories/Subtasks (re-entry mode)
 - **Nothing** → ask the user what to decompose
 
+In every mode, if Jira tickets already exist for the input (Confluence page already decomposed, or Epic already has Stories/Subtasks), run **Phase 2.5: Stale Ticket Detection** before presenting the new decomposition. Tickets whose scope has been removed or rewritten in Confluence are flagged for `/prune`.
+
 ---
 
 ## Phase 1: Initialize
@@ -196,6 +198,57 @@ When a Story has subtasks, determine dependencies between them:
 - Test subtasks depend on the implementation subtasks they test
 - Subtasks with no shared state or interfaces are independent (parallel)
 
+### 2.5: Stale Ticket Detection
+
+Skip if no Jira tickets exist yet for this Confluence page or Epic.
+
+When a Confluence page has already been decomposed, or an Epic already has Stories/Subtasks, the planner re-decomposition may find that previously-created tickets no longer match the current content — the section was removed, the scenario was rewritten, or the capability was descoped.
+
+These tickets should be **pruned** rather than left orphaned. They clutter the backlog, mislead `/ticket-work` queue discovery, and (if they reference reverted Confluence sections) point to stale anchors.
+
+#### 2.5a: Find Existing Tickets
+
+Use `mcp__atlassian__searchJiraIssuesUsingJql` to find tickets tied to this input:
+
+- **For a Confluence page**: search for tickets whose description contains the page URL or anchor pattern `planner-{slug}`:
+  ```
+  project = {JIRA_PROJECT_KEY} AND description ~ "{PAGE_URL}"
+  ```
+- **For an Epic re-entry**: search for child Stories/Subtasks of the Epic:
+  ```
+  "Epic Link" = {EPIC_KEY} OR parent = {EPIC_KEY}
+  ```
+
+Collect each ticket's key, summary, status, labels, and the anchor slug it references (if any).
+
+#### 2.5b: Match to New Decomposition
+
+For each existing ticket, attempt to map it to a capability/scenario in the new decomposition:
+
+- **Same anchor slug** → ticket is still in scope (keep)
+- **Same summary or close paraphrase** → ticket maps to a renamed scenario (keep, optionally update summary)
+- **No match in new decomposition** → ticket is **stale**
+
+A ticket is also stale if its referenced Confluence section/anchor no longer exists in the current page body.
+
+#### 2.5c: Filter by Workflow State
+
+Not every unmatched ticket should be pruned. Apply these rules:
+
+- **Skip if status category is "done"**: shipped work stays in history. Note it as "obsolete but shipped" — the user may want to /prune just to update labels, but no merge revert is needed.
+- **Skip if `ClaudeNeedsReview` or `ClaudePRApproved`**: ticket is mid-flight to merge. Flag for user judgment, don't recommend prune.
+- **Skip if `ClaudePruned` already present**: already pruned, ignore.
+- **Otherwise** (no progress / planning / executing / stack-ready / failed): candidate for `/prune`.
+
+#### 2.5d: Surface Stale Tickets in Phase 3
+
+Include a "Stale Tickets" section in the approval output (see Phase 3). Do not auto-prune — the planner agent recommends, the user runs `/prune` per ticket. Reasons to keep manual:
+- `/prune` reverts merges and closes PRs — destructive, needs user confirmation
+- Downstream tickets may already depend on the "stale" work; user must judge
+- The planner cannot re-run `/prune` itself (different command); it surfaces the list and exits
+
+---
+
 ### 2f: Write Skeleton Descriptions for Remaining Epics
 
 For each Epic after the first, write only:
@@ -266,9 +319,30 @@ Sequential (blocked by Story C):
 
 ---
 ...
+
+### Stale Tickets (Recommend `/prune`)
+
+These existing tickets no longer map to the current Confluence content:
+
+- **{KEY}**: {summary} — {status} — {reason: e.g., "section removed in Confluence", "scenario rewritten as {NEW_KEY}", "anchor `planner-{slug}` no longer exists"}
+  - Run: `/prune {KEY}`
+- **{KEY}**: {summary} — {status} — {reason}
+  - Run: `/prune {KEY}`
+
+### Stale But Shipped (FYI)
+
+These tickets are obsolete in current Confluence but already shipped — no action required, listed for awareness:
+
+- **{KEY}**: {summary} — Done
+
+### In-Flight, Manual Judgment Needed
+
+These tickets are mid-merge (`ClaudeNeedsReview` / `ClaudePRApproved`). Decide before pruning:
+
+- **{KEY}**: {summary} — {label} — {reason}
 ```
 
-Ask the user: "Does this decomposition look right? I can adjust Epics, Stories, dependencies, or subtasks before creating anything in Jira."
+Ask the user: "Does this decomposition look right? I can adjust Epics, Stories, dependencies, or subtasks before creating anything in Jira. The stale tickets above are surfaced for `/prune` — I won't touch them automatically."
 
 Wait for user approval. Iterate on feedback until the user confirms.
 
@@ -476,6 +550,7 @@ Display the final result:
 - Review and prioritize {EPIC_1_KEY} Stories
 - Add `ClaudeReady` labels to begin execution via /ticket-work
 - When {EPIC_1_KEY} is complete, invoke planner agent on the next skeleton Epic
+- Run `/prune {KEY}` for each stale ticket listed above (if any)
 ```
 
 ---
@@ -488,8 +563,9 @@ When invoked with a Jira Epic key (instead of a Confluence page):
 2. Extract the Confluence reference URL from its description
 3. Fetch that Confluence page section
 4. Run Phase 2c-2e (write Gherkin, determine Story dependencies, assess complexity) scoped to just this Epic
-5. Run Phase 3 (present for approval) showing only this Epic's decomposition with dependency graph
-6. Run Phase 4 (add any new anchors needed)
-7. Run Phase 5c-5f (create Stories, Subtasks, and all dependency links under the existing Epic)
-8. Update the Epic description to replace the "Skeleton" status with the full Gherkin and story list
-9. Display summary with dependency info (parallel width, sequential chains)
+5. Run **Phase 2.5: Stale Ticket Detection** scoped to existing children of this Epic — anything that doesn't map to a scenario in the new decomposition is surfaced for `/prune`
+6. Run Phase 3 (present for approval) showing only this Epic's decomposition with dependency graph plus any stale-ticket recommendations
+7. Run Phase 4 (add any new anchors needed)
+8. Run Phase 5c-5f (create Stories, Subtasks, and all dependency links under the existing Epic)
+9. Update the Epic description to replace the "Skeleton" status with the full Gherkin and story list
+10. Display summary with dependency info (parallel width, sequential chains) and stale-ticket recommendations

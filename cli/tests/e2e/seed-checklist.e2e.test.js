@@ -182,13 +182,14 @@ describe("seed-checklist e2e", () => {
     expect(result.steps[12].done).toBe(false);
   });
 
-  it("includes feature branch in frontmatter when specified", async () => {
+  it("uses base_branch and pr_target frontmatter for stacked tickets", async () => {
     const result = await runAsync(
-      `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch feature-x --feature-branch feature-x --pr-target feature-x --summary FB`,
+      `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch STORY-1 --pr-target STORY-1 --summary FB`,
     );
 
-    expect(result.markdown).toContain("feature_branch: feature-x");
-    expect(result.markdown).toContain("pr_target: feature-x");
+    expect(result.markdown).toContain("base_branch: STORY-1");
+    expect(result.markdown).toContain("pr_target: STORY-1");
+    expect(result.markdown).not.toContain("feature_branch:");
   });
 
   it("includes serial flag in frontmatter when specified", async () => {

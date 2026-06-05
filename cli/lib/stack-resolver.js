@@ -1,7 +1,10 @@
 import { loadDevRoot } from "./config.js";
 import { findBranch, isAncestor, isMergedInto } from "./git.js";
 import { getIssue, searchIssues } from "./jira.js";
+import { featureBranchFromContainer } from "./stacks.js";
 import { resolveRepoRoot, topologicalSort } from "./util.js";
+
+export { featureBranchFromContainer };
 
 export function resolveContainer(fields) {
   const issuetype = fields.issuetype?.name || "";
@@ -11,6 +14,14 @@ export function resolveContainer(fields) {
     return {
       key: parent.key,
       type: "Story",
+      summary: parent.fields?.summary || "",
+    };
+  }
+
+  if (parent && parent.fields?.issuetype?.name === "Epic") {
+    return {
+      key: parent.key,
+      type: "Epic",
       summary: parent.fields?.summary || "",
     };
   }
@@ -36,9 +47,49 @@ export function resolveContainer(fields) {
   return null;
 }
 
-export function detectFeatureBranch(labels) {
-  const branchLabel = (labels || []).find((l) => l.startsWith("branch:"));
-  return branchLabel ? branchLabel.slice(7) : null;
+const CONTAINER_ISSUE_TYPES = new Set(["Story", "Epic", "Task"]);
+
+export function findContainerBlockers(issuelinks) {
+  const blockers = [];
+  for (const link of issuelinks || []) {
+    if (link.type?.inward !== "is blocked by") continue;
+    const inward = link.inwardIssue;
+    if (!inward) continue;
+    const blockerType = inward.fields?.issuetype?.name || "";
+    if (!CONTAINER_ISSUE_TYPES.has(blockerType)) continue;
+    blockers.push(inward.key);
+  }
+  return blockers;
+}
+
+export function resolveContainerBase(issuelinks, repoRoot) {
+  const blockerContainers = findContainerBlockers(issuelinks);
+  if (blockerContainers.length === 0) {
+    return { baseBranch: "main", blockerContainers: [], unmergedBlockers: [] };
+  }
+
+  const unmergedBlockers = blockerContainers.filter((key) => {
+    if (!repoRoot) return true;
+    return !isAncestor(key, "main", repoRoot);
+  });
+
+  if (unmergedBlockers.length === 0) {
+    return { baseBranch: "main", blockerContainers, unmergedBlockers: [] };
+  }
+
+  if (unmergedBlockers.length === 1) {
+    return {
+      baseBranch: unmergedBlockers[0],
+      blockerContainers,
+      unmergedBlockers,
+    };
+  }
+
+  const list = unmergedBlockers.join(", ");
+  throw new Error(
+    `Container has multiple unmerged blocker containers: ${list}. ` +
+      "A feature branch can have only one base — merge one, or chain them via blocker links.",
+  );
 }
 
 export function isFinished(labels, statusCategoryKey) {
@@ -81,6 +132,7 @@ export async function resolveStack(ticketKey, opts = {}) {
   const labels = fields.labels || [];
 
   const container = resolveContainer(fields);
+
   if (!container) {
     return {
       container: null,
@@ -107,7 +159,11 @@ export async function resolveStack(ticketKey, opts = {}) {
 
   const containerIssue = await getIssue(container.key);
   const containerLabels = containerIssue.fields.labels || [];
-  const featureBranch = detectFeatureBranch(containerLabels);
+  const containerSummary = container.summary || containerIssue.fields.summary;
+  const branchLabel = containerLabels.find((l) => l.startsWith("branch:"));
+  const featureBranch = branchLabel
+    ? branchLabel.slice("branch:".length)
+    : featureBranchFromContainer(container.key);
 
   const devRoot = loadDevRoot();
   const repoRoot =
@@ -115,12 +171,15 @@ export async function resolveStack(ticketKey, opts = {}) {
     resolveRepoRoot(containerLabels, devRoot) ||
     resolveRepoRoot(labels, devRoot);
 
-  let jql;
-  if (container.type === "Story") {
-    jql = `parent = ${container.key}`;
-  } else {
-    jql = `"Epic Link" = ${container.key} OR parent = ${container.key}`;
-  }
+  const containerBase = resolveContainerBase(
+    containerIssue.fields.issuelinks || [],
+    repoRoot,
+  );
+
+  const jql =
+    container.type === "Story"
+      ? `parent = ${container.key}`
+      : `"Epic Link" = ${container.key} OR parent = ${container.key}`;
 
   const siblings = await searchIssues(jql, [
     "summary",
@@ -228,8 +287,11 @@ export async function resolveStack(ticketKey, opts = {}) {
     container: {
       key: container.key,
       type: container.type,
-      summary: container.summary || containerIssue.fields.summary,
+      summary: containerSummary,
       featureBranch,
+      baseBranch: containerBase.baseBranch,
+      blockerContainers: containerBase.blockerContainers,
+      unmergedBlockers: containerBase.unmergedBlockers,
       repoRoot,
     },
     stack,

@@ -11,9 +11,10 @@ function ticketColor(ticket) {
 }
 
 export function StackList({ stacks, onAction, jiraBaseUrl }) {
+  const filtered = stacks.filter((s) => !s.featureBranch);
   return (
     <div>
-      {stacks.map((stack) => {
+      {filtered.map((stack) => {
         const isStack = stack.containerKey !== "Standalone" && stack.tickets.length > 1;
         const { layers, depth } = isStack ? computeLayers(stack.tickets) : { layers: null, depth: new Map() };
         const flatOrder = layers ? layers.flat() : stack.tickets;

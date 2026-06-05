@@ -10,7 +10,8 @@
     "resolve-stack": "./bin/resolve-stack.js",
     "ensure-pr": "./bin/ensure-pr.js",
     "post-review-summary": "./bin/post-review-summary.js",
-    "seed-checklist": "./bin/seed-checklist.js"
+    "seed-checklist": "./bin/seed-checklist.js",
+    "append-activity": "./bin/append-activity.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",

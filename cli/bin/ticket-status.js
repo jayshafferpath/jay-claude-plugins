@@ -14,7 +14,7 @@ import { loadDevRoot } from "../lib/config.js";
 import { findBranch, findWorktree, getPrInfo } from "../lib/git.js";
 import { getIssue, searchIssues, swapLabel } from "../lib/jira.js";
 import { renderSummary, renderTree, renderVerbose } from "../lib/render.js";
-import { buildStacks } from "../lib/stacks.js";
+import { attachFeatureBranches, buildStacks } from "../lib/stacks.js";
 import { resolveRepoRoot } from "../lib/util.js";
 
 const DEV_ROOT = loadDevRoot();
@@ -65,7 +65,8 @@ async function treeMode() {
     return;
   }
 
-  const stacks = await buildStacks(issues);
+  const stacks = buildStacks(issues);
+  await attachFeatureBranches(stacks);
   console.log(renderTree(stacks));
   console.log(renderSummary(stacks));
   await interactiveLoop(stacks);

@@ -129,6 +129,167 @@ export function parsePlanFromComment(adfBody) {
   return total ? { total, completed } : null;
 }
 
+function bodyToAdfNodes(body) {
+  const text = (body || "").trim();
+  if (!text) return [];
+
+  const nodes = [];
+  const lines = text.split("\n");
+  let buffer = [];
+  let bulletItems = [];
+
+  function flushParagraph() {
+    if (!buffer.length) return;
+    nodes.push({
+      type: "paragraph",
+      content: [{ type: "text", text: buffer.join("\n") }],
+    });
+    buffer = [];
+  }
+
+  function flushBullets() {
+    if (!bulletItems.length) return;
+    nodes.push({
+      type: "bulletList",
+      content: bulletItems.map((item) => ({
+        type: "listItem",
+        content: [
+          {
+            type: "paragraph",
+            content: [{ type: "text", text: item }],
+          },
+        ],
+      })),
+    });
+    bulletItems = [];
+  }
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    const bulletMatch = line.match(/^\s*[-*]\s+(.*)$/);
+    if (bulletMatch) {
+      flushParagraph();
+      bulletItems.push(bulletMatch[1]);
+      continue;
+    }
+    if (!line.trim()) {
+      flushBullets();
+      flushParagraph();
+      continue;
+    }
+    flushBullets();
+    buffer.push(line);
+  }
+  flushBullets();
+  flushParagraph();
+
+  return nodes;
+}
+
+export function activityHeader(marker) {
+  return {
+    type: "paragraph",
+    content: [
+      { type: "text", text: `${marker} `, marks: [{ type: "code" }] },
+      {
+        type: "text",
+        text: "Claude Activity Log",
+        marks: [{ type: "strong" }],
+      },
+    ],
+  };
+}
+
+export function activityEntryNodes(timestamp, heading, body) {
+  return [
+    {
+      type: "heading",
+      attrs: { level: 3 },
+      content: [{ type: "text", text: `${timestamp} — ${heading}` }],
+    },
+    ...bodyToAdfNodes(body),
+  ];
+}
+
+export function appendActivityToAdf(
+  existing,
+  marker,
+  timestamp,
+  heading,
+  body,
+) {
+  const entry = activityEntryNodes(timestamp, heading, body);
+  if (!existing?.content?.length) {
+    return {
+      version: 1,
+      type: "doc",
+      content: [activityHeader(marker), ...entry],
+    };
+  }
+  return {
+    version: 1,
+    type: "doc",
+    content: [...existing.content, ...entry],
+  };
+}
+
+export function collapseActivityAdf(existing, marker, collapseLabel) {
+  if (!existing?.content?.length) {
+    return { version: 1, type: "doc", content: [activityHeader(marker)] };
+  }
+
+  const [, ...rest] = existing.content;
+  const hasEntries = rest.some((node) => node.type === "heading");
+  if (!hasEntries) {
+    return { version: 1, type: "doc", content: [activityHeader(marker)] };
+  }
+
+  const collapsedSummary = summarizeCollapsedEntries(rest);
+  return {
+    version: 1,
+    type: "doc",
+    content: [
+      activityHeader(marker),
+      {
+        type: "heading",
+        attrs: { level: 3 },
+        content: [{ type: "text", text: collapseLabel }],
+      },
+      {
+        type: "paragraph",
+        content: [{ type: "text", text: collapsedSummary }],
+      },
+    ],
+  };
+}
+
+function summarizeCollapsedEntries(nodes) {
+  const headings = [];
+  for (const node of nodes) {
+    if (node.type === "heading") {
+      headings.push(extractTextFromAdf(node));
+    }
+  }
+  if (!headings.length) return "(no prior entries)";
+  return `${headings.length} prior entries: ${headings.join("; ")}`;
+}
+
+export function parseActivityFromComment(adfBody) {
+  if (!adfBody?.content?.length) return null;
+  const entries = [];
+  let current = null;
+  for (const node of adfBody.content) {
+    if (node.type === "heading") {
+      if (current) entries.push(current);
+      current = { heading: extractTextFromAdf(node), bodyNodes: [] };
+    } else if (current) {
+      current.bodyNodes.push(node);
+    }
+  }
+  if (current) entries.push(current);
+  return { entries };
+}
+
 export function parsePlanSectionsFromComment(adfBody) {
   const sections = [];
   let currentSection = null;

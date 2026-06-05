@@ -3,20 +3,25 @@ loadEnv();
 
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { searchIssues, getIssue, swapLabel, getComments, addComment } from "../../cli/lib/jira.js";
+import { searchIssues, getIssue, swapLabel, getComments, addComment, getPrFromDevStatus } from "../../cli/lib/jira.js";
 import {
   findBranch,
   findWorktree,
-  getPrInfo,
+  getFeatureBranchMergeOrder,
   getPrDetails,
   getPrDiffStat,
 } from "../../cli/lib/git.js";
 import {
+  readActivityLog,
   readChecklistFromJira,
   readExecutionPlanFromJira,
   readPlanSectionsFromJira,
 } from "../../cli/lib/checklist.js";
-import { buildStacks as buildStacksCore } from "../../cli/lib/stacks.js";
+import { extractTextFromAdf } from "../../cli/lib/adf.js";
+import {
+  attachFeatureBranches,
+  buildStacks as buildStacksCore,
+} from "../../cli/lib/stacks.js";
 import { labelState, actionHint, resolveRepoRoot } from "../../cli/lib/util.js";
 import { loadDevRoot, getJiraAuth } from "../../cli/lib/config.js";
 
@@ -36,38 +41,30 @@ async function buildStacks(issues) {
     ticket.actionHint = actionHint(state.label);
   }
 
-  const containerKeys = stacks
-    .map((s) => s.containerKey)
-    .filter((k) => k !== "Standalone");
+  await attachFeatureBranches(stacks);
 
-  const containerLabels = new Map();
-  await Promise.all(
-    containerKeys.map(async (key) => {
-      try {
-        const issue = await getIssue(key);
-        containerLabels.set(key, issue.fields.labels || []);
-      } catch {
-        containerLabels.set(key, []);
+  for (const stack of stacks) {
+    if (stack.featureBranch) {
+      const repoRoot = resolveRepoRoot(
+        stack.tickets[0]?.labels || [],
+        DEV_ROOT,
+      );
+      if (repoRoot) {
+        stack.mergeOrder = getFeatureBranchMergeOrder(
+          stack.featureBranch,
+          repoRoot,
+        );
       }
-    }),
-  );
+    }
+  }
 
   const allTickets = stacks.flatMap((s) => s.tickets);
   await Promise.all(
     allTickets.map(async (ticket) => {
-      const repoRoot = resolveRepoRoot(ticket.labels, DEV_ROOT);
-      const branch = findBranch(ticket.key, repoRoot);
-      const worktree = findWorktree(ticket.key, repoRoot);
-      const pr = getPrInfo(branch, repoRoot || worktree);
+      const pr = await getPrFromDevStatus(ticket.key);
       ticket.pr = pr ? { url: pr.url, state: pr.state } : null;
     }),
   );
-
-  for (const stack of stacks) {
-    const labels = containerLabels.get(stack.containerKey) || [];
-    const branchLabel = labels.find((l) => l.startsWith("branch:"));
-    stack.featureBranch = branchLabel ? branchLabel.slice(7) : null;
-  }
 
   return stacks;
 }
@@ -115,7 +112,7 @@ app.get("/api/tickets/:key", async (request) => {
 
   const branch = findBranch(key, repoRoot);
   const worktree = findWorktree(key, repoRoot);
-  const pr = getPrInfo(branch, repoRoot || worktree);
+  const pr = await getPrFromDevStatus(key);
   const checklist = await readChecklistFromJira(key);
   const execPlan = await readExecutionPlanFromJira(key);
   const reviewPlan = null;
@@ -174,6 +171,45 @@ app.get("/api/tickets/:key/plan", async (request) => {
   };
 });
 
+function flattenActivityBody(bodyNodes) {
+  const blocks = [];
+  for (const node of bodyNodes || []) {
+    if (node.type === "paragraph") {
+      const text = extractTextFromAdf(node).trim();
+      if (text) blocks.push({ kind: "paragraph", text });
+    } else if (node.type === "bulletList") {
+      const items = (node.content || [])
+        .map((item) => extractTextFromAdf(item).trim())
+        .filter(Boolean);
+      if (items.length) blocks.push({ kind: "bullets", items });
+    }
+  }
+  return blocks;
+}
+
+function parseEntryHeading(text) {
+  const match = text.match(/^(\S+)\s+—\s+(.+)$/);
+  if (!match) return { timestamp: null, heading: text };
+  return { timestamp: match[1], heading: match[2] };
+}
+
+app.get("/api/tickets/:key/activity", async (request) => {
+  const { key } = request.params;
+  const result = await readActivityLog(key);
+  if (!result) return { found: false, entries: [] };
+
+  const entries = result.entries.map((entry) => {
+    const { timestamp, heading } = parseEntryHeading(entry.heading);
+    return {
+      timestamp,
+      heading,
+      blocks: flattenActivityBody(entry.bodyNodes),
+    };
+  });
+
+  return { found: true, entries };
+});
+
 app.get("/api/tickets/:key/pr-details", async (request) => {
   const { key } = request.params;
   const issue = await getIssue(key);
@@ -184,40 +220,56 @@ app.get("/api/tickets/:key/pr-details", async (request) => {
   const worktree = findWorktree(key, repoRoot);
   const cwd = repoRoot || worktree;
 
-  if (!branch || !cwd) {
-    return { found: false };
+  if (branch && cwd) {
+    const details = getPrDetails(branch, cwd);
+    if (details) {
+      const diffStat = getPrDiffStat(branch, cwd);
+      return {
+        found: true,
+        number: details.number,
+        url: details.url,
+        title: details.title,
+        state: details.state,
+        headRef: details.headRefName,
+        baseRef: details.baseRefName,
+        additions: details.additions,
+        deletions: details.deletions,
+        changedFiles: details.changedFiles,
+        mergeable: details.mergeable,
+        reviewDecision: details.reviewDecision,
+        checks: (details.statusCheckRollup || []).map((c) => ({
+          name: c.name || c.context,
+          status: c.status,
+          conclusion: c.conclusion,
+        })),
+        reviews: (details.reviews || []).map((r) => ({
+          author: r.author?.login,
+          state: r.state,
+        })),
+        diffStat,
+      };
+    }
   }
 
-  const details = getPrDetails(branch, cwd);
-  if (!details) {
-    return { found: false };
-  }
-
-  const diffStat = getPrDiffStat(branch, cwd);
+  const pr = await getPrFromDevStatus(key);
+  if (!pr) return { found: false };
 
   return {
     found: true,
-    number: details.number,
-    url: details.url,
-    title: details.title,
-    state: details.state,
-    headRef: details.headRefName,
-    baseRef: details.baseRefName,
-    additions: details.additions,
-    deletions: details.deletions,
-    changedFiles: details.changedFiles,
-    mergeable: details.mergeable,
-    reviewDecision: details.reviewDecision,
-    checks: (details.statusCheckRollup || []).map((c) => ({
-      name: c.name || c.context,
-      status: c.status,
-      conclusion: c.conclusion,
-    })),
-    reviews: (details.reviews || []).map((r) => ({
-      author: r.author?.login,
-      state: r.state,
-    })),
-    diffStat,
+    number: pr.number,
+    url: pr.url,
+    title: pr.title,
+    state: pr.state,
+    headRef: null,
+    baseRef: null,
+    additions: 0,
+    deletions: 0,
+    changedFiles: 0,
+    mergeable: null,
+    reviewDecision: null,
+    checks: [],
+    reviews: [],
+    diffStat: null,
   };
 });
 
@@ -230,30 +282,23 @@ app.post("/api/tickets/:key/request-review", async (request) => {
   }
 
   const { key } = request.params;
-  const issue = await getIssue(key);
-  const labels = issue.fields.labels || [];
-  const repoRoot = resolveRepoRoot(labels, DEV_ROOT);
+  const pr = await getPrFromDevStatus(key);
 
-  const branch = findBranch(key, repoRoot);
-  const worktree = findWorktree(key, repoRoot);
-  const cwd = repoRoot || worktree;
-  const details = cwd && branch ? getPrDetails(branch, cwd) : null;
-
-  if (!details) {
+  if (!pr) {
     return { ok: false, error: "No PR found for this ticket" };
   }
 
   const comments = await getComments(key);
   const alreadyRequested = comments.find((c) => {
     const text = JSON.stringify(c.body);
-    return text.includes(REVIEW_REQUESTED_MARKER) && text.includes(details.url);
+    return text.includes(REVIEW_REQUESTED_MARKER) && text.includes(pr.url);
   });
 
   if (alreadyRequested) {
     return { ok: true, alreadyRequested: true };
   }
 
-  const text = `:pr-review-request: ${details.title}\n${details.url}`;
+  const text = `:pr-review-request: ${pr.title || key}\n${pr.url}`;
 
   const res = await fetch(webhookUrl, {
     method: "POST",
@@ -273,7 +318,7 @@ app.post("/api/tickets/:key/request-review", async (request) => {
         type: "paragraph",
         content: [
           { type: "text", text: `${REVIEW_REQUESTED_MARKER} `, marks: [{ type: "code" }] },
-          { type: "text", text: `Review requested: ${details.url}` },
+          { type: "text", text: `Review requested: ${pr.url}` },
         ],
       },
     ],

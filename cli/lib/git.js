@@ -20,7 +20,7 @@ export function findBranch(ticketKey, repoRoot) {
   if (!result) return null;
   const branches = result
     .split("\n")
-    .map((b) => b.replace(/^\*?\s+/, "").trim())
+    .map((b) => b.replace(/^[*+]?\s+/, "").trim())
     .filter(Boolean);
   return branches[0] || null;
 }
@@ -142,4 +142,21 @@ export function getLastStageCommitSha(ticketKey, baseBranch, cwd) {
   const sha = run(`git log --grep="^\\[${ticketKey}\\]" -1 --format="%H"`, cwd);
   if (sha) return sha;
   return run(`git merge-base HEAD origin/${baseBranch || "main"}`, cwd);
+}
+
+export function getFeatureBranchMergeOrder(featureBranch, cwd) {
+  if (!featureBranch || !cwd) return [];
+  const result = run(
+    `git log --oneline --first-parent origin/${featureBranch} --grep="^Merge "`,
+    cwd,
+  );
+  if (!result) return [];
+
+  const merges = [];
+  for (const line of result.split("\n").filter(Boolean)) {
+    const match = line.match(/^\w+ Merge ([A-Z]+-\d+)/);
+    if (match) merges.push(match[1]);
+  }
+  // git log returns newest-first; reverse for chronological order
+  return merges.reverse();
 }

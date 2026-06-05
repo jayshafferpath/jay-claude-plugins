@@ -1,7 +1,12 @@
 import { computeLayers, getParents } from "./dagLayout.js";
 
 export function StackOverview({ stacks, jiraBaseUrl }) {
-  const realStacks = stacks.filter((s) => s.containerKey !== "Standalone" && s.tickets.length > 1);
+  const realStacks = stacks.filter(
+    (s) =>
+      s.containerKey !== "Standalone" &&
+      s.tickets.length > 1 &&
+      !s.featureBranch,
+  );
   if (!realStacks.length) return null;
 
   return (
@@ -19,7 +24,8 @@ export function StackOverview({ stacks, jiraBaseUrl }) {
           const waiting = stack.tickets.filter((t) => t.waitingOn).length;
           const failed = counts.ClaudeFailed || 0;
           const total = stack.tickets.length;
-          const { layers } = computeLayers(stack.tickets);
+          const mergeOrder = stack.mergeOrder || [];
+          const { layers } = computeLayers(stack.tickets, mergeOrder);
 
           return (
             <div className="stack-card" key={stack.containerKey}>
@@ -59,7 +65,7 @@ export function StackOverview({ stacks, jiraBaseUrl }) {
                   {failed > 0 && <span className="stack-stat stack-stat-failed">{failed} failed</span>}
                 </div>
               </div>
-              <DagTree layers={layers} tickets={stack.tickets} jiraBaseUrl={jiraBaseUrl} />
+              <DagTree layers={layers} tickets={stack.tickets} jiraBaseUrl={jiraBaseUrl} mergeOrder={mergeOrder} />
             </div>
           );
         })}
@@ -68,7 +74,7 @@ export function StackOverview({ stacks, jiraBaseUrl }) {
   );
 }
 
-function DagTree({ layers, tickets, jiraBaseUrl }) {
+function DagTree({ layers, tickets, jiraBaseUrl, mergeOrder }) {
   return (
     <div className="dag-tree">
       {layers.map((layer, layerIdx) => (
@@ -76,7 +82,7 @@ function DagTree({ layers, tickets, jiraBaseUrl }) {
           {layerIdx > 0 && (
             <div className="dag-edges">
               {layer.map((ticket) => {
-                const parents = getParents(ticket, tickets);
+                const parents = getParents(ticket, tickets, mergeOrder);
                 const color = nodeColor(ticket);
                 return parents.map((pKey) => (
                   <span key={`${pKey}-${ticket.key}`} className={`dag-edge dag-edge--${color}`}>

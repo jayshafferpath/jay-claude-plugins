@@ -1,4 +1,36 @@
-export function computeLayers(tickets) {
+export function computeLayers(tickets, mergeOrder) {
+  if (mergeOrder && mergeOrder.length > 0) {
+    return computeLayersFromMergeOrder(tickets, mergeOrder);
+  }
+  return computeLayersFromBlockers(tickets);
+}
+
+function computeLayersFromMergeOrder(tickets, mergeOrder) {
+  const keySet = new Set(tickets.map((t) => t.key));
+  const orderIndex = new Map(mergeOrder.map((key, i) => [key, i]));
+
+  const depth = new Map();
+  for (const ticket of tickets) {
+    const idx = orderIndex.get(ticket.key);
+    if (idx !== undefined) {
+      depth.set(ticket.key, idx);
+    } else {
+      // Unmerged tickets go after the last merged one
+      depth.set(ticket.key, mergeOrder.length);
+    }
+  }
+
+  const maxDepth = Math.max(0, ...depth.values());
+  const layers = [];
+  for (let d = 0; d <= maxDepth; d++) {
+    const layer = tickets.filter((t) => depth.get(t.key) === d);
+    if (layer.length > 0) layers.push(layer);
+  }
+
+  return { layers, depth };
+}
+
+function computeLayersFromBlockers(tickets) {
   const keySet = new Set(tickets.map((t) => t.key));
   const depth = new Map();
 
@@ -33,12 +65,32 @@ export function computeLayers(tickets) {
   return { layers, depth };
 }
 
-export function getParents(ticket, tickets) {
+export function getParents(ticket, tickets, mergeOrder) {
+  if (mergeOrder && mergeOrder.length > 0) {
+    const idx = mergeOrder.indexOf(ticket.key);
+    if (idx > 0) return [mergeOrder[idx - 1]];
+    if (idx === 0) return [];
+    // Unmerged: parent is the last merged ticket
+    if (mergeOrder.length > 0) return [mergeOrder[mergeOrder.length - 1]];
+    return [];
+  }
   const keySet = new Set(tickets.map((t) => t.key));
   return (ticket.blockers || []).filter((b) => keySet.has(b));
 }
 
-export function getChildren(ticket, tickets) {
+export function getChildren(ticket, tickets, mergeOrder) {
+  if (mergeOrder && mergeOrder.length > 0) {
+    const idx = mergeOrder.indexOf(ticket.key);
+    if (idx >= 0 && idx < mergeOrder.length - 1) return [mergeOrder[idx + 1]];
+    // Last merged ticket: unmerged tickets are children
+    const mergedSet = new Set(mergeOrder);
+    if (idx === mergeOrder.length - 1) {
+      return tickets
+        .filter((t) => !mergedSet.has(t.key))
+        .map((t) => t.key);
+    }
+    return [];
+  }
   const keySet = new Set(tickets.map((t) => t.key));
   return (ticket.blocks || []).filter((b) => keySet.has(b));
 }

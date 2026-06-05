@@ -1,5 +1,44 @@
 import { topologicalSort } from "./util.js";
 
+export function featureBranchFromContainer(containerKey) {
+  if (!containerKey || containerKey === "Standalone") return null;
+  return containerKey;
+}
+
+export async function attachFeatureBranches(stacks) {
+  for (const stack of stacks) {
+    stack.featureBranch = featureBranchFromContainer(stack.containerKey);
+  }
+  return stacks;
+}
+
+export function computeStackLayers(tickets) {
+  const keySet = new Set(tickets.map((t) => t.key));
+  const depth = new Map();
+
+  const localBlockers = (t) => (t.blockers || []).filter((b) => keySet.has(b));
+
+  function getDepth(ticket) {
+    if (depth.has(ticket.key)) return depth.get(ticket.key);
+    const parents = localBlockers(ticket);
+    if (!parents.length) {
+      depth.set(ticket.key, 0);
+      return 0;
+    }
+    const maxParent = Math.max(
+      ...parents.map((pKey) => {
+        const parent = tickets.find((t) => t.key === pKey);
+        return parent ? getDepth(parent) : 0;
+      }),
+    );
+    depth.set(ticket.key, maxParent + 1);
+    return maxParent + 1;
+  }
+
+  for (const t of tickets) getDepth(t);
+  return depth;
+}
+
 export function buildStacks(issues) {
   const containerCache = new Map();
   const grouped = new Map();

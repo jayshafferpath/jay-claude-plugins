@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { FeatureBranchStacks } from "./FeatureBranchStacks.jsx";
 import { StackOverview } from "./StackOverview.jsx";
 import { StackList } from "./StackList.jsx";
 import { SummaryBar } from "./SummaryBar.jsx";
@@ -74,6 +75,7 @@ export function App() {
         <div className="empty">No active Claude tickets found.</div>
       ) : (
         <>
+          <FeatureBranchStacks stacks={stacks} jiraBaseUrl={jiraBaseUrl} onAction={handleAction} />
           <StackOverview stacks={stacks} jiraBaseUrl={jiraBaseUrl} />
           <StackList stacks={stacks} onAction={handleAction} jiraBaseUrl={jiraBaseUrl} />
         </>

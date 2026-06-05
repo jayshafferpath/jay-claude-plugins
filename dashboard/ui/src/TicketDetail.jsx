@@ -1,9 +1,21 @@
 import { useState, useEffect } from "react";
 import { PrPanel } from "./PrPanel.jsx";
 
+function formatTimestamp(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return iso;
+  return date.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 export function TicketDetail({ ticketKey, onAction }) {
   const [detail, setDetail] = useState(null);
   const [plan, setPlan] = useState(null);
+  const [activity, setActivity] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showRawPlan, setShowRawPlan] = useState(false);
   const [reviewRequested, setReviewRequested] = useState(false);
@@ -15,11 +27,13 @@ export function TicketDetail({ ticketKey, onAction }) {
     Promise.all([
       fetch(`/api/tickets/${ticketKey}`).then((r) => r.json()),
       fetch(`/api/tickets/${ticketKey}/plan`).then((r) => r.json()),
+      fetch(`/api/tickets/${ticketKey}/activity`).then((r) => r.json()),
     ])
-      .then(([detailData, planData]) => {
+      .then(([detailData, planData, activityData]) => {
         if (!cancelled) {
           setDetail(detailData);
           setPlan(planData.found ? planData : null);
+          setActivity(activityData.found ? activityData : null);
           setLoading(false);
         }
       })
@@ -229,6 +243,39 @@ export function TicketDetail({ ticketKey, onAction }) {
             {showRawPlan && (
               <pre className="plan-raw">{plan.raw}</pre>
             )}
+          </div>
+        )}
+
+        {activity && activity.entries.length > 0 && (
+          <div className="detail-section full-width">
+            <h3>Activity Log</h3>
+            <div className="activity-log">
+              {activity.entries.map((entry, i) => (
+                <div key={i} className="activity-entry">
+                  <div className="activity-entry-header">
+                    <span className="activity-entry-heading">{entry.heading}</span>
+                    {entry.timestamp && (
+                      <span className="activity-entry-timestamp">
+                        {formatTimestamp(entry.timestamp)}
+                      </span>
+                    )}
+                  </div>
+                  {entry.blocks.map((block, j) =>
+                    block.kind === "bullets" ? (
+                      <ul key={j} className="activity-bullets">
+                        {block.items.map((item, k) => (
+                          <li key={k}>{item}</li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p key={j} className="activity-paragraph">
+                        {block.text}
+                      </p>
+                    ),
+                  )}
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </div>

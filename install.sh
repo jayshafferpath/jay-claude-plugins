@@ -73,6 +73,25 @@ if [ -d "$CLI_DIR" ]; then
     echo "  Note: 'npm link' failed — you can run directly with: node $CLI_DIR/bin/ticket-status.js"
   }
   echo "  ticket-status CLI installed"
+
+  # Pin asdf shims to the active Node version so CLIs work inside repos
+  # with a different .tool-versions. asdf reshim will wipe these — rerun install.sh after that.
+  if [ -d "$HOME/.asdf/shims" ] && command -v asdf >/dev/null 2>&1; then
+    NODE_VERSION="$(node --version 2>/dev/null | sed 's/^v//')"
+    if [ -n "$NODE_VERSION" ]; then
+      BINS="$(node -e "const p=require('$CLI_DIR/package.json');console.log(Object.keys(p.bin||{}).join(' '))" 2>/dev/null || echo "")"
+      pinned=0
+      for cmd in $BINS; do
+        shim="$HOME/.asdf/shims/$cmd"
+        [ -f "$shim" ] || continue
+        grep -q "ASDF_NODEJS_VERSION" "$shim" && continue
+        sed -i.bak "s|^exec asdf exec |exec env ASDF_NODEJS_VERSION=$NODE_VERSION asdf exec |" "$shim"
+        rm -f "$shim.bak"
+        pinned=$((pinned + 1))
+      done
+      [ "$pinned" -gt 0 ] && echo "  Pinned $pinned asdf shim(s) to Node $NODE_VERSION"
+    fi
+  fi
 fi
 
 echo ""

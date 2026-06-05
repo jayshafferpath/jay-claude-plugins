@@ -47,6 +47,42 @@ describe("renderTree", () => {
     const output = renderTree(stacks);
     expect(output).toContain("approve plan?");
   });
+
+  it("renders feature branch header with depth-indented stack", () => {
+    const stacks = [
+      {
+        containerKey: "EPIC-1",
+        containerSummary: "E",
+        featureBranch: "feat/billing",
+        tickets: [
+          { key: "T-1", summary: "First", labels: [], blockers: [] },
+          { key: "T-2", summary: "Second", labels: [], blockers: ["T-1"] },
+          { key: "T-3", summary: "Third", labels: [], blockers: ["T-2"] },
+        ],
+      },
+    ];
+    const output = renderTree(stacks);
+    expect(output).toContain("feat/billing");
+    const t2Line = output.split("\n").find((l) => l.includes("T-2: Second"));
+    const t3Line = output.split("\n").find((l) => l.includes("T-3: Third"));
+    expect(t2Line.indexOf("├")).toBeGreaterThan(0);
+    expect(t3Line.indexOf("└")).toBeGreaterThan(t2Line.indexOf("├"));
+  });
+
+  it("falls back to flat rendering when no feature branch", () => {
+    const stacks = [
+      {
+        containerKey: "EPIC-1",
+        containerSummary: "E",
+        tickets: [
+          { key: "T-1", summary: "First", labels: [] },
+          { key: "T-2", summary: "Second", labels: [] },
+        ],
+      },
+    ];
+    const output = renderTree(stacks);
+    expect(output).not.toContain("⎇");
+  });
 });
 
 describe("renderSummary", () => {

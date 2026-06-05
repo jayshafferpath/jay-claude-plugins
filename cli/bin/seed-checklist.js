@@ -18,7 +18,7 @@ const args = process.argv.slice(2);
 
 if (args.includes("--help") || args.length === 0) {
   console.error(
-    "Usage: seed-checklist <TICKET_KEY> --work-dir <path> --branch <name> --base-branch <base> --pr-target <target> --summary <text> [--feature-branch <fb>] [--serial] [--jira-source]",
+    "Usage: seed-checklist <TICKET_KEY> --work-dir <path> --branch <name> --base-branch <base> --pr-target <target> --summary <text> [--serial] [--jira-source]",
   );
   process.exit(1);
 }
@@ -33,7 +33,6 @@ const ticketKey = args[0]?.toUpperCase();
 const workDir = getFlag("--work-dir") || process.cwd();
 const branchName = getFlag("--branch") || ticketKey;
 const baseBranch = getFlag("--base-branch") || "main";
-const featureBranch = getFlag("--feature-branch") || null;
 const prTarget = getFlag("--pr-target") || baseBranch;
 const summary = getFlag("--summary") || "";
 const serial = args.includes("--serial");
@@ -149,9 +148,7 @@ try {
       (done, i) => `- [${done ? "x" : " "}] ${i + 1}. ${STEP_LABELS[i]}`,
     );
 
-    let frontmatter = `---\nticket: ${ticketKey}\nbranch: ${branchName}\nsummary: ${summary}\nbase_branch: ${baseBranch}`;
-    if (featureBranch) frontmatter += `\nfeature_branch: ${featureBranch}`;
-    frontmatter += `\npr_target: ${prTarget}\nwork_dir: ${workDir}\nserial: ${serial}\ncreated: ${timestamp}\n---`;
+    const frontmatter = `---\nticket: ${ticketKey}\nbranch: ${branchName}\nsummary: ${summary}\nbase_branch: ${baseBranch}\npr_target: ${prTarget}\nwork_dir: ${workDir}\nserial: ${serial}\ncreated: ${timestamp}\n---`;
 
     const markdown = `${frontmatter}\n\n# ${ticketKey} - Work Checklist\n\n${stepLines.join("\n")}\n`;
 

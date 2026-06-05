@@ -16,10 +16,11 @@ vi.mock("../lib/jira.js", () => ({
   getComments: vi.fn(),
   addComment: vi.fn(),
   updateComment: vi.fn(),
+  deleteComment: vi.fn(),
 }));
 
 const { readdirSync } = await import("node:fs");
-const { getComments, addComment, updateComment } = await import(
+const { getComments, addComment, updateComment, deleteComment } = await import(
   "../lib/jira.js"
 );
 const {
@@ -33,6 +34,11 @@ const {
   readExecutionPlanFromJira,
   readPlanSectionsFromJira,
   markPlanTaskDone,
+  clearChecklistFromJira,
+  clearPlanFromJira,
+  appendActivityLog,
+  collapseActivityLog,
+  readActivityLog,
 } = await import("../lib/checklist.js");
 
 const CHECKLIST_MD = `---
@@ -594,5 +600,282 @@ describe("markPlanTaskDone", () => {
     const result = await markPlanTaskDone("TICK-1", "Add migration");
     expect(result.completed).toBe(2);
     expect(addComment).toHaveBeenCalled();
+  });
+});
+
+describe("clearChecklistFromJira", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("deletes the checklist comment when it exists", async () => {
+    getComments.mockResolvedValue([
+      {
+        id: "77",
+        body: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "[claude-checklist-sync] " }],
+            },
+          ],
+        },
+      },
+    ]);
+    deleteComment.mockResolvedValue(undefined);
+    const result = await clearChecklistFromJira("TICK-1");
+    expect(result).toBe(true);
+    expect(deleteComment).toHaveBeenCalledWith("TICK-1", "77");
+  });
+
+  it("returns false when no checklist comment exists", async () => {
+    getComments.mockResolvedValue([]);
+    const result = await clearChecklistFromJira("TICK-1");
+    expect(result).toBe(false);
+    expect(deleteComment).not.toHaveBeenCalled();
+  });
+});
+
+describe("clearPlanFromJira", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("deletes the plan comment when it exists", async () => {
+    getComments.mockResolvedValue([
+      {
+        id: "88",
+        body: {
+          type: "doc",
+          content: [
+            {
+              type: "paragraph",
+              content: [{ type: "text", text: "[claude-plan-sync] " }],
+            },
+          ],
+        },
+      },
+    ]);
+    deleteComment.mockResolvedValue(undefined);
+    const result = await clearPlanFromJira("TICK-1");
+    expect(result).toBe(true);
+    expect(deleteComment).toHaveBeenCalledWith("TICK-1", "88");
+  });
+
+  it("returns false when no plan comment exists", async () => {
+    getComments.mockResolvedValue([]);
+    const result = await clearPlanFromJira("TICK-1");
+    expect(result).toBe(false);
+    expect(deleteComment).not.toHaveBeenCalled();
+  });
+});
+
+describe("appendActivityLog", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("creates a new activity comment when none exists", async () => {
+    getComments.mockResolvedValue([]);
+    addComment.mockResolvedValue({ id: "100" });
+    const result = await appendActivityLog(
+      "TICK-1",
+      "Plan generated",
+      "- step 1\n- step 2",
+      {
+        timestamp: "2026-06-05T10:00:00Z",
+      },
+    );
+    expect(result.action).toBe("created");
+    expect(addComment).toHaveBeenCalledTimes(1);
+
+    const adfBody = addComment.mock.calls[0][1];
+    expect(adfBody.type).toBe("doc");
+    const headerText = adfBody.content[0].content[0].text;
+    expect(headerText).toContain("[claude-activity-log]");
+    const headingText = adfBody.content[1].content[0].text;
+    expect(headingText).toBe("2026-06-05T10:00:00Z — Plan generated");
+    const bullets = adfBody.content.find((n) => n.type === "bulletList");
+    expect(bullets.content).toHaveLength(2);
+  });
+
+  it("appends to an existing activity comment", async () => {
+    const existingDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "[claude-activity-log] ",
+              marks: [{ type: "code" }],
+            },
+            {
+              type: "text",
+              text: "Claude Activity Log",
+              marks: [{ type: "strong" }],
+            },
+          ],
+        },
+        {
+          type: "heading",
+          attrs: { level: 3 },
+          content: [
+            { type: "text", text: "2026-06-04T09:00:00Z — Earlier entry" },
+          ],
+        },
+        {
+          type: "paragraph",
+          content: [{ type: "text", text: "earlier body" }],
+        },
+      ],
+    };
+    getComments.mockResolvedValue([{ id: "200", body: existingDoc }]);
+    updateComment.mockResolvedValue({});
+
+    const result = await appendActivityLog(
+      "TICK-1",
+      "TDD start",
+      "starting execution",
+      {
+        timestamp: "2026-06-05T11:00:00Z",
+      },
+    );
+
+    expect(result.action).toBe("appended");
+    expect(updateComment).toHaveBeenCalledWith(
+      "TICK-1",
+      "200",
+      expect.objectContaining({ type: "doc" }),
+    );
+    const adfBody = updateComment.mock.calls[0][2];
+    const headings = adfBody.content.filter((n) => n.type === "heading");
+    expect(headings).toHaveLength(2);
+    expect(headings[0].content[0].text).toBe(
+      "2026-06-04T09:00:00Z — Earlier entry",
+    );
+    expect(headings[1].content[0].text).toBe(
+      "2026-06-05T11:00:00Z — TDD start",
+    );
+  });
+
+  it("rejects calls without a heading", async () => {
+    await expect(appendActivityLog("TICK-1", "")).rejects.toThrow(
+      "appendActivityLog requires a heading",
+    );
+  });
+});
+
+describe("collapseActivityLog", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns noop when no activity log exists", async () => {
+    getComments.mockResolvedValue([]);
+    const result = await collapseActivityLog("TICK-1");
+    expect(result).toEqual({ action: "noop", entriesCollapsed: 0 });
+    expect(updateComment).not.toHaveBeenCalled();
+  });
+
+  it("collapses prior entries into a single summary section", async () => {
+    const existingDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "[claude-activity-log] ",
+              marks: [{ type: "code" }],
+            },
+            {
+              type: "text",
+              text: "Claude Activity Log",
+              marks: [{ type: "strong" }],
+            },
+          ],
+        },
+        {
+          type: "heading",
+          attrs: { level: 3 },
+          content: [{ type: "text", text: "T1 — A" }],
+        },
+        { type: "paragraph", content: [{ type: "text", text: "body A" }] },
+        {
+          type: "heading",
+          attrs: { level: 3 },
+          content: [{ type: "text", text: "T2 — B" }],
+        },
+        { type: "paragraph", content: [{ type: "text", text: "body B" }] },
+      ],
+    };
+    getComments.mockResolvedValue([{ id: "300", body: existingDoc }]);
+    updateComment.mockResolvedValue({});
+
+    const result = await collapseActivityLog("TICK-1");
+
+    expect(result.action).toBe("collapsed");
+    expect(result.entriesCollapsed).toBe(2);
+
+    const adfBody = updateComment.mock.calls[0][2];
+    const headings = adfBody.content.filter((n) => n.type === "heading");
+    expect(headings).toHaveLength(1);
+    expect(headings[0].content[0].text).toBe("Previous attempts (collapsed)");
+    const summaryParagraph = adfBody.content.find(
+      (n) =>
+        n.type === "paragraph" &&
+        n.content?.[0]?.text?.includes("2 prior entries"),
+    );
+    expect(summaryParagraph).toBeTruthy();
+  });
+});
+
+describe("readActivityLog", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when no activity comment exists", async () => {
+    getComments.mockResolvedValue([]);
+    const result = await readActivityLog("TICK-1");
+    expect(result).toBeNull();
+  });
+
+  it("parses entries from existing activity comment", async () => {
+    const existingDoc = {
+      type: "doc",
+      content: [
+        {
+          type: "paragraph",
+          content: [
+            {
+              type: "text",
+              text: "[claude-activity-log] ",
+              marks: [{ type: "code" }],
+            },
+            {
+              type: "text",
+              text: "Claude Activity Log",
+              marks: [{ type: "strong" }],
+            },
+          ],
+        },
+        {
+          type: "heading",
+          attrs: { level: 3 },
+          content: [{ type: "text", text: "T1 — first" }],
+        },
+        { type: "paragraph", content: [{ type: "text", text: "body" }] },
+      ],
+    };
+    getComments.mockResolvedValue([{ id: "1", body: existingDoc }]);
+    const result = await readActivityLog("TICK-1");
+    expect(result.entries).toHaveLength(1);
+    expect(result.entries[0].heading).toBe("T1 — first");
+    expect(result.entries[0].bodyNodes).toHaveLength(1);
   });
 });

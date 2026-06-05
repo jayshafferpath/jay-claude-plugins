@@ -7,6 +7,7 @@ allowed-tools:
   - Bash(git *)
   - Bash(gh *)
   - Bash(cd *)
+  - Bash(append-activity *)
   - Skill
 ---
 
@@ -110,6 +111,14 @@ gh pr comment {PR_NUMBER} --body "{COMMENT}"
 ```
 
 Use a HEREDOC to preserve formatting.
+
+If a Jira ticket key can be inferred from the branch name (e.g., `PROJ-123-feature`), also append a compacted version of the finalization summary to the ticket's activity log:
+
+```bash
+append-activity {TICKET_KEY} --heading "Finalized" --body-file <compact-summary.md>
+```
+
+The activity-log body should be a tighter recap (4-8 lines max) — a one-line reasoning summary, the count of changed files grouped by area, and the key downstream-context bullets. The full narrative still lives on the GitHub PR.
 
 ## Step 5: Summary
 

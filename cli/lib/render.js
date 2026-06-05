@@ -1,4 +1,5 @@
 import chalk from "chalk";
+import { computeStackLayers } from "./stacks.js";
 import { actionHint, labelState } from "./util.js";
 
 const STATE_COLORS = {
@@ -14,6 +15,20 @@ const STATE_COLORS = {
   unknown: chalk.dim,
 };
 
+function renderTicketLine(ticket, prefix) {
+  const state = labelState(ticket.labels);
+  const colorFn = STATE_COLORS[state.display] || chalk.dim;
+  const stateStr = colorFn(`[${state.display}]`);
+  const hint = actionHint(state.label);
+  const hintStr = hint ? chalk.yellow(` ← ${hint}`) : "";
+
+  if (ticket.waitingOn) {
+    const waitStr = chalk.dim(`[waiting on ${ticket.waitingOn}]`);
+    return `${prefix}${ticket.key}: ${ticket.summary}    ${waitStr}`;
+  }
+  return `${prefix}${ticket.key}: ${ticket.summary}    ${stateStr}${hintStr}`;
+}
+
 export function renderTree(stacks) {
   const lines = [];
 
@@ -21,21 +36,23 @@ export function renderTree(stacks) {
     lines.push("");
     lines.push(chalk.bold(`${stack.containerKey}: ${stack.containerSummary}`));
 
-    for (let i = 0; i < stack.tickets.length; i++) {
-      const t = stack.tickets[i];
-      const isLast = i === stack.tickets.length - 1;
-      const prefix = isLast ? "└── " : "├── ";
-      const state = labelState(t.labels);
-      const colorFn = STATE_COLORS[state.display] || chalk.dim;
-      const stateStr = colorFn(`[${state.display}]`);
-      const hint = actionHint(state.label);
-      const hintStr = hint ? chalk.yellow(` ← ${hint}`) : "";
-
-      if (t.waitingOn) {
-        const waitStr = chalk.dim(`[waiting on ${t.waitingOn}]`);
-        lines.push(`${prefix}${t.key}: ${t.summary}    ${waitStr}`);
-      } else {
-        lines.push(`${prefix}${t.key}: ${t.summary}    ${stateStr}${hintStr}`);
+    if (stack.featureBranch) {
+      lines.push(chalk.cyan(`  ⎇  ${stack.featureBranch}`));
+      const depth = computeStackLayers(stack.tickets);
+      for (let i = 0; i < stack.tickets.length; i++) {
+        const t = stack.tickets[i];
+        const d = depth.get(t.key) || 0;
+        const isLast = i === stack.tickets.length - 1;
+        const branch = isLast ? "└── " : "├── ";
+        const indent = "    ".repeat(d);
+        lines.push(renderTicketLine(t, `${indent}${branch}`));
+      }
+    } else {
+      for (let i = 0; i < stack.tickets.length; i++) {
+        const t = stack.tickets[i];
+        const isLast = i === stack.tickets.length - 1;
+        const prefix = isLast ? "└── " : "├── ";
+        lines.push(renderTicketLine(t, prefix));
       }
     }
   }

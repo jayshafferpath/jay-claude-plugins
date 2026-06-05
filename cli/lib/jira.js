@@ -92,6 +92,37 @@ export async function swapLabel(key, remove, add) {
   await editIssue(key, { labels: [{ remove }, { add }] });
 }
 
+export async function getPrFromDevStatus(key) {
+  const creds = auth();
+  const issueRes = await fetch(`${baseUrl(creds)}/issue/${key}?fields=id`, {
+    headers: headers(creds),
+  });
+  if (!issueRes.ok) return null;
+  const issue = await issueRes.json();
+
+  const protocol = process.env.JIRA_PROTOCOL || "https";
+  const devUrl = `${protocol}://${creds.domain}/rest/dev-status/latest/issue/detail?issueId=${issue.id}&applicationType=GitHub&dataType=pullrequest`;
+  const devRes = await fetch(devUrl, { headers: headers(creds) });
+  if (!devRes.ok) return null;
+
+  const devData = await devRes.json();
+  const prs = devData.detail?.flatMap((d) => d.pullRequests || []) || [];
+  const open = prs.find((p) => p.status === "OPEN") || prs[0];
+  if (!open) return null;
+
+  return {
+    url: open.url,
+    number: parseInt(open.id.replace("#", ""), 10),
+    state:
+      open.status === "OPEN"
+        ? "OPEN"
+        : open.status === "MERGED"
+          ? "MERGED"
+          : "CLOSED",
+    title: open.name || null,
+  };
+}
+
 export async function getComments(key) {
   const creds = auth();
   const res = await fetch(
@@ -141,4 +172,20 @@ export async function updateComment(key, commentId, adfBody) {
   }
 
   return res.json();
+}
+
+export async function deleteComment(key, commentId) {
+  const creds = auth();
+  const res = await fetch(
+    `${baseUrl(creds)}/issue/${key}/comment/${commentId}`,
+    {
+      method: "DELETE",
+      headers: headers(creds),
+    },
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira deleteComment failed (${res.status}): ${body}`);
+  }
 }
