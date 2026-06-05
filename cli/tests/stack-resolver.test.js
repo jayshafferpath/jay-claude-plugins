@@ -546,7 +546,10 @@ describe("resolveStack", () => {
   it("returns container: null when ticket has no Story and no Epic", async () => {
     getIssue.mockResolvedValue({
       key: "T-1",
-      fields: issueFields({ summary: "Truly standalone", labels: ["repo:backend"] }),
+      fields: issueFields({
+        summary: "Truly standalone",
+        labels: ["repo:backend"],
+      }),
     });
 
     const result = await resolveStack("T-1");
