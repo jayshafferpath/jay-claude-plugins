@@ -18,8 +18,14 @@ vi.mock("../lib/config.js", () => ({
 const { getIssue, searchIssues } = await import("../lib/jira.js");
 const { findBranch, isAncestor, isMergedInto } = await import("../lib/git.js");
 const { loadDevRoot } = await import("../lib/config.js");
-const { resolveContainer, detectFeatureBranch, isFinished, resolveStack } =
-  await import("../lib/stack-resolver.js");
+const {
+  resolveContainer,
+  featureBranchFromContainer,
+  findContainerBlockers,
+  resolveContainerBase,
+  isFinished,
+  resolveStack,
+} = await import("../lib/stack-resolver.js");
 
 function issueFields(opts = {}) {
   return {
@@ -90,23 +96,157 @@ describe("resolveContainer", () => {
   });
 });
 
-describe("detectFeatureBranch", () => {
-  it("extracts branch name from branch: label", () => {
-    expect(detectFeatureBranch(["ClaudeWork", "branch:feature-auth"])).toBe(
-      "feature-auth",
+describe("featureBranchFromContainer", () => {
+  it("returns the container key for non-Standalone containers", () => {
+    expect(featureBranchFromContainer("STORY-42")).toBe("STORY-42");
+  });
+
+  it("returns null for Standalone", () => {
+    expect(featureBranchFromContainer("Standalone")).toBeNull();
+  });
+
+  it("returns null for empty input", () => {
+    expect(featureBranchFromContainer(null)).toBeNull();
+    expect(featureBranchFromContainer("")).toBeNull();
+  });
+});
+
+describe("findContainerBlockers", () => {
+  it("returns Story/Epic/Task blockers via 'is blocked by' inward links", () => {
+    const links = [
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "STORY-1",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "EPIC-9",
+          fields: { issuetype: { name: "Epic" } },
+        },
+      },
+    ];
+    expect(findContainerBlockers(links)).toEqual(["STORY-1", "EPIC-9"]);
+  });
+
+  it("ignores Sub-task blockers", () => {
+    const links = [
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "SUB-1",
+          fields: { issuetype: { name: "Sub-task" } },
+        },
+      },
+    ];
+    expect(findContainerBlockers(links)).toEqual([]);
+  });
+
+  it("ignores non-blocker link types", () => {
+    const links = [
+      {
+        type: { inward: "relates to" },
+        inwardIssue: {
+          key: "STORY-1",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+    ];
+    expect(findContainerBlockers(links)).toEqual([]);
+  });
+
+  it("returns empty for null/empty input", () => {
+    expect(findContainerBlockers(null)).toEqual([]);
+    expect(findContainerBlockers([])).toEqual([]);
+  });
+});
+
+describe("resolveContainerBase", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns main when there are no container blockers", () => {
+    const result = resolveContainerBase([], "/repo");
+    expect(result).toEqual({
+      baseBranch: "main",
+      blockerContainers: [],
+      unmergedBlockers: [],
+    });
+  });
+
+  it("returns main when all blockers are merged into main", () => {
+    isAncestor.mockReturnValue(true);
+    const links = [
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "STORY-1",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+    ];
+    const result = resolveContainerBase(links, "/repo");
+    expect(result.baseBranch).toBe("main");
+    expect(result.blockerContainers).toEqual(["STORY-1"]);
+    expect(result.unmergedBlockers).toEqual([]);
+  });
+
+  it("returns the blocker key when one blocker is unmerged", () => {
+    isAncestor.mockReturnValue(false);
+    const links = [
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "STORY-A",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+    ];
+    const result = resolveContainerBase(links, "/repo");
+    expect(result.baseBranch).toBe("STORY-A");
+    expect(result.unmergedBlockers).toEqual(["STORY-A"]);
+  });
+
+  it("throws when multiple blockers are unmerged", () => {
+    isAncestor.mockReturnValue(false);
+    const links = [
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "STORY-A",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "STORY-B",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+    ];
+    expect(() => resolveContainerBase(links, "/repo")).toThrow(
+      /multiple unmerged blocker containers/,
     );
   });
 
-  it("returns null when no branch label", () => {
-    expect(detectFeatureBranch(["ClaudeWork", "repo:backend"])).toBeNull();
-  });
-
-  it("returns null for empty labels", () => {
-    expect(detectFeatureBranch([])).toBeNull();
-  });
-
-  it("handles null labels", () => {
-    expect(detectFeatureBranch(null)).toBeNull();
+  it("treats blockers as unmerged when no repoRoot is available", () => {
+    const links = [
+      {
+        type: { inward: "is blocked by" },
+        inwardIssue: {
+          key: "STORY-A",
+          fields: { issuetype: { name: "Story" } },
+        },
+      },
+    ];
+    const result = resolveContainerBase(links, null);
+    expect(result.baseBranch).toBe("STORY-A");
+    expect(result.unmergedBlockers).toEqual(["STORY-A"]);
   });
 });
 
@@ -173,7 +313,7 @@ describe("resolveStack", () => {
           key: "STORY-1",
           fields: issueFields({
             summary: "Parent",
-            labels: ["branch:feature-x", "repo:backend"],
+            labels: ["repo:backend"],
           }),
         };
       }
@@ -223,7 +363,7 @@ describe("resolveStack", () => {
     const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
 
     expect(result.container.key).toBe("STORY-1");
-    expect(result.container.featureBranch).toBe("feature-x");
+    expect(result.container.featureBranch).toBe("STORY-1");
     expect(result.stack).toHaveLength(2);
 
     const sub1 = result.stack.find((t) => t.key === "SUB-1");
@@ -233,7 +373,7 @@ describe("resolveStack", () => {
     const sub2 = result.stack.find((t) => t.key === "SUB-2");
     expect(sub2.eligible).toBe(true);
     expect(sub2.unblockedBlockers).toHaveLength(0);
-    expect(sub2.baseBranch).toBe("feature-x");
+    expect(sub2.baseBranch).toBe("STORY-1");
   });
 
   it("marks ticket as blocked when blocker not merged into feature branch", async () => {
@@ -258,7 +398,7 @@ describe("resolveStack", () => {
         return {
           key: "STORY-1",
           fields: issueFields({
-            labels: ["branch:feat", "repo:backend"],
+            labels: ["repo:backend"],
           }),
         };
       }
@@ -314,7 +454,7 @@ describe("resolveStack", () => {
     expect(result.stack[0].status).toBe("in-progress");
   });
 
-  it("computes baseBranch as main when no blocker and no feature branch", async () => {
+  it("ticket in a Story stack with no blocker uses the container key as baseBranch", async () => {
     getIssue.mockImplementation(async (key) => {
       if (key === "SUB-1") {
         return {
@@ -351,9 +491,10 @@ describe("resolveStack", () => {
 
     const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
     const sub1 = result.stack[0];
-    expect(sub1.baseBranch).toBe("main");
-    expect(sub1.prTarget).toBe("main");
-    expect(result.container.featureBranch).toBeNull();
+    expect(sub1.baseBranch).toBe("STORY-1");
+    expect(sub1.prTarget).toBe("STORY-1");
+    expect(result.container.featureBranch).toBe("STORY-1");
+    expect(result.container.baseBranch).toBe("main");
   });
 
   it("uses Epic JQL branch for Epic containers", async () => {
@@ -402,7 +543,130 @@ describe("resolveStack", () => {
     expect(result.container.type).toBe("Epic");
   });
 
-  it("computes baseBranch as blocker key when finished blocker and no feature branch", async () => {
+  it("returns container: null when ticket has no Story and no Epic", async () => {
+    getIssue.mockResolvedValue({
+      key: "T-1",
+      fields: issueFields({
+        summary: "Truly standalone",
+        labels: ["repo:backend"],
+      }),
+    });
+
+    const result = await resolveStack("T-1");
+    expect(result.container).toBeNull();
+    expect(result.stack).toHaveLength(1);
+    expect(result.stack[0].baseBranch).toBe("main");
+  });
+
+  it("surfaces container.baseBranch from blocker container when blocker is unmerged", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-B", fields: { summary: "B" } },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-B") {
+        return {
+          key: "STORY-B",
+          fields: issueFields({
+            summary: "B",
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: {
+                  key: "STORY-A",
+                  fields: { issuetype: { name: "Story" } },
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    // STORY-A is NOT an ancestor of main → unmerged
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    expect(result.container.featureBranch).toBe("STORY-B");
+    expect(result.container.baseBranch).toBe("STORY-A");
+    expect(result.container.unmergedBlockers).toEqual(["STORY-A"]);
+  });
+
+  it("returns main as container baseBranch when blocker container is merged", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-B", fields: { summary: "B" } },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-B") {
+        return {
+          key: "STORY-B",
+          fields: issueFields({
+            summary: "B",
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: {
+                  key: "STORY-A",
+                  fields: { issuetype: { name: "Story" } },
+                },
+              },
+            ],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isAncestor.mockReturnValue(true);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    expect(result.container.baseBranch).toBe("main");
+    expect(result.container.unmergedBlockers).toEqual([]);
+  });
+
+  it("ticket with finished blocker still bases on the feature branch", async () => {
     getIssue.mockImplementation(async (key) => {
       if (key === "SUB-2") {
         return {
@@ -460,7 +724,7 @@ describe("resolveStack", () => {
 
     const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });
     const sub2 = result.stack.find((t) => t.key === "SUB-2");
-    expect(sub2.baseBranch).toBe("SUB-1");
-    expect(sub2.prTarget).toBe("SUB-1");
+    expect(sub2.baseBranch).toBe("STORY-1");
+    expect(sub2.prTarget).toBe("STORY-1");
   });
 });

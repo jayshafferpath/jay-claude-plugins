@@ -10,6 +10,7 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
+| `/prune KEY` | Prune a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket |
 | `/ears-requirements [topic]` | Ideate and write EARS (Easy Approach to Requirements Syntax) requirements interactively |
 
 ### `/ticket-work` in detail
@@ -67,7 +68,11 @@ A **stack container** is a Story, Task, or Epic in Jira. Its subtasks (or Epic c
 
 ### Feature branch model
 
-During development, tickets are stacked as git branches: each branch is based on the previous ticket's branch, accumulating ancestor changes. All PRs target a shared feature branch (identified by a `branch:*` label on the container). This means ticket-3's branch contains ticket-1 + ticket-2 + ticket-3 changes.
+Every Story/Epic container is automatically a feature branch, named after the container's Jira key (e.g. `EPIC-123`). The tooling creates the branch on first ticket-work invocation — no manual setup, no `branch:` label.
+
+During development, tickets in a stack are layered as git branches: each ticket branch is based on the previous ticket's branch (or on the feature branch if it's the first), accumulating ancestor changes. All ticket PRs target the shared feature branch. This means ticket-3's branch contains ticket-1 + ticket-2 + ticket-3 changes.
+
+When containers depend on each other (Epic B `is blocked by` Epic A), the tooling honors the DAG: if A's branch is unmerged, B's feature branch is automatically based on A's branch instead of main. `/promote-to-main` refuses to promote any ticket inside B until A is fully merged. Standalone tickets (no Story/Epic container) skip the feature branch and PR direct to main.
 
 ### Promotion to main
 

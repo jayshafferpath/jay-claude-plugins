@@ -48,7 +48,7 @@ const ISSUES = {
     key: "STORY-1",
     fields: {
       summary: "Parent Story",
-      labels: ["branch:feature-auth", "repo:my-backend"],
+      labels: ["repo:my-backend"],
       parent: null,
       issuetype: { name: "Story" },
       status: { statusCategory: { key: "indeterminate" } },
@@ -189,7 +189,7 @@ describe("resolve-stack e2e", () => {
     expect(result.container).not.toBeNull();
     expect(result.container.key).toBe("STORY-1");
     expect(result.container.type).toBe("Story");
-    expect(result.container.featureBranch).toBe("feature-auth");
+    expect(result.container.featureBranch).toBe("STORY-1");
     expect(result.inputTicket).toBe("SUB-1");
     expect(result.stack).toHaveLength(2);
 
@@ -200,8 +200,8 @@ describe("resolve-stack e2e", () => {
 
     const sub2 = result.stack.find((t) => t.key === "SUB-2");
     expect(sub2.eligible).toBe(true);
-    expect(sub2.baseBranch).toBe("feature-auth");
-    expect(sub2.prTarget).toBe("feature-auth");
+    expect(sub2.baseBranch).toBe("STORY-1");
+    expect(sub2.prTarget).toBe("STORY-1");
   });
 
   it("resolves from SUB-2 with correct ticketIndex", async () => {

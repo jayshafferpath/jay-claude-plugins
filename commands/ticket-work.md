@@ -17,6 +17,7 @@ allowed-tools:
   - Bash(ensure-pr *)
   - Bash(post-review-summary *)
   - Bash(seed-checklist *)
+  - Bash(append-activity *)
   - Read
   - Write
   - Skill
@@ -26,8 +27,8 @@ allowed-tools:
 # Ticket Work
 
 Run Jira tickets through: plan → execute → code review → stack-ready.
-With a feature branch (`branch:` label on stack container): merges locally into the feature branch after review passes.
-Without a feature branch: stops at stack-ready; PR to main requires `ClaudePRApproved` trigger.
+Tickets in a Story/Epic stack: merge locally into the container's feature branch (named after the container key, e.g. `EPIC-123`) after review passes.
+Standalone tickets (no Story/Epic container): stop at stack-ready; PR to main requires `ClaudePRApproved` trigger.
 Idempotent — reads checklist state and resumes from wherever it left off.
 
 - **With arguments**: Run a single ticket (or expand a Story to its subtasks and run them in parallel).
@@ -47,9 +48,21 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 - **ClaudeFailed**: execution failed, user: investigate
 - **ClaudeStackComplete**: all tickets in stack finished (added to stack container). If feature branch set, triggers Mode C (feature branch PR to main).
 - **ClaudeMainPR**: used by `/promote-to-main` — not part of the ticket-work lifecycle
-- **branch:{name}**: applied to the stack container (Story/Epic) to designate a root feature branch. User creates this branch manually. All tickets in the stack base off this branch and merge locally into it after review passes.
+
+Feature branches are derived automatically: every Story/Epic container is a feature branch named after its Jira key (e.g. `EPIC-123`). The tooling creates the branch on first use, basing it on `main` (or on a blocker container's branch — see `resolve-stack` output `container.baseBranch`). Tickets in the stack base off this branch and merge locally into it after review passes.
 
 Note: never remove the `ClaudeWork` label — it is a durable tag indicating Claude owns the ticket.
+
+### Activity Log Comment
+
+All narrative status updates go into a single managed Jira comment (marker `[claude-activity-log]`) — one per ticket, append-only. Use the `append-activity` CLI to record progress instead of `mcp__atlassian__addCommentToJiraIssue`. Each call adds a timestamped entry with a heading and a compacted body (1-5 bullet recap, not full narration).
+
+Usage:
+```bash
+append-activity {TICKET_KEY} --heading "<short title>" --body "<compact summary>"
+```
+
+For multi-line bodies, write to a temp file and use `--body-file`. Subagents launched from this command should call `append-activity` once at the end of their work with a compacted summary of what they did.
 
 ### Label Inheritance
 
@@ -98,9 +111,9 @@ Use `mcp__atlassian__getAccessibleAtlassianResources` to get `CLOUD_ID`.
 
 For each key in `$ARGUMENTS`, use `mcp__atlassian__getJiraIssue` to fetch it.
 
-### Completed stack with feature branch — Mode C
+### Completed stack — Mode C
 
-If the issue is a **stack container** (Story/Task with subtasks, or Epic) AND has `ClaudeStackComplete` label AND has a `branch:` label: this is a completed feature branch ready for PR to main. Proceed to **Mode C: Feature Branch PR** below.
+If the issue is a **stack container** (Story/Task with subtasks, or Epic) AND has `ClaudeStackComplete` label: this is a completed feature branch ready for PR to main. Proceed to **Mode C: Feature Branch PR** below.
 
 ### Standard ticket resolution
 
@@ -131,14 +144,14 @@ Proceed to **Queue Pipeline** below.
 
 ---
 
-# Mode C: Feature Branch PR (completed stack with feature branch)
+# Mode C: Feature Branch PR (completed stack)
 
-Triggered when a stack container key is passed that has both `ClaudeStackComplete` and a `branch:` label. This opens a PR from the feature branch to main, runs code review, and resolves Copilot comments.
+Triggered when a stack container key is passed that has `ClaudeStackComplete`. This opens a PR from the feature branch (named after the container key) to main, runs code review, and resolves Copilot comments.
 
 ## C1: Initialize
 
 1. `CONTAINER_KEY` = the provided issue key
-2. `FEATURE_BRANCH` = value from `branch:` label (minus prefix)
+2. `FEATURE_BRANCH` = `{CONTAINER_KEY}` (the feature branch is always named after the container)
 3. Detect `REPO_ROOT`:
    - Look for `repo:` label on the container issue
    - `REPO_ROOT` = `{DEV_ROOT}/{repo_name}` (where `DEV_ROOT` comes from env)
@@ -215,8 +228,10 @@ Work through each unchecked step in order. After completing each step, immediate
    ensure-pr {FEATURE_BRANCH} --base main --body-file ./pr.md --draft
    ```
 3. Parse the JSON output. Store `pr.url` as `PR_URL`.
-4. Post a Jira comment on `{CONTAINER_KEY}`: "Draft PR opened for feature branch `{FEATURE_BRANCH}` → main: {PR_URL}"
-   - Use `mcp__atlassian__addCommentToJiraIssue`
+4. Append to the activity log on `{CONTAINER_KEY}`:
+   ```bash
+   append-activity {CONTAINER_KEY} --heading "Draft PR opened" --body "Feature branch \`{FEATURE_BRANCH}\` → main: {PR_URL}"
+   ```
 5. Mark step 2 as `[x]`
 
 ---
@@ -277,8 +292,10 @@ Work through each unchecked step in order. After completing each step, immediate
    ```bash
    gh pr ready {FEATURE_BRANCH}
    ```
-2. Post a Jira comment on `{CONTAINER_KEY}`: "Feature branch PR is ready for human review: {PR_URL}"
-   - Use `mcp__atlassian__addCommentToJiraIssue`
+2. Append to the activity log on `{CONTAINER_KEY}`:
+   ```bash
+   append-activity {CONTAINER_KEY} --heading "Feature branch PR ready" --body "Ready for human review: {PR_URL}"
+   ```
 3. Mark step 7 as `[x]`
 
 ---
@@ -369,6 +386,8 @@ resolve-stack {KEY} --repo-root {REPO_ROOT}
 
 Parse the JSON output. Find the ticket's entry in the `stack` array. Use:
 - `FEATURE_BRANCH` = `container.featureBranch`
+- `CONTAINER_BASE` = `container.baseBranch`
+- `UNMERGED_BLOCKERS` = `container.unmergedBlockers`
 - `BASE_BRANCH` = ticket's `baseBranch`
 - `BRANCH_NAME` = ticket's `branch` (or `{KEY}` if null)
 
@@ -385,7 +404,9 @@ Fetch once per repo, then prepare branches/worktrees sequentially (shared git st
    cd {REPO_ROOT} && git fetch origin
    ```
 
-2. For each eligible ticket:
+2. For each unique `(REPO_ROOT, FEATURE_BRANCH)` pair where `FEATURE_BRANCH` is set, ensure the feature branch exists locally and on origin by running the **S2.0** procedure for one ticket in that stack (creating the branch from `CONTAINER_BASE` and pushing if needed). If `UNMERGED_BLOCKERS` has more than one entry, abort that container's tickets with a clear error.
+
+3. For each eligible ticket:
    a. Display: "Preparing {MODE} for {KEY}: {SUMMARY} (base: {BASE_BRANCH})" where `{MODE}` is "branch" if `SERIAL_MODE`, otherwise "worktree"
 
    b. Derive `BRANCH_NAME` = `{TICKET_KEY}` (reuse existing branch if one matches `{KEY}*`)
@@ -491,9 +512,12 @@ For each done ticket:
 3. Check if EVERY item has status category "done"
 4. If yes, and the stack container does NOT already have `ClaudeStackComplete`:
    - Add `ClaudeStackComplete`: `update`: `{"labels": [{"add": "ClaudeStackComplete"}]}`
-   - Post a comment: "All tickets in this stack have been completed by Claude."
+   - Append to the activity log on the container:
+     ```bash
+     append-activity {CONTAINER_KEY} --heading "Stack complete" --body "All tickets in this stack have been completed by Claude."
+     ```
    - Display: "Stack complete: {CONTAINER_TYPE} {CONTAINER_KEY}"
-5. If `ClaudeStackComplete` was just added AND the container has a `branch:` label (feature branch set):
+5. If `ClaudeStackComplete` was just added AND the container is a Story/Epic (i.e. not Standalone):
    - Display: "Feature branch stack complete — running Mode C (Feature Branch PR) for {CONTAINER_KEY}"
    - Run **Mode C: Feature Branch PR** for this container (pass the container key through)
 
@@ -582,7 +606,9 @@ resolve-stack {TICKET_KEY} --repo-root {CURRENT_ROOT} --fetch
 ```
 
 Parse the JSON output. Extract:
-- `FEATURE_BRANCH` = `container.featureBranch` (null if standard workflow)
+- `FEATURE_BRANCH` = `container.featureBranch` (null for standalone tickets)
+- `CONTAINER_BASE` = `container.baseBranch` (`main` or a blocker container key — used by S2.0)
+- `UNMERGED_BLOCKERS` = `container.unmergedBlockers` (array of blocker container keys not yet on main)
 - Find the input ticket in the `stack` array (where `key == TICKET_KEY`)
 - `BRANCH_NAME` = ticket's `branch` field (or `{TICKET_KEY}` if null)
 - `BASE_BRANCH` = ticket's `baseBranch`
@@ -597,6 +623,32 @@ If the ticket's `eligible` is `false` and `unblockedBlockers` is non-empty:
 - **Ensure `ClaudeWork` label**: If the ticket does not already have the `ClaudeWork` label, add it using `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "ClaudeWork"}]}`.
 
 ## S2: Ensure Working Directory Ready
+
+### S2.0: Ensure Feature Branch Exists (skip if `FEATURE_BRANCH` is null)
+
+Before any per-ticket branch/worktree creation, make sure the feature branch (and any of its container blocker branches) exist locally and on origin. Skip this step entirely for standalone tickets (`FEATURE_BRANCH` null).
+
+1. Read `CONTAINER_BASE` = `container.baseBranch` from the `resolve-stack` output (S1c). This is `main` or another container key.
+2. Read `UNMERGED_BLOCKERS` = `container.unmergedBlockers`. If it has more than one entry, **stop** with: "Container {CONTAINER_KEY} has multiple unmerged blocker containers: {LIST}. Resolve by merging one or chaining them via blocker links."
+3. If `CONTAINER_BASE` is another container key (not `main`), recurse: ensure that base container's branch exists locally first. (Single level — `resolve-stack` already collapses the chain to the immediate blocker.)
+   ```bash
+   cd {REPO_ROOT} && git ls-remote --heads origin {CONTAINER_BASE}
+   ```
+   If the base branch doesn't exist on origin, **stop** with: "Blocker container {CONTAINER_BASE} has no branch yet. Run /ticket-work against {CONTAINER_BASE}'s first ticket to bootstrap it."
+4. Ensure the feature branch exists. Check origin first:
+   ```bash
+   cd {REPO_ROOT} && git ls-remote --heads origin {FEATURE_BRANCH}
+   ```
+   - **If exists on origin**: fetch it.
+     ```bash
+     cd {REPO_ROOT} && git fetch origin {FEATURE_BRANCH}:{FEATURE_BRANCH} 2>/dev/null || git fetch origin {FEATURE_BRANCH}
+     ```
+   - **If does not exist on origin**: create from `origin/{CONTAINER_BASE}` and push.
+     ```bash
+     cd {REPO_ROOT} && git branch {FEATURE_BRANCH} origin/{CONTAINER_BASE}
+     cd {REPO_ROOT} && git push -u origin {FEATURE_BRANCH}
+     ```
+5. Proceed to S2a or S2b.
 
 ### S2a: Serial Mode (`SERIAL_MODE = true`)
 
@@ -673,7 +725,7 @@ The checklist lives as a managed Jira comment (tagged with `[claude-checklist-sy
 
 Run:
 ```bash
-seed-checklist {TICKET_KEY} --work-dir {WORK_DIR} --branch {BRANCH_NAME} --base-branch {BASE_BRANCH} --pr-target {PR_TARGET} --summary "{SUMMARY}" {--feature-branch {FEATURE_BRANCH} if set} {--serial if SERIAL_MODE} --jira-source
+seed-checklist {TICKET_KEY} --work-dir {WORK_DIR} --branch {BRANCH_NAME} --base-branch {BASE_BRANCH} --pr-target {PR_TARGET} --summary "{SUMMARY}" {--serial if SERIAL_MODE} --jira-source
 ```
 
 Parse the JSON output:
@@ -762,8 +814,11 @@ Additionally, apply the Stage Squash Protocol at each stage boundary (record HEA
    (jira-start writes a local file — this syncs it to Jira. The local file is now disposable.)
 5. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudePlanning"}, {"add": "ClaudePlanNeedsApproval"}]}`
-6. Post a Jira comment with a summary of the plan (approach overview, key implementation steps, and if stacked: "Stacked on {BASE_BRANCH}"). Footer: "Awaiting approval. Add label `ClaudePlanApproved` to proceed."
-   - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+6. Append a plan summary to the activity log:
+   ```bash
+   append-activity {TICKET_KEY} --heading "Plan generated" --body-file <tmp-summary.md>
+   ```
+   The body should contain: approach overview (1-2 sentences), key implementation steps as bullets, and if stacked: "Stacked on {BASE_BRANCH}". Footer line: "Awaiting approval. Add label `ClaudePlanApproved` to proceed."
 7. Mark step 1 as done in the steps array and sync checklist to Jira.
 8. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] plan: generated`.
 
@@ -804,8 +859,10 @@ Execution follows test-driven development: for each plan task, write a failing t
    - Remove all other `Claude*` workflow labels (except `ClaudeWork`)
    - Add `ClaudeExecuting`
    - `update`: `{"labels": [{"remove": "ClaudePlanApproved"}, {"remove": "ClaudePlanNeedsApproval"}, {"add": "ClaudeExecuting"}]}`
-2. Post a Jira comment: "Starting TDD execution."
-   - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+2. Append to the activity log:
+   ```bash
+   append-activity {TICKET_KEY} --heading "TDD execution started" --body "Beginning Red-Green-Refactor cycle for plan tasks."
+   ```
 
 3. **Extract Gherkin scenarios**: Fetch the ticket description using `mcp__atlassian__getJiraIssue`. Extract all Gherkin scenarios (`Given`/`When`/`Then` blocks or fenced `gherkin`/`feature` blocks). These drive the tests.
 
@@ -888,9 +945,18 @@ Execution follows test-driven development: for each plan task, write a failing t
    - Run the full test suite one final time to confirm everything passes
    - Run `git status` — if there are uncommitted changes, stage and commit
 8. Re-read the plan from Jira (`sync-plan {TICKET_KEY} --read`) to verify tasks are complete
-9. Post a Jira comment summarizing execution results:
-   "TDD execution finished.\n\nTasks:\n- [x] Task 1 title (N tests)\n- [x] Task 2 title (N tests)\n- [ ] Task 3 title (incomplete)\n\nCompleted N/M tasks. Total tests written: T."
-   - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+9. Append a TDD execution summary to the activity log. Body should be a compacted recap (per-task one-liners + totals):
+   ```
+   - [x] Task 1 title (N tests)
+   - [x] Task 2 title (N tests)
+   - [ ] Task 3 title (incomplete)
+
+   Completed N/M tasks. Total tests written: T.
+   ```
+   Write the body to a temp file and run:
+   ```bash
+   append-activity {TICKET_KEY} --heading "TDD execution finished" --body-file <tmp-summary.md>
+   ```
 10. If all tasks complete:
     - Mark step 3 as done and sync checklist to Jira.
     - Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] execute: TDD implementation`.
@@ -934,14 +1000,19 @@ TDD execution (S4.3) should have produced tests for every Gherkin scenario. This
 5. If ALL scenarios have corresponding tests and all tests pass:
    - Mark step 4 as done and sync checklist to Jira.
    - Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] verify: acceptance criteria`.
-   - Post a Jira comment: "TDD verification passed. All {N} Gherkin scenarios are covered by tests. Full suite green."
-     - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+   - Append to the activity log:
+     ```bash
+     append-activity {TICKET_KEY} --heading "TDD verification passed" --body "All {N} Gherkin scenarios are covered by tests. Full suite green."
+     ```
 6. If a scenario has no corresponding test (was missed during TDD):
    - Write the missing test (Red), implement if needed (Green), commit
    - Re-verify until all scenarios are covered
    - If gaps remain after the fix attempt:
      - Update Jira labels: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeFailed"}]}`
-     - Post a Jira comment with the coverage map showing uncovered scenarios
+     - Append the coverage map (showing uncovered scenarios) to the activity log:
+       ```bash
+       append-activity {TICKET_KEY} --heading "TDD verification failed" --body-file <coverage-map.md>
+       ```
      - **Stop here** (user must investigate)
 
 ---
@@ -1007,14 +1078,16 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
 
 1. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeStackReady"}]}`
-2. Post a Jira comment: "Code review complete. Stack unblocked — downstream tickets may begin."
-   - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+2. Append to the activity log:
+   ```bash
+   append-activity {TICKET_KEY} --heading "Stack ready" --body "Code review complete. Stack unblocked — downstream tickets may begin."
+   ```
 3. Mark step 8 as done and sync checklist to Jira.
 
 **If `FEATURE_BRANCH` is set**: verify all review issues are resolved, then merge into the local feature branch.
 
    1. **Verify review is clean**: Read the PR review plan file from `{PLANS_DIR}/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`). Parse all items in the plan:
-      - If any issues are marked unresolved or incomplete: set `ClaudeFailed` label, post a Jira comment listing the unresolved issues, and **stop**.
+      - If any issues are marked unresolved or incomplete: set `ClaudeFailed` label, append the unresolved-issues list to the activity log (`append-activity {TICKET_KEY} --heading "Review issues unresolved" --body-file <issues.md>`), and **stop**.
       - Display: "Review has unresolved issues. Fix them and re-run `/ticket-work {TICKET_KEY}`."
       - Only proceed if ALL issues identified by the review have been resolved.
    2. Ensure feature branch is up to date:
@@ -1037,8 +1110,10 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
       - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
       - If worktree mode: `cd {WORK_DIR}`
    7. Mark steps 9-13 as done and sync checklist to Jira (not applicable for feature branch workflow).
-   8. Post a Jira comment: "Merged into feature branch `{FEATURE_BRANCH}`."
-      - Use `mcp__atlassian__addCommentToJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
+   8. Append to the activity log:
+      ```bash
+      append-activity {TICKET_KEY} --heading "Merged to feature branch" --body "Merged into feature branch \`{FEATURE_BRANCH}\`."
+      ```
    9. Update Jira labels:
       - `update`: `{"labels": [{"remove": "ClaudeStackReady"}, {"add": "ClaudeNeedsReview"}]}`
    10. Display:

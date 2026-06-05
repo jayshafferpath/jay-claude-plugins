@@ -5,7 +5,11 @@ import { loadEnv } from "../lib/env.js";
 loadEnv();
 
 import { join } from "node:path";
-import { readChecklist, syncChecklistToJira } from "../lib/checklist.js";
+import {
+  clearChecklistFromJira,
+  readChecklist,
+  syncChecklistToJira,
+} from "../lib/checklist.js";
 import { detectWorkDir } from "../lib/util.js";
 
 const args = process.argv.slice(2);
@@ -13,7 +17,8 @@ const args = process.argv.slice(2);
 if (args.includes("--help") || args.length === 0) {
   console.error(
     "Usage: sync-checklist <TICKET_KEY> [work_dir]\n" +
-      "       sync-checklist <TICKET_KEY> --steps '<json>'",
+      "       sync-checklist <TICKET_KEY> --steps '<json>'\n" +
+      "       sync-checklist <TICKET_KEY> --clear",
   );
   process.exit(1);
 }
@@ -27,9 +32,17 @@ function getFlag(name) {
 }
 
 const stepsJson = getFlag("--steps");
+const clearMode = args.includes("--clear");
 
 try {
-  if (stepsJson) {
+  if (clearMode) {
+    const deleted = await clearChecklistFromJira(ticketKey);
+    if (deleted) {
+      console.log(`Cleared checklist for ${ticketKey}.`);
+    } else {
+      console.log(`No checklist found for ${ticketKey} — nothing to clear.`);
+    }
+  } else if (stepsJson) {
     const steps = JSON.parse(stepsJson);
     if (!Array.isArray(steps) || !steps.length) {
       console.error("--steps must be a non-empty JSON array");

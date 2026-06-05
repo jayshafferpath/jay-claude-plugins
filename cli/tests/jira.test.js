@@ -15,6 +15,8 @@ const {
   getComments,
   addComment,
   updateComment,
+  deleteComment,
+  getPrFromDevStatus,
 } = await import("../lib/jira.js");
 
 function mockFetch(body, ok = true, status = 200) {
@@ -187,6 +189,127 @@ describe("jira module", () => {
       await expect(updateComment("X-1", "2", {})).rejects.toThrow(
         "Jira updateComment failed (500)",
       );
+    });
+  });
+
+  describe("deleteComment", () => {
+    it("sends DELETE request", async () => {
+      global.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+      });
+      await deleteComment("X-1", "5");
+      expect(global.fetch).toHaveBeenCalledWith(
+        "https://x.atlassian.net/rest/api/3/issue/X-1/comment/5",
+        expect.objectContaining({ method: "DELETE" }),
+      );
+    });
+
+    it("throws on failure", async () => {
+      mockFetch("err", false, 404);
+      await expect(deleteComment("X-1", "5")).rejects.toThrow(
+        "Jira deleteComment failed (404)",
+      );
+    });
+  });
+
+  describe("getPrFromDevStatus", () => {
+    it("returns PR info from dev-status API", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ id: "12345" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              detail: [
+                {
+                  pullRequests: [
+                    {
+                      id: "#42",
+                      name: "feat: do stuff",
+                      url: "https://github.com/org/repo/pull/42",
+                      status: "OPEN",
+                    },
+                  ],
+                },
+              ],
+            }),
+        });
+
+      const result = await getPrFromDevStatus("X-1");
+      expect(result).toEqual({
+        url: "https://github.com/org/repo/pull/42",
+        number: 42,
+        state: "OPEN",
+        title: "feat: do stuff",
+      });
+    });
+
+    it("prefers open PR over closed", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ id: "12345" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              detail: [
+                {
+                  pullRequests: [
+                    {
+                      id: "#10",
+                      name: "old",
+                      url: "https://github.com/org/repo/pull/10",
+                      status: "DECLINED",
+                    },
+                    {
+                      id: "#20",
+                      name: "new",
+                      url: "https://github.com/org/repo/pull/20",
+                      status: "OPEN",
+                    },
+                  ],
+                },
+              ],
+            }),
+        });
+
+      const result = await getPrFromDevStatus("X-1");
+      expect(result.number).toBe(20);
+      expect(result.state).toBe("OPEN");
+    });
+
+    it("returns null when no PRs exist", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ id: "12345" }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ detail: [{ pullRequests: [] }] }),
+        });
+
+      const result = await getPrFromDevStatus("X-1");
+      expect(result).toBeNull();
+    });
+
+    it("returns null when issue fetch fails", async () => {
+      global.fetch = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+      });
+
+      const result = await getPrFromDevStatus("X-1");
+      expect(result).toBeNull();
     });
   });
 });

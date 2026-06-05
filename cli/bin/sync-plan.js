@@ -7,6 +7,7 @@ loadEnv();
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  clearPlanFromJira,
   markPlanTaskDone,
   readPlanSectionsFromJira,
   syncPlanToJira,
@@ -21,7 +22,8 @@ if (args.includes("--help") || args.length === 0) {
     "Usage: sync-plan <TICKET_KEY> [work_dir]\n" +
       "       sync-plan <TICKET_KEY> --file <path>\n" +
       "       sync-plan <TICKET_KEY> --read\n" +
-      '       sync-plan <TICKET_KEY> --mark-done "<task_label>"',
+      '       sync-plan <TICKET_KEY> --mark-done "<task_label>"\n' +
+      "       sync-plan <TICKET_KEY> --clear",
   );
   process.exit(1);
 }
@@ -37,9 +39,17 @@ function getFlag(name) {
 const filePath = getFlag("--file");
 const readMode = args.includes("--read");
 const markDoneLabel = getFlag("--mark-done");
+const clearMode = args.includes("--clear");
 
 try {
-  if (readMode) {
+  if (clearMode) {
+    const deleted = await clearPlanFromJira(ticketKey);
+    if (deleted) {
+      console.log(`Cleared plan for ${ticketKey}.`);
+    } else {
+      console.log(`No plan found for ${ticketKey} — nothing to clear.`);
+    }
+  } else if (readMode) {
     const result = await readPlanSectionsFromJira(ticketKey);
     if (!result) {
       console.error(`No plan found in Jira for ${ticketKey}`);

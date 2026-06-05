@@ -13,6 +13,7 @@ allowed-tools:
   - Bash(git diff *)
   - Bash(gh pr edit *)
   - Bash(resolve-stack *)
+  - Bash(append-activity *)
 ---
 
 # Stack Rebase - Cascade rebase through a stacked PR chain
@@ -138,13 +139,11 @@ git push --force-with-lease origin {ticket_key}
 
 If force-push fails (e.g., branch protection), warn the user and continue to the next ticket.
 
-### 5f: Comment on Jira
+### 5f: Append to Activity Log
 
-Use `mcp__atlassian__addCommentToJiraIssue`:
-- `cloudId`: CLOUD_ID
-- `issueIdOrKey`: {ticket_key}
-- `contentFormat`: `"markdown"`
-- `commentBody`: "Branch rebased onto `{NEW_BASE}` as part of stack rebase cascade (triggered by {given_ticket_key})."
+```bash
+append-activity {ticket_key} --heading "Branch rebased" --body "Rebased onto \`{NEW_BASE}\` as part of stack rebase cascade (triggered by {given_ticket_key})."
+```
 
 ### 5g: Continue
 

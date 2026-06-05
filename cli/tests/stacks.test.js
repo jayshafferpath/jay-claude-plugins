@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildStacks } from "../lib/stacks.js";
+import {
+  attachFeatureBranches,
+  buildStacks,
+  computeStackLayers,
+  featureBranchFromContainer,
+} from "../lib/stacks.js";
 
 function issue(key, opts = {}) {
   return {
@@ -207,5 +212,78 @@ describe("buildStacks", () => {
     const stacks = buildStacks(issues);
     const t1 = stacks[0].tickets.find((t) => t.key === "T-1");
     expect(t1.blocks).toEqual(["T-2"]);
+  });
+});
+
+describe("featureBranchFromContainer", () => {
+  it("returns the container key for non-Standalone containers", () => {
+    expect(featureBranchFromContainer("EPIC-1")).toBe("EPIC-1");
+    expect(featureBranchFromContainer("STORY-42")).toBe("STORY-42");
+  });
+
+  it("returns null for the Standalone container", () => {
+    expect(featureBranchFromContainer("Standalone")).toBeNull();
+  });
+
+  it("returns null for empty/null input", () => {
+    expect(featureBranchFromContainer(null)).toBeNull();
+    expect(featureBranchFromContainer(undefined)).toBeNull();
+    expect(featureBranchFromContainer("")).toBeNull();
+  });
+});
+
+describe("attachFeatureBranches", () => {
+  it("sets featureBranch to the container key on each stack", async () => {
+    const stacks = [
+      { containerKey: "EPIC-1", tickets: [] },
+      { containerKey: "STORY-2", tickets: [] },
+      { containerKey: "Standalone", tickets: [] },
+    ];
+
+    await attachFeatureBranches(stacks);
+
+    expect(stacks[0].featureBranch).toBe("EPIC-1");
+    expect(stacks[1].featureBranch).toBe("STORY-2");
+    expect(stacks[2].featureBranch).toBeNull();
+  });
+});
+
+describe("computeStackLayers", () => {
+  it("assigns depth 0 to tickets with no in-stack blockers", () => {
+    const tickets = [
+      { key: "T-1", blockers: [] },
+      { key: "T-2", blockers: [] },
+    ];
+    const depth = computeStackLayers(tickets);
+    expect(depth.get("T-1")).toBe(0);
+    expect(depth.get("T-2")).toBe(0);
+  });
+
+  it("increments depth for blocker chains", () => {
+    const tickets = [
+      { key: "T-1", blockers: [] },
+      { key: "T-2", blockers: ["T-1"] },
+      { key: "T-3", blockers: ["T-2"] },
+    ];
+    const depth = computeStackLayers(tickets);
+    expect(depth.get("T-1")).toBe(0);
+    expect(depth.get("T-2")).toBe(1);
+    expect(depth.get("T-3")).toBe(2);
+  });
+
+  it("ignores blockers not in the ticket set", () => {
+    const tickets = [{ key: "T-2", blockers: ["EXTERNAL-1"] }];
+    const depth = computeStackLayers(tickets);
+    expect(depth.get("T-2")).toBe(0);
+  });
+
+  it("uses the deepest parent when a ticket has multiple blockers", () => {
+    const tickets = [
+      { key: "T-1", blockers: [] },
+      { key: "T-2", blockers: ["T-1"] },
+      { key: "T-3", blockers: ["T-1", "T-2"] },
+    ];
+    const depth = computeStackLayers(tickets);
+    expect(depth.get("T-3")).toBe(2);
   });
 });
