@@ -37,6 +37,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 ## Label Reference
 
 - **ClaudeWork**: durable tag marking ticket for Claude (auto-applied on first pickup, never removed)
+- **ClaudeDriftChecked**: drift check (S3.5) ran and Implementation Notes are current. Cleared automatically when upstream `BASE_BRANCH` advances; otherwise idempotent within a session.
 - **ClaudeReady**: ticket is ready for planning (user-applied or added by promote step)
 - **ClaudePlanning**: /jira-start running
 - **ClaudePlanNeedsApproval**: plan ready, user: review plan and apply ClaudePlanApproved
@@ -778,6 +779,81 @@ STAGE_START_SHA=$(git merge-base HEAD origin/{BASE_BRANCH})
 ```
 
 This allows the agent to continue mid-stage work and squash everything once the stage finishes.
+
+## S3.5: Drift Check (Implementation Notes refresh)
+
+Before executing the checklist, verify that the ticket's `Implementation Notes` (created by `planner` Phase 5.0) still match the code. If the cited code has moved or changed since the research SHA, re-run the per-ticket research and update the ticket.
+
+**Skip entirely if:**
+- The ticket has no `h2. Implementation Notes` block (e.g., older tickets created before this protocol). Continue to S4.
+- The checklist already shows step 3 (S4.3 execute) as `[x]`. Drift detection is moot once implementation has started.
+- The Jira label `ClaudeDriftChecked` is present AND was added after the most recent push to `BASE_BRANCH`. (This makes drift checks idempotent within a session but re-runs if upstream has moved.)
+
+### S3.5a: Parse Existing Implementation Notes
+
+Read the ticket description via `mcp__atlassian__getJiraIssue`. Locate the `h2. Implementation Notes` block. Extract:
+
+- **Research baseline**: parse the `Research baseline: {repo}@{sha}` line. May list multiple repos.
+- **Cited permalinks**: each `[{path}#L{start}-L{end}|{permalink}]` link in the `Existing patterns` and `Tests likely to extend` sub-sections. Parse `{path}`, `{start}`, `{end}`, and the `{sha}` from the permalink.
+
+Store as `IMPL_NOTES_BASELINE` (per-repo SHA map) and `IMPL_NOTES_CITATIONS` (list of `{repo, path, start, end, baseline_sha}` records).
+
+### S3.5b: Diff Cited Ranges
+
+For each citation, in the citation's `{repo}` working dir, run:
+
+```bash
+git diff {baseline_sha}..HEAD -- {path}
+```
+
+Then check whether the cited line range was touched. Approach: run
+
+```bash
+git log --oneline -L {start},{end}:{path} {baseline_sha}..HEAD
+```
+
+If `git log -L` returns any commits, the cited range was modified. Mark this citation as **drifted**.
+
+If `{path}` no longer exists at HEAD, mark as **drifted (file removed)**.
+
+If the file moved (renamed), `git log --follow -- {path}` will show the rename — mark as **drifted (file moved)** and capture the new path.
+
+### S3.5c: Decide
+
+**No drift** (no citations changed):
+- Add `ClaudeDriftChecked` label.
+- Append a brief activity log entry: `Drift check passed — research baseline {sha} still current.` Continue to S4.
+
+**Drift detected**:
+- Re-run per-ticket research using the same protocol as `planner` Phase 5.0a–5.0c, scoped to this ticket. Use the current `git rev-parse HEAD` per repo as the new baseline.
+- Compose a new Implementation Notes block.
+- Update the ticket description via `mcp__atlassian__editJiraIssue`: replace the existing `h2. Implementation Notes` block with the new one. Preserve every other section.
+- Post a Jira comment (use `mcp__atlassian__addCommentToJiraIssue`, not `append-activity` — this is a substantive change worth a dedicated comment) showing:
+  ```
+  h3. Drift detected — Implementation Notes refreshed
+
+  Old baseline: {old_repo}@{old_sha}{, ...}
+  New baseline: {new_repo}@{new_sha}{, ...}
+
+  *Citations that drifted:*
+  * `{path}#L{start}-L{end}` — {summary of change, e.g. "lines moved", "file renamed to {new_path}", "function signature changed"}
+  * ...
+
+  *New citations replacing them:*
+  * `{new_path}#L{new_start}-L{new_end}` — `{symbol}` — {why this is the right replacement}
+
+  Implementation Notes block updated above. Re-review before approving the plan.
+  ```
+- If the ticket is past `ClaudePlanApproved` (plan was approved against stale notes), warn in the comment: `Plan was approved against the prior baseline. Consider re-reviewing the plan against the new Implementation Notes; if the plan needs to change, run /rework.`
+- Add `ClaudeDriftChecked` label.
+
+If the agent cannot confidently produce a replacement citation for a drifted entry (e.g., the pattern was removed and there's no obvious successor), include it as `*Citations dropped (no clear replacement):*` and surface a question to the user in the activity log so they can decide whether to proceed.
+
+### S3.5d: Continue
+
+Whether drift was found or not, proceed to S4.
+
+---
 
 ## S4: Execute Checklist
 

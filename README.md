@@ -6,7 +6,9 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 
 | Command | Description |
 |---|---|
-| `/ticket-work [KEY...]` | Run Jira tickets end-to-end: plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/ticket-work [KEY...]` | Run Jira tickets end-to-end: drift-check, plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/refresh-research KEY` | Manually re-run the research drift check on a ticket: diff cited code against the research baseline SHA and refresh the Implementation Notes if drift is detected |
+| `/fix-drift KEY` | Detect drift between a ticket's acceptance criteria and the current branch implementation, then fix the code to match |
 | `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
@@ -25,6 +27,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 #### Single ticket lifecycle
 
+0. **Drift check** — diff cited code in the ticket's `Implementation Notes` against the research baseline SHA; refresh the notes (and post a Jira comment) if any cited line range moved
 1. Plan generated with `/jira-start`
 2. Plan approved (gate — waits for `ClaudePlanApproved` label)
 3. Plan executed with `/plan-execute`
@@ -39,6 +42,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 ```
 ClaudeWork                 -- durable tag: Claude owns this ticket (never removed)
+ClaudeDriftChecked         -- research drift check ran; Implementation Notes are current
 ClaudeReady                -- eligible for planning
 ClaudePlanning             -- /jira-start in progress
 ClaudePlanNeedsApproval    -- plan ready, user: review and apply ClaudePlanApproved
@@ -57,6 +61,33 @@ ClaudeStackComplete        -- all tickets in stack finished (added to stack cont
 ### `ClaudeNeeds*` = user action required
 - `ClaudePlanNeedsApproval` → review plan, apply `ClaudePlanApproved`
 - `ClaudeNeedsReview` → review PR, iterate, move ticket to Done
+
+## TDDs and Research
+
+The planner sources its decomposition from a Technical Design Document checked into the repo at `docs/tdds/{slug}.md`. The TDD is the source of truth — Jira tickets only deep-link to it.
+
+### Decomposition flow
+
+`@planner docs/tdds/auth.md` (or just `@planner auth`):
+
+1. **Resolves the TDD** in the primary repo or any additional working directory
+2. **Pins a SHA** — `git rev-parse HEAD` in the TDD's repo. All ticket-facing TDD links use sha-pinned GitHub permalinks (`github.com/{org}/{repo}/blob/{sha}/docs/tdds/auth.md#section-anchor`) so they never rot
+3. **Identifies capabilities** as Epics, orders them by dependency
+4. **Researches codebase patterns** for the first Epic — produces sha-pinned permalinks (`...#L42-L60`) for existing modules, conventions, and tests the implementation should reuse
+5. **Surfaces patterns as proposed TDD additions** in the approval phase — you fold them into the TDD and commit before tickets are created, so the TDD remains the single source of truth for design context
+6. **Writes Gherkin** scenarios (Stories) and subtask decompositions
+7. **Per-ticket research** — before each ticket is created, runs a fresh narrow research pass scoped to that ticket's slice. Output is injected as an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA
+8. **Creates Jira tickets** with TDD link + Implementation Notes; stale tickets from prior decompositions are surfaced for `/prune`
+
+### Drift detection
+
+Implementation Notes carry a baseline SHA per repo. When `/ticket-work` picks up a ticket (S3.5, before planning), it diffs each cited line range from `baseline_sha..HEAD` using `git log -L`. If any cited code moved or was renamed:
+
+- The ticket's Implementation Notes are refreshed at the current SHA
+- A Jira comment posts old vs new baselines, drifted citations, and replacements
+- If the plan was already approved against stale notes, the comment recommends `/rework`
+
+Trigger the same check manually with `/refresh-research PROJ-123` — useful after a rebase or when a ticket has been sitting in the queue for a while.
 
 ## Stack Architecture
 
@@ -144,7 +175,7 @@ The queue uses `DEV_ROOT` to locate repo clones. Tickets need a `repo:` label (e
 
 | Agent | Description |
 |---|---|
-| `@planner` | Decompose Confluence documentation into Gherkin-based Epics, Stories, and Subtasks in Jira |
+| `@planner` | Decompose a repo-based Technical Design Document (`docs/tdds/{slug}.md`) into Gherkin-based Epics, Stories, and Subtasks in Jira. Researches codebase patterns and cites them as sha-pinned GitHub permalinks |
 | `@refactor` | Analyze code for CRAP score, DRY violations, and refactoring opportunities |
 
 ## CLI Tools
