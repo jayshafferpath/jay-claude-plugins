@@ -38,7 +38,7 @@ You are conversational — you present your analysis, wait for feedback, and ite
 
 1. **Gherkin-first decomposition**: Features become Epics, Gherkin scenarios become Stories, large scenarios decompose into Subtasks.
 2. **Repo TDD is the source of truth**: Every Epic and Story must cite a section of a markdown TDD checked into the repo at `docs/tdds/{slug}.md`. Tickets deep-link via GitHub-rendered heading anchors (e.g., `docs/tdds/auth.md#token-refresh`). The TDD lives next to the code it describes and evolves with it.
-3. **Dependency-aware creation**: Only the first Epic in the dependency tree is fully fleshed out (Stories with acceptance criteria, subtasks if needed). Remaining Epics are skeletons — title, description, TDD reference, and dependency links only.
+3. **Lazy decomposition — only flesh what's about to be worked**: Decomposition stops at the *first unblocked unit* in the dependency tree. Within the first Epic, only Stories with no inward blockers (the parallel-startable group) get full Gherkin, subtasks, and Implementation Notes. Every other Story is a skeleton — title, brief scope, TDD anchor, dependency links. Remaining Epics are skeletons too. This avoids predicting the future: codebase state, design intent, and even the right Gherkin can change before a downstream Story is queued, and a stale Implementation Notes baseline is just drift waiting to happen. Skeletons get re-entered (`@planner STORY-KEY` or `@planner EPIC-KEY`) when their blockers close.
 4. **Multi-Epic capable**: Large features produce multiple Epics, each representing a major capability or bounded context.
 5. **Explicit parallelism**: Every ticket gets "Blocks" links to define execution order. Tickets without inward blockers can run in parallel. This drives `/ticket-work`'s scheduling.
 6. **Pattern-aware decomposition**: Before writing Gherkin or subtasks for the first Epic, research the codebase for existing patterns (modules, conventions, abstractions) the work should reuse or extend. Surface findings as **sha-pinned GitHub permalinks** (e.g., `github.com/org/repo/blob/{sha}/path/to/file.ts#L42-L60`) so links never rot. Epic-wide patterns and constraints live **in the TDD** (Jira tickets only link to the TDD section).
@@ -49,11 +49,12 @@ You are conversational — you present your analysis, wait for feedback, and ite
 ## Entry Points
 
 The agent accepts either:
-- A **TDD path or slug** (e.g., `docs/tdds/auth.md` or just `auth`) → decompose the TDD into Epics/Stories
-- A **Jira Epic key** → decompose a skeleton Epic into Stories/Subtasks (re-entry mode)
-- **Nothing** → ask the user what to decompose
+- A **TDD path or slug** (e.g., `docs/tdds/auth.md` or just `auth`) → decompose the TDD into Epics/Stories. Only the first Epic's parallel-startable Stories are fleshed; everything downstream is a skeleton.
+- A **Jira Epic key** → decompose a skeleton Epic (re-entry mode). Same rule applies: flesh only the now-unblocked Stories.
+- A **Jira Story key** → decompose a skeleton Story into Gherkin + subtasks + Implementation Notes (re-entry mode). Use this when a Story's blockers have closed and it's queued for work.
+- **Nothing** → ask the user what to decompose.
 
-In every mode, if Jira tickets already exist for the input (TDD already decomposed, or Epic already has Stories/Subtasks), run **Phase 2.5: Stale Ticket Detection** before presenting the new decomposition. Tickets whose scope has been removed or rewritten in the TDD are flagged for `/prune`.
+In every mode, if Jira tickets already exist for the input (TDD already decomposed, or container already has children), run **Phase 2.5: Stale Ticket Detection** before presenting the new decomposition. Tickets whose scope has been removed or rewritten in the TDD are flagged for `/prune`.
 
 ---
 
@@ -82,8 +83,11 @@ Determine what the user provided:
 **If a Jira Epic key:**
 - Jump to **Re-entry: Decomposing a Skeleton Epic** (bottom of this doc)
 
+**If a Jira Story key:**
+- Jump to **Re-entry: Decomposing a Skeleton Story** (bottom of this doc)
+
 **If nothing provided:**
-- Ask: "What should I decompose? Give me a TDD path or slug under `docs/tdds/`, or a Jira Epic key for a skeleton."
+- Ask: "What should I decompose? Give me a TDD path or slug under `docs/tdds/`, a Jira Epic key (skeleton Epic), or a Jira Story key (skeleton Story being unblocked)."
 - If user provides a keyword: search `docs/tdds/` across working dirs (`Glob '**/docs/tdds/*{keyword}*.md'`). Present results and confirm.
 
 ### 1c: Ask for Jira Project
@@ -199,7 +203,12 @@ If research surfaces a structural problem (e.g., the Epic spans two repos in inc
 
 ### 2d: Write Gherkin for First Epic
 
-For the first Epic only, write detailed Gherkin scenarios covering the capability. Each scenario becomes a Story.
+For the first Epic, write Gherkin at two fidelities depending on whether the Story is parallel-startable:
+
+- **Parallel-startable Stories** (no inward blockers — see 2e for the dependency graph): full `Given`/`When`/`Then` scenarios. These will be created as fully-fleshed Stories in Phase 5.
+- **Downstream Stories** (blocked by other first-Epic Stories): just the `Scenario:` line and a 1-2 sentence description of what it covers. These will be created as **skeleton Stories** in Phase 5 and re-decomposed via `@planner STORY-KEY` when their blockers close.
+
+You may need to iterate: sketch all scenario names first, run 2e to identify the dependency graph, then circle back and only flesh the parallel-startable ones.
 
 Use `EPIC_PATTERNS` (from 2c) to ground scenario language in real seams — e.g., if the codebase has a "command/handler" pattern, framing scenarios around the relevant handler boundaries makes downstream subtask scoping cleaner. Don't drag implementation detail into Gherkin (it stays behavioral), but let the patterns shape *which* scenarios you call out as separate Stories.
 
@@ -258,9 +267,11 @@ Build a dependency graph for the Stories. Identify:
 - **Parallel groups**: Sets of Stories that have no dependencies on each other and can be worked simultaneously
 - **Sequential chains**: Stories that must be completed in order (A → B → C)
 
-### 2f: Assess Story Complexity and Subtask Dependencies
+### 2f: Assess Story Complexity and Subtask Dependencies (Parallel-Startable Stories Only)
 
-For each Gherkin scenario (Story), assess whether it needs subtasks:
+Skip downstream (blocked) Stories — those are skeletons and skip subtask decomposition entirely. They get re-entered later via `@planner STORY-KEY`.
+
+For each parallel-startable Gherkin scenario (Story), assess whether it needs subtasks:
 - **Simple** (1-2 Given/When/Then steps, single concern): No subtasks needed.
 - **Complex** (3+ steps, multiple concerns, requires changes across multiple layers): Break into subtasks.
 
@@ -393,17 +404,19 @@ Pinned to SHA `{TDD_SHA}` at research time. If you accept these, paste them unde
 **Stories (dependency graph):**
 
 ```
-Parallel Group 1 (no blockers — can start immediately):
+Parallel Group 1 [FULL] (no blockers — fleshed now):
   ├── Story A: {Scenario name} — {simple | complex → N subtasks}
   └── Story B: {Scenario name} — {simple | complex → N subtasks}
 
-Sequential (blocked by Story A):
+Sequential [SKELETON] (blocked by Story A — flesh via @planner STORY-KEY when A closes):
   ├── Story C: {Scenario name} — blocked by [Story A]
   └── Story D: {Scenario name} — blocked by [Story A, Story B]
 
-Sequential (blocked by Story C):
+Sequential [SKELETON] (blocked by Story C):
   └── Story E: {Scenario name} — blocked by [Story C]
 ```
+
+Only the [FULL] Stories will be created with full Gherkin, subtasks, and Implementation Notes in this run. [SKELETON] Stories carry just the scenario name, brief description, TDD anchor, and dependency links — they're re-entered when their blockers close, so their codebase research runs against fresh state instead of stale predictions.
 
 **Subtasks for Story "{complex story name}" (dependency order):**
 - {subtask 1 title} — no blockers (start immediately)
@@ -603,7 +616,11 @@ Epics with no inward "is blocked by" links can be worked in parallel.
 
 ### 5c: Create Stories for First Epic
 
-For each Gherkin scenario in the first Epic, run **Phase 5.0** to produce the Story's Implementation Notes, then create:
+Two shapes depending on whether the Story is parallel-startable.
+
+**Full Stories (parallel-startable group):**
+
+For each parallel-startable scenario, run **Phase 5.0** to produce the Story's Implementation Notes, then create:
 
 ```
 Summary: {Scenario Name}
@@ -627,9 +644,30 @@ Description:
   Part of [{EPIC_KEY}]: {Epic Name}
 ```
 
-Set the Epic Link field to the parent Epic key.
+**Skeleton Stories (downstream / blocked):**
 
-Use `mcp__atlassian__createJiraIssue` for each Story. Store the created Story keys.
+Skip Phase 5.0 — Implementation Notes are added at re-entry, when the blockers have closed and the codebase state is current. Create:
+
+```
+Summary: {Scenario Name}
+Description:
+  h2. Scope
+  {1-2 sentence description from Phase 2d}
+
+  h2. TDD Reference
+  [{TDD_TITLE} - {Section/Subsection}|{TDD_BLOB_BASE}/{TDD_PATH}#{anchor}]
+  Repo path: {TDD_PATH}#{anchor}
+
+  h2. Status
+  Skeleton — full Gherkin acceptance criteria, subtasks, and Implementation Notes will be added when upstream blockers close. Run `@planner {TICKET_KEY}` to decompose when ready.
+
+  h2. Epic
+  Part of [{EPIC_KEY}]: {Epic Name}
+```
+
+Set the Epic Link field on each Story to the parent Epic key.
+
+Use `mcp__atlassian__createJiraIssue` for each. Store the created Story keys.
 
 ### 5d: Link Story Dependencies (within the Epic)
 
@@ -647,7 +685,9 @@ Stories with no inward "is blocked by" links (parallel group) can be worked simu
 
 ### 5e: Create Subtasks for Complex Stories
 
-For each complex Story that was decomposed into subtasks, run **Phase 5.0** per subtask (scoping the research to the subtask's single layer/concern), then create:
+Only Full Stories (5c) have subtasks at this point. Skeleton Stories skip 5e entirely — their subtasks are created at re-entry.
+
+For each complex Full Story that was decomposed into subtasks, run **Phase 5.0** per subtask (scoping the research to the subtask's single layer/concern), then create:
 
 ```
 Summary: {Subtask Title}
@@ -700,12 +740,12 @@ Display the final result:
 ### Created Tickets
 
 **Epic 1 (FULL): {EPIC_1_KEY} - {Epic 1 Name}**
-  Parallel (no blockers):
+  Parallel [FULL] (no blockers):
   - {STORY_1_KEY}: {Story 1 Name}
     - {SUBTASK_1_KEY}: {Subtask 1 Title} (no blockers)
     - {SUBTASK_2_KEY}: {Subtask 2 Title} ← blocked by {SUBTASK_1_KEY}
   - {STORY_2_KEY}: {Story 2 Name} (no blockers)
-  Sequential:
+  Sequential [SKELETON] (re-decompose via @planner STORY-KEY when blockers close):
   - {STORY_3_KEY}: {Story 3 Name} ← blocked by {STORY_1_KEY}
 
 **Epic 2 (SKELETON): {EPIC_2_KEY} - {Epic 2 Name}**
@@ -746,10 +786,35 @@ When invoked with a Jira Epic key (instead of a TDD path):
 3. Use `Read` to load the TDD; locate the section by anchor or heading. Set `TDD_BODY`, `TDD_TITLE`.
 3a. Re-resolve `TDD_SHA = git rev-parse HEAD` in `TDD_REPO` and rebuild `TDD_BLOB_BASE`. New tickets created in this re-entry pin to the *current* SHA, not the SHA the parent Epic was originally created at.
 4. Run Phase 2c (codebase pattern research) scoped to this Epic — produce `EPIC_PATTERNS`
-5. Run Phase 2d-2f (write Gherkin, determine Story dependencies, assess complexity with pattern citations) scoped to just this Epic
+5. Run Phase 2d-2f (write Gherkin, determine Story dependencies, assess complexity with pattern citations) scoped to just this Epic. **Lazy rule still applies**: within this Epic, only the parallel-startable Stories are fleshed; downstream Stories are created as skeletons and re-entered later via `@planner STORY-KEY`.
 6. Run **Phase 2.5: Stale Ticket Detection** scoped to existing children of this Epic — anything that doesn't map to a scenario in the new decomposition is surfaced for `/prune`
 7. Run Phase 3 (present for approval) showing only this Epic's decomposition with dependency graph, existing-patterns section, and any stale-ticket recommendations
 8. Run Phase 4 (compute anchors for any new Stories)
-9. Run Phase 5c-5f (create Stories, Subtasks with pattern citations, and all dependency links under the existing Epic)
+9. Run Phase 5c-5f (create Full Stories with subtasks + Implementation Notes; create Skeleton Stories without; link dependencies under the existing Epic)
 10. Update the Epic description to replace the "Skeleton" status with the full Gherkin, story list, and "Existing Patterns to Follow" section
 11. Display summary with dependency info (parallel width, sequential chains) and stale-ticket recommendations
+
+---
+
+## Re-entry: Decomposing a Skeleton Story
+
+When invoked with a Jira Story key (the Story was created as a skeleton in a prior planner run and is now ready to be fleshed because its blockers have closed):
+
+1. Fetch the Story via `mcp__atlassian__getJiraIssue`. Confirm it's a Story whose description contains `h2. Status` followed by `Skeleton`. If it doesn't look like a skeleton Story (already has full acceptance criteria), ask the user whether to overwrite or abort.
+2. **Verify the Story is actually unblocked**: read its `is blocked by` issue links. If any blocker is not in a Done status, warn the user:
+   ```
+   Story {KEY} still has open blockers: {blocker keys with statuses}.
+   Fleshing now risks the same staleness problem the lazy model is meant to avoid.
+   Continue anyway? (y/N)
+   ```
+   Default to abort.
+3. Extract the TDD reference from the Story description. Set `TDD_PATH`, `TDD_REPO`, `TDD_GITHUB_SLUG`.
+4. Use `Read` to load the TDD. Set `TDD_BODY`, `TDD_TITLE`.
+5. Re-resolve `TDD_SHA = git rev-parse HEAD` in `TDD_REPO` and rebuild `TDD_BLOB_BASE`. The Story and its subtasks pin to **current** HEAD, not the parent Epic's research SHA.
+6. Fetch the parent Epic via `mcp__atlassian__getJiraIssue` (read the Epic Link field on the Story). Carry forward `EPIC_PATTERNS` from the Epic description's "Existing Patterns to Follow" section if present, but treat them as background context — re-validate any cited permalinks at the new SHA before relying on them. If the patterns are stale, surface the gap to the user and suggest a TDD update.
+7. Run Phase 2d (write full Gherkin) scoped to **just this Story's scenario**. Don't extend the Gherkin to other Stories of the parent Epic — they may already be Full or are someone else's job to flesh later.
+8. Run Phase 2f (assess subtasks for this single Story).
+9. Run Phase 5.0 (per-ticket research) to produce the Story's Implementation Notes block at the new SHA.
+10. Run Phase 5.0 per subtask, then create the subtasks via Phase 5e and link their dependencies via Phase 5f.
+11. Update the Story description: replace the `h2. Status: Skeleton` block with the full `h2. Acceptance Criteria` (Gherkin), `h2. Implementation Notes`, and any other sections from the Full Story template. Preserve the existing TDD Reference and Epic link.
+12. Display a summary: the new full Story key, its created subtasks, dependency graph among subtasks, and the Implementation Notes baseline SHA. Note that any *downstream* skeleton Stories in the Epic are still skeletons and will be re-entered when their own blockers close.

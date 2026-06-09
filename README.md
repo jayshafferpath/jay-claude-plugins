@@ -75,9 +75,22 @@ The planner sources its decomposition from a Technical Design Document checked i
 3. **Identifies capabilities** as Epics, orders them by dependency
 4. **Researches codebase patterns** for the first Epic — produces sha-pinned permalinks (`...#L42-L60`) for existing modules, conventions, and tests the implementation should reuse
 5. **Surfaces patterns as proposed TDD additions** in the approval phase — you fold them into the TDD and commit before tickets are created, so the TDD remains the single source of truth for design context
-6. **Writes Gherkin** scenarios (Stories) and subtask decompositions
-7. **Per-ticket research** — before each ticket is created, runs a fresh narrow research pass scoped to that ticket's slice. Output is injected as an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA
-8. **Creates Jira tickets** with TDD link + Implementation Notes; stale tickets from prior decompositions are surfaced for `/prune`
+6. **Writes Gherkin** scenarios (Stories), subtask decompositions, and dependency graph
+7. **Per-ticket research** — for each Full ticket about to be created, runs a fresh narrow research pass and injects an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA
+8. **Creates Jira tickets** with TDD link + Implementation Notes (Full) or skeleton stubs (downstream); stale tickets from prior decompositions are surfaced for `/prune`
+
+### Lazy decomposition
+
+Decomposition stops at the first unblocked unit. Within the first Epic, only the parallel-startable Stories (no inward blockers) are fleshed out with full Gherkin, subtasks, and Implementation Notes. Every other Story is a **skeleton**: title, brief scope, TDD anchor, and dependency links — nothing more. Remaining Epics are skeletons too.
+
+This avoids predicting the future. A pinned `Implementation Notes` baseline goes stale fast; codebase state changes; design intent shifts; even the right Gherkin can be wrong by the time downstream work is queued. Lazy decomposition keeps the tree of speculation small.
+
+When a skeleton is ready to work:
+
+- `@planner STORY-KEY` — flesh a skeleton Story (Gherkin + subtasks + Implementation Notes) once its blockers have closed
+- `@planner EPIC-KEY` — flesh a skeleton Epic into Stories (still applying the lazy rule within the Epic) once its upstream Epics are done
+
+Skeleton-Story re-entry verifies that all `is blocked by` links point to Done tickets before fleshing — defaulting to abort if any blocker is still open, since fleshing too early defeats the whole point.
 
 ### Drift detection
 
