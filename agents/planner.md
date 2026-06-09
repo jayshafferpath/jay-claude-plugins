@@ -28,6 +28,8 @@ allowed-tools:
   - Bash(cd *)
   - Bash(ls *)
   - Bash(find *)
+  - Bash(mkdir *)
+  - Bash(rm *)
 ---
 
 # Planner Agent
@@ -52,7 +54,7 @@ You are conversational — you present your analysis, wait for feedback, and ite
 ## Entry Points
 
 The agent accepts either:
-- **`init {slug-or-path}`** → run the **Init Mode** flow (jump to **Init Mode** below). Validates the TDD, runs Epic-level codebase research, folds patterns/constraints into the TDD, performs Jira and repo readiness checks, marks the TDD as initialized. Required before any decomposition.
+- **`init {path-or-slug}`** → run the **Init Mode** flow (jump to **Init Mode** below). Accepts a TDD from anywhere (a draft outside the repo, a non-canonical folder, or already at `docs/tdds/`); init relocates it to `{TDD_REPO}/docs/tdds/{slug}.md`, validates shape, runs Epic-level codebase research, folds patterns/constraints into the TDD, performs Jira and repo readiness checks, then marks the TDD as initialized. Required before any decomposition.
 - A **TDD path or slug** (e.g., `docs/tdds/auth.md` or just `auth`) → decompose the TDD into Epics/Stories. Only the first Epic's parallel-startable Stories are fleshed; everything downstream is a skeleton. **Hard-gates on init.**
 - A **Jira Epic key** → decompose a skeleton Epic (re-entry mode). Same lazy rule applies. Hard-gates on init for the underlying TDD.
 - A **Jira Story key** → decompose a skeleton Story into Gherkin + subtasks + Implementation Notes (re-entry mode). Use this when a Story's blockers have closed and it's queued for work. Hard-gates on init for the underlying TDD.
@@ -741,11 +743,67 @@ Invoked via `@planner init {slug-or-path}`. Init is a one-time pre-flight per TD
 
 This is the heaviest single planner phase — get it right and downstream decomposition runs are cheap.
 
-### Init Phase 1: Resolve TDD
+### Init Phase 1: Resolve and Relocate TDD
 
-Use the same path/slug resolution rules as decomposition Phase 1b. Set `TDD_PATH`, `TDD_REPO`, `TDD_BODY`, `TDD_GITHUB_SLUG`, `TDD_SHA`, `TDD_BLOB_BASE`.
+Init accepts the TDD from anywhere — a draft you've been iterating on outside the repo, a different folder in the same repo, or already in the canonical location. Init's job is to land it at `{TDD_REPO}/docs/tdds/{slug}.md` and proceed from there.
 
-If the TDD already has `planner: initialized: true` in its frontmatter, ask the user:
+#### 1a: Resolve the source TDD
+
+Accept any of:
+- An **absolute path** (e.g., `/Users/me/Drafts/auth-design.md`)
+- A **relative path** from CWD (e.g., `../scratch/auth.md`)
+- A **path inside a working directory** (e.g., `docs/design/auth.md`, `tmp/auth.md`)
+- A **bare slug** (e.g., `auth`) — searched via `Glob '**/auth.md'` across the primary working directory and additional working directories. If multiple matches, present them and ask the user which is the source.
+
+Use `Read` to load the file. If the file doesn't exist, fail clearly: `No file at {input}. Provide a path to your draft TDD.`
+
+Set:
+- `SOURCE_PATH` — the user-provided path as resolved
+- `TDD_BODY` — file content
+- `TDD_TITLE` — first H1 in the body (if absent, refuse: "Source TDD has no H1 title — add one before running init")
+
+#### 1b: Determine the target repo
+
+Ask the user (or infer if obvious): "Which repo should this TDD land in?" The answer becomes `TDD_REPO`. Default candidates to suggest:
+- The primary working directory
+- Any additional working directories
+- If `SOURCE_PATH` is already inside a working directory, that one (highest priority)
+
+Then in `TDD_REPO`:
+- `git config --get remote.origin.url` → parse `{org}/{repo}`. Store as `TDD_GITHUB_SLUG`.
+- `git rev-parse HEAD` → store as `TDD_SHA` (will be re-resolved after init's commit; this is the pre-init SHA).
+- Compose `TDD_BLOB_BASE = https://github.com/{TDD_GITHUB_SLUG}/blob/{TDD_SHA}`.
+
+If `git config` returns no GitHub remote, ask the user for the GitHub slug.
+
+#### 1c: Determine the target slug
+
+Derive the canonical slug:
+- If the source filename is already a clean slug (lowercase, hyphenated, no extension cruft) — use it: `auth-design.md → auth-design`.
+- If the source filename is messy (`Auth Design Draft v3.md`) or the source is a slug-only input — propose a slug and ask the user to confirm or override.
+- The slug must match `[a-z0-9-]+`.
+
+Set `TDD_SLUG`. The canonical target is `TDD_PATH = docs/tdds/{TDD_SLUG}.md` (relative to `TDD_REPO`).
+
+#### 1d: Relocate to canonical location
+
+Three cases:
+
+1. **Source is already at the canonical target** (`SOURCE_PATH` resolves to `{TDD_REPO}/{TDD_PATH}`). No move needed. Continue.
+
+2. **Source is elsewhere; canonical target does not exist.** This is the common case for a draft from outside the repo.
+   - Ensure `{TDD_REPO}/docs/tdds/` exists. If not, create it: `mkdir -p {TDD_REPO}/docs/tdds`.
+   - Use `Write` to create `{TDD_REPO}/{TDD_PATH}` with `TDD_BODY` content.
+   - If `SOURCE_PATH` is *inside* `TDD_REPO`'s working tree, **delete it after the copy** (so there's no duplicate; the canonical location is now the source of truth). Use `Bash` with `git rm` if it was tracked, otherwise `rm`.
+   - If `SOURCE_PATH` is **outside** any working tree (a draft directory), leave the original alone — it's the user's draft and not Jira/git's concern. Tell the user where the canonical copy now lives.
+
+3. **Source is elsewhere AND canonical target already exists.** Conflict — refuse. `{TDD_REPO}/{TDD_PATH} already exists. If you want to overwrite it with {SOURCE_PATH}, delete or rename the existing target first. Aborting.`
+
+After relocation, refresh `TDD_BODY` from the canonical path (it should be identical, but read it fresh to be safe), and re-resolve `TDD_PATH` to the canonical relative path. The user will commit this addition along with the init edits later.
+
+#### 1e: Re-init check
+
+If the canonical TDD already has `planner: initialized: true` in its frontmatter (caught in case 1 above, or noticed mid-flow), ask the user:
 
 ```
 {TDD_PATH} was initialized at {initialized_sha} on {initialized_at}.
@@ -861,6 +919,7 @@ Display:
 ## Init Complete: {TDD_PATH}
 
 **Repo**: {TDD_REPO}
+**Source**: {SOURCE_PATH} {(relocated to canonical) | (already canonical)}
 **Initialized SHA**: {TDD_SHA}
 **Jira Project**: {JIRA_PROJECT_KEY}
 
@@ -873,7 +932,7 @@ Display:
 - Jira: ✓ all required issue types and link types resolve
 
 ### Next steps
-1. Commit the TDD edits and the frontmatter marker.
+1. Commit the new/moved TDD at `{TDD_PATH}`, the patterns/constraints additions, and the frontmatter marker. (If the source was outside the repo, the original draft is left untouched at `{SOURCE_PATH}` — delete it yourself once you've confirmed the canonical copy.)
 2. Run `@planner {slug}` to begin decomposition. The first Epic's parallel-startable Stories will be fleshed; everything else stays as skeletons until unblocked.
 ```
 

@@ -71,17 +71,18 @@ The planner sources its decomposition from a Technical Design Document checked i
 Before a TDD can be decomposed, run:
 
 ```
-@planner init {slug-or-path}
+@planner init {path-or-slug}
 ```
 
-Init is a one-time setup per TDD. It:
+Init accepts the TDD from anywhere — a draft you've been iterating on outside the repo, a non-canonical folder, or already at `docs/tdds/`. It:
 
-1. **Validates TDD shape** — H1 present, capability sections present, heading anchors unique
-2. **Runs Epic-level codebase research** for every capability — produces sha-pinned GitHub permalinks for existing patterns and constraints
-3. **Folds findings into the TDD** — appends `### Existing Patterns to Follow` and `### Constraints` sub-sections under each capability heading. The TDD becomes the durable design context; subsequent decomposition runs just read it
-4. **Repo readiness checks** — git origin resolves to GitHub, working tree is clean enough, `docs/tdds/` exists, additional working dirs are accessible
-5. **Jira pre-flight** — verifies project visibility, required issue types (Epic / Story / Sub-task), and the "Blocks" link type
-6. **Writes the init marker** — YAML frontmatter records `initialized_sha` and metadata so subsequent `@planner` runs can hard-gate on it
+1. **Relocates the TDD** to the canonical `{TDD_REPO}/docs/tdds/{slug}.md` location. Drafts outside the repo are copied (original left untouched); files inside the repo are moved. If the canonical target already exists, init refuses rather than clobber it.
+2. **Validates TDD shape** — H1 present, capability sections present, heading anchors unique
+3. **Runs Epic-level codebase research** for every capability — produces sha-pinned GitHub permalinks for existing patterns and constraints
+4. **Folds findings into the TDD** — appends `### Existing Patterns to Follow` and `### Constraints` sub-sections under each capability heading. The TDD becomes the durable design context; subsequent decomposition runs just read it
+5. **Repo readiness checks** — git origin resolves to GitHub, working tree is clean enough, `docs/tdds/` exists, additional working dirs are accessible
+6. **Jira pre-flight** — verifies project visibility, required issue types (Epic / Story / Sub-task), and the "Blocks" link type
+7. **Writes the init marker** — YAML frontmatter records `initialized_sha` and metadata so subsequent `@planner` runs can hard-gate on it
 
 `@planner {slug}`, `@planner EPIC-KEY`, and `@planner STORY-KEY` all refuse to run if the TDD has not been initialized. Re-run init when the TDD changes substantially or codebase patterns have drifted.
 
