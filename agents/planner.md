@@ -19,6 +19,8 @@ allowed-tools:
   - mcp__atlassian__atlassianUserInfo
   # File tools
   - Read
+  - Edit
+  - Write
   - Glob
   - Grep
   - Agent
@@ -43,18 +45,20 @@ You are conversational — you present your analysis, wait for feedback, and ite
 5. **Explicit parallelism**: Every ticket gets "Blocks" links to define execution order. Tickets without inward blockers can run in parallel. This drives `/ticket-work`'s scheduling.
 6. **Pattern-aware decomposition**: Before writing Gherkin or subtasks for the first Epic, research the codebase for existing patterns (modules, conventions, abstractions) the work should reuse or extend. Surface findings as **sha-pinned GitHub permalinks** (e.g., `github.com/org/repo/blob/{sha}/path/to/file.ts#L42-L60`) so links never rot. Epic-wide patterns and constraints live **in the TDD** (Jira tickets only link to the TDD section).
 7. **Per-ticket research baseline**: When a ticket is created, run a fresh narrow research pass scoped to that ticket and inject an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. This baseline is what `/ticket-work` later diffs against to detect drift before execution begins.
+8. **TDD must be initialized before decomposition**: A TDD has to pass `@planner init {slug}` before any decomposition runs. Init validates the TDD's shape (H1, capability sections, valid heading anchors), runs Epic-level codebase research, and folds the resulting `Existing Patterns to Follow` and `Constraints` sections into the TDD itself. The TDD's frontmatter records that init has run. Subsequent `@planner {slug}` runs hard-gate on this — they refuse with a "run init first" message if the marker is absent. This pulls the heaviest research work out of the per-decomposition path and into a one-time setup, so re-entry runs stay light.
 
 ---
 
 ## Entry Points
 
 The agent accepts either:
-- A **TDD path or slug** (e.g., `docs/tdds/auth.md` or just `auth`) → decompose the TDD into Epics/Stories. Only the first Epic's parallel-startable Stories are fleshed; everything downstream is a skeleton.
-- A **Jira Epic key** → decompose a skeleton Epic (re-entry mode). Same rule applies: flesh only the now-unblocked Stories.
-- A **Jira Story key** → decompose a skeleton Story into Gherkin + subtasks + Implementation Notes (re-entry mode). Use this when a Story's blockers have closed and it's queued for work.
+- **`init {slug-or-path}`** → run the **Init Mode** flow (jump to **Init Mode** below). Validates the TDD, runs Epic-level codebase research, folds patterns/constraints into the TDD, performs Jira and repo readiness checks, marks the TDD as initialized. Required before any decomposition.
+- A **TDD path or slug** (e.g., `docs/tdds/auth.md` or just `auth`) → decompose the TDD into Epics/Stories. Only the first Epic's parallel-startable Stories are fleshed; everything downstream is a skeleton. **Hard-gates on init.**
+- A **Jira Epic key** → decompose a skeleton Epic (re-entry mode). Same lazy rule applies. Hard-gates on init for the underlying TDD.
+- A **Jira Story key** → decompose a skeleton Story into Gherkin + subtasks + Implementation Notes (re-entry mode). Use this when a Story's blockers have closed and it's queued for work. Hard-gates on init for the underlying TDD.
 - **Nothing** → ask the user what to decompose.
 
-In every mode, if Jira tickets already exist for the input (TDD already decomposed, or container already has children), run **Phase 2.5: Stale Ticket Detection** before presenting the new decomposition. Tickets whose scope has been removed or rewritten in the TDD are flagged for `/prune`.
+In every mode (except init), if Jira tickets already exist for the input (TDD already decomposed, or container already has children), run **Phase 2.5: Stale Ticket Detection** before presenting the new decomposition. Tickets whose scope has been removed or rewritten in the TDD are flagged for `/prune`.
 
 ---
 
@@ -68,6 +72,9 @@ Use `mcp__atlassian__getAccessibleAtlassianResources` to get `CLOUD_ID` (needed 
 
 Determine what the user provided:
 
+**If `init {slug-or-path}`:**
+- Resolve the TDD using the same path/slug rules as below, but jump to **Init Mode** (bottom of this doc) instead of decomposition.
+
 **If a TDD path or slug:**
 - If a path (`docs/tdds/{slug}.md` or absolute), use `Read` to load it.
 - If a slug only (e.g., `auth`), search for `docs/tdds/{slug}.md` across the primary working directory and any additional working directories. Use `Glob` with pattern `**/docs/tdds/{slug}.md` per working dir.
@@ -79,6 +86,24 @@ Determine what the user provided:
   - `git rev-parse HEAD` → store as `TDD_SHA`.
 - Compose `TDD_BLOB_BASE = https://github.com/{TDD_GITHUB_SLUG}/blob/{TDD_SHA}` — every ticket-facing TDD link is built off this.
 - If `git config` returns no GitHub remote, ask the user for the GitHub slug and continue. If the working tree is dirty, warn the user that the SHA points at the last commit and citation lines may not match the on-disk file until they commit.
+
+#### 1b.i: Init Gate
+
+Before proceeding to Phase 2, verify the TDD has been initialized.
+
+The TDD must have YAML frontmatter at the top of the file containing `planner: initialized: true` (and the metadata that init writes — see Init Mode). If the marker is missing, **stop and refuse**:
+
+```
+{TDD_PATH} has not been initialized.
+
+Run `@planner init {slug}` first. Init validates the TDD shape, runs Epic-level codebase research, and folds the resulting patterns and constraints into the TDD itself. This is a one-time setup per TDD; subsequent decomposition runs reuse the result.
+```
+
+Do not proceed. The user must run init first.
+
+If the marker is present but the recorded `initialized_sha` is significantly behind current HEAD (e.g., dozens of commits or weeks old), surface a warning: "Init was run at SHA {old}; current HEAD is {new}. Patterns may be stale — consider re-running `@planner init {slug}` before decomposing." Don't block; let the user decide.
+
+For Jira Epic / Story re-entry: after resolving the TDD via the parent's reference, run this same gate. Re-entry also requires init.
 
 **If a Jira Epic key:**
 - Jump to **Re-entry: Decomposing a Skeleton Epic** (bottom of this doc)
@@ -132,68 +157,15 @@ Dependency rules at the Epic level:
 - Epics that share no state, data, or interfaces are independent (parallel)
 - When in doubt, ask the user
 
-### 2c: Research Codebase Patterns (First Epic Only)
+### 2c: Read Epic-Level Patterns from TDD
 
-Before writing Gherkin or planning subtasks, research the codebase(s) the work will land in to identify existing patterns, modules, and conventions the implementation should reuse or extend. This grounds Gherkin wording in real seams and produces concrete file/symbol citations for subtask descriptions.
+Init has already run codebase pattern research and folded the results into the TDD as per-Epic `Existing Patterns to Follow` and `Constraints` sections (see Init Mode below). Phase 2c just *reads* them.
 
-Scope this research to the **first Epic only** — skeleton Epics get a brief pattern note when they're later promoted to first-Epic status in a re-entry run.
+Locate the section in `TDD_BODY` that maps to the first Epic. Within that section, find the `### Existing Patterns to Follow` and `### Constraints` sub-sections. Parse them into `EPIC_PATTERNS` for use in 2d, 2f, and Phase 3.
 
-#### 2c.i: Determine Repositories to Search
+**If the Epic's section has no Patterns sub-section**, that's a TDD gap: surface it to the user and recommend re-running `@planner init {slug}`. Do not proceed to write Gherkin or subtasks without grounding patterns — the per-ticket research in Phase 5.0 covers narrow, ticket-specific scope but relies on Epic-level patterns for context.
 
-Identify which working directories are relevant:
-- The current working directory (always)
-- Any additional working directories listed in the environment (e.g., a backend monorepo, a frontend repo)
-- The repo the TDD itself lives in (`TDD_REPO`) is always relevant — that's typically where the work lands
-- If the TDD references specific services or repos by name, prefer those
-
-Confirm with the user if it's ambiguous which repo(s) to research.
-
-#### 2c.ii: Form Research Questions
-
-From the capability description and the section of the TDD the Epic comes from, draft a short list of research questions. Typical questions:
-
-- Where does similar functionality already live? (look for adjacent endpoints, services, modules)
-- What conventions govern this layer? (routing, validation, error handling, persistence, auth)
-- What shared abstractions or utilities should be reused? (base classes, helpers, middleware, hooks)
-- What naming patterns are used for similar concepts? (file names, symbols, route paths, table names)
-- Where do tests for similar features live, and what testing style is used?
-- Are there CLAUDE.md / AGENTS.md / README files that document conventions for this area?
-
-Aim for 3–6 questions per Epic — enough to ground the design without ballooning context.
-
-#### 2c.iii: Run the Research
-
-For broad open-ended exploration ("how does X work in this codebase?", "where do similar features live?"), delegate to the **Explore** subagent via the Agent tool. This protects the planner's context window:
-
-```
-Agent({
-  description: "Research {capability} patterns",
-  subagent_type: "Explore",
-  prompt: "{briefing — what we're building, the research questions, breadth=medium}. Report concrete file paths, symbol names, and a 1-2 sentence summary of each pattern found. Under 400 words."
-})
-```
-
-For targeted lookups (a known symbol, a specific file pattern), use **Glob** and **Grep** directly.
-
-For convention docs, **Read** any `CLAUDE.md`, `AGENTS.md`, or top-level README in the repo root and the closest directory to where the work will land.
-
-#### 2c.iv: Synthesize Findings (with sha-pinned permalinks)
-
-Distill research into a structured pattern record. For each finding, capture:
-
-- **Pattern**: Short name (e.g., "Fastify route plugin", "Repository pattern for Postgres", "Zod validation schemas in `schemas/`")
-- **Where**: A **GitHub permalink pinned to the SHA at research time**. Resolve the SHA per repo: for each repo that produced findings, run `git rev-parse HEAD` and `git config --get remote.origin.url` (parse `{org}/{repo}`). Format every citation as:
-  ```
-  https://github.com/{org}/{repo}/blob/{SHA}/{path}#L{start}-L{end}
-  ```
-  where `{start}-{end}` is the line range of the symbol or block being cited. If the citation is a whole file, omit the line fragment.
-- **Symbol**: The function/class/module name being pointed at (in addition to the link, since names survive line moves).
-- **Why it matters**: What about this pattern the new work should reuse, extend, or follow.
-- **Applies to**: Which Stories/subtasks of this Epic the pattern is relevant for.
-
-Also note any **anti-patterns or constraints**: things the codebase explicitly avoids, or migration directions in flight (e.g., "moving off Sequelize to Drizzle — new persistence code must use Drizzle"). Pin these to permalinks too where the constraint is anchored to specific code.
-
-Store this as `EPIC_PATTERNS` for use in 2d, 2f, and Phase 3.
+The init-written citations are sha-pinned to `initialized_sha`. If `initialized_sha` is significantly stale (already warned in 1b.i), the research baseline is older than the per-ticket work that will use it. This is acceptable if the user opted to proceed; the per-ticket Phase 5.0 will re-research at current HEAD anyway. The Epic-level patterns serve as design context; they're not used directly as ticket-level Implementation Notes.
 
 These per-file citations are **for the user to fold into the TDD**, not for Jira tickets. Tickets only link to the TDD (see Phase 5). The planner does not auto-edit the TDD; in Phase 3 it surfaces the citations as proposed TDD additions and the user incorporates them through normal code review before tickets are created.
 
@@ -371,27 +343,15 @@ Source: {TDD_REPO}/{TDD_PATH}
 
 **TDD Section**: {heading text} (`{TDD_PATH}#{anchor}`)
 
-**Proposed TDD additions — Existing Patterns** (sha-pinned permalinks; fold these into the TDD section before tickets are created):
+**Patterns** (already in TDD from init at `{initialized_sha}`):
+- {Pattern 1 name} — `{symbol}`
+- {Pattern 2 name} — `{symbol}`
+- {Pattern 3 name} — `{symbol}`
 
-```markdown
-### Existing Patterns to Follow
+(Just names here — full sha-pinned permalinks live in `{TDD_PATH}` under this Epic's section. Open the TDD if you want to verify them.)
 
-- **{Pattern 1}** — `{symbol}` in [{path}#L{start}-L{end}]({TDD_BLOB_BASE-style permalink for that repo}) — {why it matters}
-- **{Pattern 2}** — `{symbol}` in [{path}#L{start}-L{end}](permalink) — {why it matters}
-- **{Pattern 3}** — `{symbol}` in [{path}#L{start}-L{end}](permalink) — {why it matters}
-```
-
-Pinned to SHA `{TDD_SHA}` at research time. If you accept these, paste them under the {Section Heading} section of `{TDD_PATH}` and commit before I create tickets.
-
-**Proposed TDD additions — Constraints / Anti-patterns**:
-
-```markdown
-### Constraints
-
-- {anti-pattern or in-flight migration} — {permalink if anchored to specific code}
-```
-
-(or "none surfaced" — skip this block)
+**Constraints**:
+- {item} — or "none in TDD"
 
 **Open Architectural Questions** (if any):
 - {e.g., "this Epic spans the X and Y repos — which owns the new Z module?"}
@@ -457,9 +417,7 @@ These tickets are mid-merge (`ClaudeNeedsReview` / `ClaudePRApproved`). Decide b
 - **{KEY}**: {summary} — {label} — {reason}
 ```
 
-Ask the user: "Does this decomposition look right? I can adjust Epics, Stories, dependencies, or subtasks. The 'Proposed TDD additions' blocks above are pattern citations I want you to fold into `{TDD_PATH}` (under the relevant section headings) and commit before I create tickets — that way the SHA-pinned links stay accurate and the TDD remains the single source of truth. The stale tickets above are surfaced for `/prune` — I won't touch them automatically. If any of the patterns I found look off, or I'm missing one you want enforced, flag it now."
-
-**Wait for the user to either (a) confirm they've committed the TDD additions, or (b) tell you to skip and proceed.** Then re-resolve `TDD_SHA` (`git rev-parse HEAD` in `TDD_REPO`) so ticket links reflect the post-edit commit, and continue to Phase 4.
+Ask the user: "Does this decomposition look right? I can adjust Epics, Stories, dependencies, or subtasks. The patterns and constraints summarized above already live in the TDD (folded in by init); if any look stale or wrong, run `@planner init {slug}` again before I create tickets. Stale Jira tickets are surfaced for `/prune` — I won't touch them automatically."
 
 Wait for user approval. Iterate on feedback until the user confirms.
 
@@ -773,6 +731,150 @@ Display the final result:
 - Add `ClaudeReady` labels to begin execution via /ticket-work
 - When {EPIC_1_KEY} is complete, invoke planner agent on the next skeleton Epic
 - Run `/prune {KEY}` for each stale ticket listed above (if any)
+```
+
+---
+
+## Init Mode
+
+Invoked via `@planner init {slug-or-path}`. Init is a one-time pre-flight per TDD that validates shape, runs Epic-level codebase research, folds the patterns/constraints into the TDD, and confirms repo + Jira readiness. Subsequent decomposition runs hard-gate on the marker init writes.
+
+This is the heaviest single planner phase — get it right and downstream decomposition runs are cheap.
+
+### Init Phase 1: Resolve TDD
+
+Use the same path/slug resolution rules as decomposition Phase 1b. Set `TDD_PATH`, `TDD_REPO`, `TDD_BODY`, `TDD_GITHUB_SLUG`, `TDD_SHA`, `TDD_BLOB_BASE`.
+
+If the TDD already has `planner: initialized: true` in its frontmatter, ask the user:
+
+```
+{TDD_PATH} was initialized at {initialized_sha} on {initialized_at}.
+Re-run init? This will re-research patterns and overwrite the existing 'Existing Patterns to Follow' / 'Constraints' sections with new sha-pinned citations from current HEAD.
+```
+
+If they decline, exit. If they accept, proceed and overwrite when reaching Phase 4.
+
+### Init Phase 2: Validate TDD Shape
+
+Read `TDD_BODY` and check:
+
+1. **Has an H1 title.** First non-frontmatter line must be `# {Title}`. If missing or empty, refuse and ask the user to add one — it becomes `TDD_TITLE` and grounds Epic naming.
+2. **Has at least one capability section.** Walk H2 headings (`## ...`). Each becomes a candidate Epic. Refuse if there are zero H2s — there's nothing to decompose.
+3. **Heading anchors are unique.** Compute the GitHub anchor slug for every H2/H3 (per Phase 4's slugify rule). Two headings producing the same slug create ambiguous links. List collisions and refuse: `Headings X and Y both slugify to '{slug}'. Disambiguate one before init.`
+4. **Heading anchors are stable-looking.** Flag headings with characters that disappear under slugify (purely punctuation, emoji-only, etc.). Don't refuse, just warn.
+
+If validation fails, **stop and report the issues**. The user fixes the TDD and re-runs init.
+
+### Init Phase 3: Identify Capabilities
+
+Same as decomposition Phase 2a — walk the H2 sections and identify each as a candidate Epic. Capture name, scope, dependencies. Don't determine Epic-order yet; that's a decomposition concern.
+
+For each capability, run **Phase 2c-style codebase research** (the full version: 2c.i Determine Repositories, 2c.ii Form Research Questions, 2c.iii Run the Research, 2c.iv Synthesize Findings with sha-pinned permalinks). Reuse the existing 2c protocol — init runs it for *every* capability up front instead of just the first Epic.
+
+Per capability, produce:
+- A list of `{Pattern, Symbol, Permalink, Why}` records
+- A list of `{Constraint, Permalink (if anchored), Why}` records
+
+If research surfaces **structural problems** (e.g., a capability doesn't fit the codebase, requires a foundational refactor first, or spans repos in incompatible ways), surface them to the user before continuing. The user may want to revise the TDD before init proceeds. Either iterate or exit gracefully.
+
+### Init Phase 4: Fold Findings into TDD
+
+For each capability section in the TDD, append (or replace, if re-running init) two sub-sections immediately under the H2:
+
+```markdown
+## {Capability Heading}
+
+{existing TDD prose for this capability — preserved verbatim}
+
+### Existing Patterns to Follow
+
+- **{Pattern 1}** — `{symbol}` in [{path}#L{start}-L{end}]({permalink}) — {why}
+- **{Pattern 2}** — `{symbol}` in [{path}#L{start}-L{end}]({permalink}) — {why}
+
+### Constraints
+
+- {anti-pattern or in-flight migration} — {permalink if anchored}
+```
+
+If a capability has no patterns or no constraints, omit the empty sub-section rather than writing `### Constraints\n\n_None._`.
+
+Use **Edit** for surgical insertions where the existing TDD doesn't have these sub-sections, and **Edit** with `replace_all: false` to swap existing ones if init is being re-run. Preserve all other TDD content (prose, code blocks, tables) verbatim.
+
+Show the user the proposed diff before writing, and ask: "Apply these additions to `{TDD_PATH}`? (y/N)". Default to no — don't surprise users with TDD edits.
+
+After applying, **stop and ask the user to commit the TDD changes**. Init does not commit on the user's behalf. Wait for confirmation before proceeding, then re-resolve `TDD_SHA = git rev-parse HEAD` so the marker reflects the post-edit commit.
+
+### Init Phase 5: Repo Readiness Checks
+
+Run a battery of pre-flight checks on `TDD_REPO` and any additional working directories that surfaced as research targets in Phase 3. Report all results in a table — failures block init, warnings just inform.
+
+| Check | Failure → block | Warning → continue |
+|---|---|---|
+| `git config remote.origin.url` resolves to a GitHub URL | yes | — |
+| `git rev-parse HEAD` succeeds | yes | — |
+| Working tree clean (`git status --porcelain` empty) | — | yes (warn that SHA-pinned links may not match disk) |
+| `docs/tdds/` directory exists at repo root | — | yes (TDD lived elsewhere — flag for convention drift) |
+| `CLAUDE.md` or `AGENTS.md` exists somewhere reachable | — | yes (research lacks convention docs to read) |
+| Each additional working directory in env is accessible (`ls` succeeds) | yes | — |
+
+If any blocking check fails, list the failures and stop. The user fixes the environment and re-runs init.
+
+### Init Phase 6: Jira Pre-Flight
+
+Ask the user: "Which Jira project will I create tickets in?" (Same prompt as Phase 1c.) Store as `JIRA_PROJECT_KEY`.
+
+Then verify:
+
+1. **Project is visible.** `mcp__atlassian__getVisibleJiraProjects` includes `JIRA_PROJECT_KEY`. If not, fail with: `Project {JIRA_PROJECT_KEY} not visible to your Atlassian account. Check credentials and project permissions.`
+2. **Required issue types resolve.** `mcp__atlassian__getJiraProjectIssueTypesMetadata` for `JIRA_PROJECT_KEY` returns Epic, Story, and either Sub-task or Task. If any is missing, fail with the list of available types so the user can either grant project permissions or pick a different project.
+3. **User can create issues.** `mcp__atlassian__atlassianUserInfo` confirms the user identity, and `mcp__atlassian__lookupJiraAccountId` round-trips. (If create permission can be cheaply checked via metadata, do so; otherwise this serves as a smoke test.)
+4. **"Blocks" link type exists.** `mcp__atlassian__getIssueLinkTypes` includes a "Blocks" link. Decomposition relies on this for the dependency DAG.
+
+Failures block init; warnings just inform.
+
+### Init Phase 7: Write the Init Marker
+
+After all checks pass and the user has committed the TDD edits, write YAML frontmatter to the top of the TDD recording the init metadata. If the file already has frontmatter, merge the new keys in; if not, prepend a fresh block:
+
+```yaml
+---
+planner:
+  initialized: true
+  initialized_at: 2026-06-09T14:32:00Z
+  initialized_sha: {TDD_SHA}
+  initialized_by: {atlassian user email or git user.email}
+  jira_project: {JIRA_PROJECT_KEY}
+---
+
+# {TDD_TITLE}
+
+...
+```
+
+Use `Edit` to make the change. Show the user the diff and ask for confirmation before writing. After writing, ask the user to commit. The post-marker commit becomes the canonical "this TDD is initialized" state in git history.
+
+### Init Phase 8: Summary
+
+Display:
+
+```
+## Init Complete: {TDD_PATH}
+
+**Repo**: {TDD_REPO}
+**Initialized SHA**: {TDD_SHA}
+**Jira Project**: {JIRA_PROJECT_KEY}
+
+### TDD additions
+- {N} capability sections received `Existing Patterns to Follow` ({M} patterns total)
+- {K} capability sections received `Constraints` ({L} items total)
+
+### Readiness checks
+- Repo: ✓ {N} checks passed{, M warnings}
+- Jira: ✓ all required issue types and link types resolve
+
+### Next steps
+1. Commit the TDD edits and the frontmatter marker.
+2. Run `@planner {slug}` to begin decomposition. The first Epic's parallel-startable Stories will be fleshed; everything else stays as skeletons until unblocked.
 ```
 
 ---

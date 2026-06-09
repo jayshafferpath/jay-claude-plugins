@@ -66,18 +66,36 @@ ClaudeStackComplete        -- all tickets in stack finished (added to stack cont
 
 The planner sources its decomposition from a Technical Design Document checked into the repo at `docs/tdds/{slug}.md`. The TDD is the source of truth — Jira tickets only deep-link to it.
 
+### Init: required pre-flight per TDD
+
+Before a TDD can be decomposed, run:
+
+```
+@planner init {slug-or-path}
+```
+
+Init is a one-time setup per TDD. It:
+
+1. **Validates TDD shape** — H1 present, capability sections present, heading anchors unique
+2. **Runs Epic-level codebase research** for every capability — produces sha-pinned GitHub permalinks for existing patterns and constraints
+3. **Folds findings into the TDD** — appends `### Existing Patterns to Follow` and `### Constraints` sub-sections under each capability heading. The TDD becomes the durable design context; subsequent decomposition runs just read it
+4. **Repo readiness checks** — git origin resolves to GitHub, working tree is clean enough, `docs/tdds/` exists, additional working dirs are accessible
+5. **Jira pre-flight** — verifies project visibility, required issue types (Epic / Story / Sub-task), and the "Blocks" link type
+6. **Writes the init marker** — YAML frontmatter records `initialized_sha` and metadata so subsequent `@planner` runs can hard-gate on it
+
+`@planner {slug}`, `@planner EPIC-KEY`, and `@planner STORY-KEY` all refuse to run if the TDD has not been initialized. Re-run init when the TDD changes substantially or codebase patterns have drifted.
+
 ### Decomposition flow
 
-`@planner docs/tdds/auth.md` (or just `@planner auth`):
+After init, `@planner docs/tdds/auth.md` (or just `@planner auth`):
 
-1. **Resolves the TDD** in the primary repo or any additional working directory
-2. **Pins a SHA** — `git rev-parse HEAD` in the TDD's repo. All ticket-facing TDD links use sha-pinned GitHub permalinks (`github.com/{org}/{repo}/blob/{sha}/docs/tdds/auth.md#section-anchor`) so they never rot
+1. **Resolves the TDD** in the primary repo or any additional working directory; verifies the init marker
+2. **Pins a SHA** — `git rev-parse HEAD` in the TDD's repo. All ticket-facing TDD links use sha-pinned GitHub permalinks so they never rot
 3. **Identifies capabilities** as Epics, orders them by dependency
-4. **Researches codebase patterns** for the first Epic — produces sha-pinned permalinks (`...#L42-L60`) for existing modules, conventions, and tests the implementation should reuse
-5. **Surfaces patterns as proposed TDD additions** in the approval phase — you fold them into the TDD and commit before tickets are created, so the TDD remains the single source of truth for design context
-6. **Writes Gherkin** scenarios (Stories), subtask decompositions, and dependency graph
-7. **Per-ticket research** — for each Full ticket about to be created, runs a fresh narrow research pass and injects an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA
-8. **Creates Jira tickets** with TDD link + Implementation Notes (Full) or skeleton stubs (downstream); stale tickets from prior decompositions are surfaced for `/prune`
+4. **Reads patterns** for the first Epic from the TDD section that init populated — no fresh research at this layer
+5. **Writes Gherkin** scenarios (Stories), subtask decompositions, and dependency graph
+6. **Per-ticket research** — for each Full ticket about to be created, runs a fresh narrow research pass and injects an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. Skeleton tickets skip this
+7. **Creates Jira tickets** with TDD link + Implementation Notes (Full) or skeleton stubs (downstream); stale tickets from prior decompositions are surfaced for `/prune`
 
 ### Lazy decomposition
 
