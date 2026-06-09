@@ -6,7 +6,9 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 
 | Command | Description |
 |---|---|
-| `/ticket-work [KEY...]` | Run Jira tickets end-to-end: plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/ticket-work [KEY...]` | Run Jira tickets end-to-end: drift-check, plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/refresh-research KEY` | Manually re-run the research drift check on a ticket: diff cited code against the research baseline SHA and refresh the Implementation Notes if drift is detected |
+| `/fix-drift KEY` | Detect drift between a ticket's acceptance criteria and the current branch implementation, then fix the code to match |
 | `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
@@ -25,6 +27,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 #### Single ticket lifecycle
 
+0. **Drift check** — diff cited code in the ticket's `Implementation Notes` against the research baseline SHA; refresh the notes (and post a Jira comment) if any cited line range moved
 1. Plan generated with `/jira-start`
 2. Plan approved (gate — waits for `ClaudePlanApproved` label)
 3. Plan executed with `/plan-execute`
@@ -39,6 +42,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 ```
 ClaudeWork                 -- durable tag: Claude owns this ticket (never removed)
+ClaudeDriftChecked         -- research drift check ran; Implementation Notes are current
 ClaudeReady                -- eligible for planning
 ClaudePlanning             -- /jira-start in progress
 ClaudePlanNeedsApproval    -- plan ready, user: review and apply ClaudePlanApproved
@@ -57,6 +61,65 @@ ClaudeStackComplete        -- all tickets in stack finished (added to stack cont
 ### `ClaudeNeeds*` = user action required
 - `ClaudePlanNeedsApproval` → review plan, apply `ClaudePlanApproved`
 - `ClaudeNeedsReview` → review PR, iterate, move ticket to Done
+
+## TDDs and Research
+
+The planner sources its decomposition from a Technical Design Document checked into the repo at `docs/tdds/{slug}.md`. The TDD is the source of truth — Jira tickets only deep-link to it.
+
+### Init: required pre-flight per TDD
+
+Before a TDD can be decomposed, run:
+
+```
+@planner init {path-or-slug}
+```
+
+Init accepts the TDD from anywhere — a draft you've been iterating on outside the repo, a non-canonical folder, or already at `docs/tdds/`. It:
+
+1. **Relocates the TDD** to the canonical `{TDD_REPO}/docs/tdds/{slug}.md` location. Drafts outside the repo are copied (original left untouched); files inside the repo are moved. If the canonical target already exists, init refuses rather than clobber it.
+2. **Validates TDD shape** — H1 present, capability sections present, heading anchors unique
+3. **Runs Epic-level codebase research** for every capability — produces sha-pinned GitHub permalinks for existing patterns and constraints
+4. **Folds findings into the TDD** — appends `### Existing Patterns to Follow` and `### Constraints` sub-sections under each capability heading. The TDD becomes the durable design context; subsequent decomposition runs just read it
+5. **Repo readiness checks** — git origin resolves to GitHub, working tree is clean enough, `docs/tdds/` exists, additional working dirs are accessible
+6. **Jira pre-flight** — verifies project visibility, required issue types (Epic / Story / Sub-task), and the "Blocks" link type
+7. **Writes the init marker** — YAML frontmatter records `initialized_sha` and metadata so subsequent `@planner` runs can hard-gate on it
+
+`@planner {slug}`, `@planner EPIC-KEY`, and `@planner STORY-KEY` all refuse to run if the TDD has not been initialized. Re-run init when the TDD changes substantially or codebase patterns have drifted.
+
+### Decomposition flow
+
+After init, `@planner docs/tdds/auth.md` (or just `@planner auth`):
+
+1. **Resolves the TDD** in the primary repo or any additional working directory; verifies the init marker
+2. **Pins a SHA** — `git rev-parse HEAD` in the TDD's repo. All ticket-facing TDD links use sha-pinned GitHub permalinks so they never rot
+3. **Identifies capabilities** as Epics, orders them by dependency
+4. **Reads patterns** for the first Epic from the TDD section that init populated — no fresh research at this layer
+5. **Writes Gherkin** scenarios (Stories), subtask decompositions, and dependency graph
+6. **Per-ticket research** — for each Full ticket about to be created, runs a fresh narrow research pass and injects an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. Skeleton tickets skip this
+7. **Creates Jira tickets** with TDD link + Implementation Notes (Full) or skeleton stubs (downstream); stale tickets from prior decompositions are surfaced for `/prune`
+
+### Lazy decomposition
+
+Decomposition stops at the first unblocked unit. Within the first Epic, only the parallel-startable Stories (no inward blockers) are fleshed out with full Gherkin, subtasks, and Implementation Notes. Every other Story is a **skeleton**: title, brief scope, TDD anchor, and dependency links — nothing more. Remaining Epics are skeletons too.
+
+This avoids predicting the future. A pinned `Implementation Notes` baseline goes stale fast; codebase state changes; design intent shifts; even the right Gherkin can be wrong by the time downstream work is queued. Lazy decomposition keeps the tree of speculation small.
+
+When a skeleton is ready to work:
+
+- `@planner STORY-KEY` — flesh a skeleton Story (Gherkin + subtasks + Implementation Notes) once its blockers have closed
+- `@planner EPIC-KEY` — flesh a skeleton Epic into Stories (still applying the lazy rule within the Epic) once its upstream Epics are done
+
+Skeleton-Story re-entry verifies that all `is blocked by` links point to Done tickets before fleshing — defaulting to abort if any blocker is still open, since fleshing too early defeats the whole point.
+
+### Drift detection
+
+Implementation Notes carry a baseline SHA per repo. When `/ticket-work` picks up a ticket (S3.5, before planning), it diffs each cited line range from `baseline_sha..HEAD` using `git log -L`. If any cited code moved or was renamed:
+
+- The ticket's Implementation Notes are refreshed at the current SHA
+- A Jira comment posts old vs new baselines, drifted citations, and replacements
+- If the plan was already approved against stale notes, the comment recommends `/rework`
+
+Trigger the same check manually with `/refresh-research PROJ-123` — useful after a rebase or when a ticket has been sitting in the queue for a while.
 
 ## Stack Architecture
 
@@ -144,7 +207,7 @@ The queue uses `DEV_ROOT` to locate repo clones. Tickets need a `repo:` label (e
 
 | Agent | Description |
 |---|---|
-| `@planner` | Decompose Confluence documentation into Gherkin-based Epics, Stories, and Subtasks in Jira |
+| `@planner` | Decompose a repo-based Technical Design Document (`docs/tdds/{slug}.md`) into Gherkin-based Epics, Stories, and Subtasks in Jira. Researches codebase patterns and cites them as sha-pinned GitHub permalinks |
 | `@refactor` | Analyze code for CRAP score, DRY violations, and refactoring opportunities |
 
 ## CLI Tools
