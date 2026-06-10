@@ -13,7 +13,7 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
 | `/prune KEY` | Prune a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket |
-| `/cleanup KEY` | Post-merge teardown: verify the ticket landed on main, delete its branch (local + remote), transition Jira to Done, and note completion on the container if last in stack |
+| `/cleanup KEY [--no-rebase] [--no-refresh-feature]` | Post-merge teardown: verify the ticket landed on main, delete its branch (local + remote), transition Jira to Done, note completion on the container if last in stack, cascade-rebase any unmerged downstream tickets onto main, and refresh the long-lived feature branch by resetting to fresh main and re-merging the still-open ticket branches |
 | `/ears-requirements [topic]` | Ideate and write EARS (Easy Approach to Requirements Syntax) requirements interactively |
 
 ### `/ticket-work` in detail
@@ -184,6 +184,17 @@ When containers depend on each other (Epic B `is blocked by` Epic A), the toolin
 4. **Repeat** — After merge, the next ticket is rebased onto the now-updated main.
 
 This works because once ticket-N merges to main, ticket-N+1's rebase strips ticket-N's commits (which are now in main anyway), leaving a clean diff of just ticket-N+1's changes.
+
+### Post-merge maintenance
+
+After a ticket merges to main, `/cleanup KEY` does the full teardown in one pass:
+
+1. Verifies the merge landed (refuses otherwise).
+2. Deletes the ticket's branch (local + remote) and transitions Jira to Done.
+3. **Cascade-rebases unmerged downstream tickets** onto fresh main and retargets the first downstream PR's base. This is the same logic as `/stack-rebase` Scenario A, run inline so the stack is never left dangling off a deleted branch.
+4. **Refreshes the long-lived feature branch** so it doesn't drift from main over the lifetime of an Epic. The feature branch is `reset --hard origin/main` and the still-open ticket branches are re-merged on top with `--no-ff`. This sidesteps the patch-id failure mode of rebasing onto squash-merged commits — the squashed work simply isn't replayed because we throw the old feature-branch state away. Pre-flight refuses if the feature branch has hand-authored commits not present in any tracked ticket branch (would be silently destroyed) or if any worktree on the feature branch is dirty. The pre-refresh SHA is logged so a `git reset --hard {sha}` recovery is always available.
+
+Pass `--no-rebase` to skip step 3 or `--no-refresh-feature` to skip step 4.
 
 ### Why Jira, not git
 
