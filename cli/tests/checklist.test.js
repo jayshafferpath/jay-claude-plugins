@@ -151,6 +151,42 @@ describe("readReviewPlan", () => {
     });
     expect(result).toBeNull();
   });
+
+  it("ignores review plans for other tickets in worktree", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue([
+      "pr-review-NEV-124.md",
+      "pr-review-NEV-159.md",
+    ]);
+    const result = readReviewPlan("/wt", "NEV-984");
+    expect(result).toBeNull();
+  });
+
+  it("ignores review plans for other tickets via git show", () => {
+    existsSync.mockReturnValue(false);
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes(".claude/plans"))
+        return "pr-review-NEV-124.md\npr-review-NEV-159.md\n";
+      throw new Error("file not found");
+    });
+    const result = readReviewPlan(null, "NEV-984", {
+      branch: "feat",
+      repoRoot: "/repo",
+    });
+    expect(result).toBeNull();
+  });
+
+  it("matches the requested ticket when it sits alongside others", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue([
+      "pr-review-NEV-124.md",
+      "pr-review-NEV-984.md",
+      "pr-review-NEV-159.md",
+    ]);
+    readFileSync.mockReturnValue(REVIEW_MD);
+    const result = readReviewPlan("/wt", "NEV-984");
+    expect(result).toEqual({ total: 3, resolved: 1, open: 2 });
+  });
 });
 
 describe("readExecutionPlan", () => {

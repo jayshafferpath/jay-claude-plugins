@@ -13,6 +13,7 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
 | `/prune KEY` | Prune a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket |
+| `/cleanup KEY` | Post-merge teardown: verify the ticket landed on main, delete its branch (local + remote), transition Jira to Done, and note completion on the container if last in stack |
 | `/ears-requirements [topic]` | Ideate and write EARS (Easy Approach to Requirements Syntax) requirements interactively |
 
 ### `/ticket-work` in detail
@@ -48,7 +49,7 @@ ClaudePlanning             -- /jira-start in progress
 ClaudePlanNeedsApproval    -- plan ready, user: review and apply ClaudePlanApproved
 ClaudePlanApproved         -- user approved, eligible for execution
 ClaudeExecuting            -- /plan-execute in progress
-ClaudeNeedsReview          -- done, user: review PR, iterate, move ticket to Done
+ClaudeNeedsReview          -- done, user: review PR. Post-merge: run /cleanup KEY
 ClaudeFailed               -- error, user: investigate
 ClaudeStackComplete        -- all tickets in stack finished (added to stack container)
 ```
@@ -56,19 +57,34 @@ ClaudeStackComplete        -- all tickets in stack finished (added to stack cont
 ### User actions
 - **Label `ClaudeWork`** + **`ClaudeReady`**: mark a ticket for Claude and signal it's ready for planning
 - **Apply `ClaudePlanApproved`**: approve a plan after reviewing it
-- **Move to Done**: signal that PR review is complete; triggers downstream promotion
+- **Run `/cleanup KEY`** after a PR merges to main: deletes the branch and transitions the ticket to Done
 
 ### `ClaudeNeeds*` = user action required
 - `ClaudePlanNeedsApproval` → review plan, apply `ClaudePlanApproved`
-- `ClaudeNeedsReview` → review PR, iterate, move ticket to Done
+- `ClaudeNeedsReview` → review PR, iterate. After merge to main: run `/cleanup KEY`
 
 ## TDDs and Research
 
 The planner sources its decomposition from a Technical Design Document checked into the repo at `docs/tdds/{slug}.md`. The TDD is the source of truth — Jira tickets only deep-link to it.
 
-### Init: required pre-flight per TDD
+A TDD declares the repos each capability touches via a `**Repos**:` line under every H2 capability heading (comma-separated GitHub slugs like `org/frontend, org/backend`). Multi-repo TDDs are normal: research runs per (capability, repo) pair against locally-cached clones.
 
-Before a TDD can be decomposed, run:
+### Owner vs Consumer
+
+Every TDD has exactly one **owner repo** — the repo holding the canonical markdown body. Other repos that need to plan against the same TDD run **consumer init**, which writes a small pointer file (no body copy) and lets that repo decompose its own slice of work. The TDD is mirrored only conceptually, never as a file copy:
+
+- **Owner init** (`@planner init {path-or-slug}`) — run inside the owning repo. Writes the canonical TDD, runs research for *every* repo the TDD declares, writes one sidecar per repo, and stamps `mode: owner` plus `owner_repo` / `owner_path` into the TDD frontmatter.
+- **Consumer init** (`@planner init {owner-slug}:{tdd-slug}`, e.g. `@planner init org/platform:auth`) — run inside a consumer repo. Fetches the owner TDD via `gh api` at a pinned SHA, validates that the consumer's repo appears in at least one `**Repos**:` declaration, runs research only for the consumer's own repo(s), writes consumer-side sidecars, and writes a pointer file at `{CONSUMER_REPO}/docs/tdds/{tdd-slug}.md` with `mode: consumer` frontmatter and a single linkback line.
+
+Both kinds of repo can decompose against the same TDD independently; tickets land as separate Epic trees in the same Jira project, all linking back to the owner's canonical TDD URL.
+
+### Init: required pre-flight per TDD per repo
+
+Before any decomposition runs, the local frontmatter must record `initialized: true` and a non-empty `repos:` array.
+
+#### Owner init
+
+Run inside the owning repo:
 
 ```
 @planner init {path-or-slug}
@@ -77,26 +93,47 @@ Before a TDD can be decomposed, run:
 Init accepts the TDD from anywhere — a draft you've been iterating on outside the repo, a non-canonical folder, or already at `docs/tdds/`. It:
 
 1. **Relocates the TDD** to the canonical `{TDD_REPO}/docs/tdds/{slug}.md` location. Drafts outside the repo are copied (original left untouched); files inside the repo are moved. If the canonical target already exists, init refuses rather than clobber it.
-2. **Validates TDD shape** — H1 present, capability sections present, heading anchors unique
-3. **Runs Epic-level codebase research** for every capability — produces sha-pinned GitHub permalinks for existing patterns and constraints
-4. **Folds findings into the TDD** — appends `### Existing Patterns to Follow` and `### Constraints` sub-sections under each capability heading. The TDD becomes the durable design context; subsequent decomposition runs just read it
-5. **Repo readiness checks** — git origin resolves to GitHub, working tree is clean enough, `docs/tdds/` exists, additional working dirs are accessible
-6. **Jira pre-flight** — verifies project visibility, required issue types (Epic / Story / Sub-task), and the "Blocks" link type
-7. **Writes the init marker** — YAML frontmatter records `initialized_sha` and metadata so subsequent `@planner` runs can hard-gate on it
+2. **Validates TDD shape** — H1 present, capability sections present, every H2 declares `**Repos**:` GitHub slugs, heading anchors unique.
+3. **Verifies `gh` access** to every repo declared in the TDD.
+4. **Populates the clone cache** at `{TDD_REPO}/.planner-cache/{org}/{repo}` (gitignored) for every repo declared.
+5. **Runs Epic-level codebase research** per (capability, repo) pair against the cache — produces sha-pinned GitHub permalinks for existing patterns and constraints.
+6. **Writes one sidecar per repo** at `{TDD_REPO}/docs/tdds/{slug}/{repo-name}.research.md` carrying patterns and constraints H2-grouped per capability. The TDD body itself is not modified beyond frontmatter.
+7. **Repo readiness checks** — git origin resolves to GitHub, working tree is clean enough, `docs/tdds/` exists, additional working dirs are accessible.
+8. **Jira pre-flight** — verifies project visibility, required issue types (Epic / Story / Sub-task), and the "Blocks" link type.
+9. **Writes the init marker** — YAML frontmatter records `mode: owner`, `owner_repo`, `owner_path`, and a per-repo `repos:` array (each with its own `initialized_sha` and sidecar path) so subsequent `@planner` runs can hard-gate on it.
 
-`@planner {slug}`, `@planner EPIC-KEY`, and `@planner STORY-KEY` all refuse to run if the TDD has not been initialized. Re-run init when the TDD changes substantially or codebase patterns have drifted.
+#### Consumer init
+
+Run inside a consumer repo (one not owning the TDD):
+
+```
+@planner init {owner-slug}:{tdd-slug}
+```
+
+For example, `@planner init org/platform:auth` from inside `org/employer-frontend` says "I want to plan my slice of `auth` against the canonical TDD that lives at `org/platform:docs/tdds/auth.md`." Consumer init:
+
+1. **Fetches the owner TDD** via `gh api repos/{owner-slug}/contents/docs/tdds/{tdd-slug}.md` at the owner's `origin/HEAD`, and pins that commit as `owner_sha`.
+2. **Validates the owner is initialized** — the owner TDD's frontmatter must carry `mode: owner` (or be a legacy owner TDD) and a non-empty `repos:` array.
+3. **Validates the consumer is in scope** — refuses if this consumer's `org/repo` isn't named in any `**Repos**:` declaration. Refuses if invoked from inside the owner repo (use plain `init` instead).
+4. **Asks which repos to research** — defaults to the consumer's own repo only; the user can opt to research additional in-scope repos.
+5. **Populates the consumer cache** at `{CONSUMER_REPO}/.planner-cache/`, runs research per (capability, repo) pair, and writes consumer-side sidecars at `{CONSUMER_REPO}/docs/tdds/{tdd-slug}/{repo-name}.research.md`.
+6. **Writes the pointer file** at `{CONSUMER_REPO}/docs/tdds/{tdd-slug}.md` carrying `mode: consumer`, `owner_repo`, `owner_path`, `owner_sha`, `consumer_repo`, `jira_project`, and `repos:` plus a single linkback line to the canonical TDD. The TDD body is not copied.
+
+When the owner TDD changes meaningfully, re-run `@planner init {owner-slug}:{tdd-slug}` to refresh `owner_sha` and re-research patterns. Consumer decomposition runs warn at start if the owner's body has shifted since the pinned SHA.
+
+`@planner {slug}`, `@planner EPIC-KEY`, and `@planner STORY-KEY` all refuse to run if the local TDD (owner or consumer pointer) has not been initialized.
 
 ### Decomposition flow
 
 After init, `@planner docs/tdds/auth.md` (or just `@planner auth`):
 
-1. **Resolves the TDD** in the primary repo or any additional working directory; verifies the init marker
-2. **Pins a SHA** — `git rev-parse HEAD` in the TDD's repo. All ticket-facing TDD links use sha-pinned GitHub permalinks so they never rot
-3. **Identifies capabilities** as Epics, orders them by dependency
-4. **Reads patterns** for the first Epic from the TDD section that init populated — no fresh research at this layer
-5. **Writes Gherkin** scenarios (Stories), subtask decompositions, and dependency graph
-6. **Per-ticket research** — for each Full ticket about to be created, runs a fresh narrow research pass and injects an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. Skeleton tickets skip this
-7. **Creates Jira tickets** with TDD link + Implementation Notes (Full) or skeleton stubs (downstream); stale tickets from prior decompositions are surfaced for `/prune`
+1. **Resolves the TDD** in the primary repo or any additional working directory; verifies the init marker. Detects owner vs consumer mode from frontmatter — in consumer mode, the body is fetched from the owner repo via `gh api ... ?ref={owner_sha}` (immutable).
+2. **Pins SHAs** — for owner mode, `git rev-parse HEAD` in the TDD's repo; for consumer mode, the owner's pinned `owner_sha`. All ticket-facing TDD links resolve to the owner's canonical permalink so they never rot.
+3. **Identifies capabilities** as Epics, orders them by dependency. In consumer mode, capabilities that don't touch any of the consumer's researched repos are out of scope.
+4. **Reads patterns** for the first Epic from each touched repo's sidecar. If the consumer references a repo it didn't research locally, the agent fetches the owner's sidecar via `gh api` and links to the owner's sidecar URL rather than embedding its citations.
+5. **Writes Gherkin** scenarios (Stories), subtask decompositions, and dependency graph.
+6. **Per-ticket research** — for each Full ticket about to be created, runs a fresh narrow research pass and injects an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. Skeleton tickets skip this.
+7. **Creates Jira tickets** with TDD link (always pointing at the owner's permalink) + Implementation Notes (Full) or skeleton stubs (downstream); stale tickets from prior decompositions are surfaced for `/prune`.
 
 ### Lazy decomposition
 
@@ -207,7 +244,7 @@ The queue uses `DEV_ROOT` to locate repo clones. Tickets need a `repo:` label (e
 
 | Agent | Description |
 |---|---|
-| `@planner` | Decompose a repo-based Technical Design Document (`docs/tdds/{slug}.md`) into Gherkin-based Epics, Stories, and Subtasks in Jira. Researches codebase patterns and cites them as sha-pinned GitHub permalinks |
+| `@planner` | Decompose a repo-based Technical Design Document (`docs/tdds/{slug}.md`) into Gherkin-based Epics, Stories, and Subtasks in Jira. Researches codebase patterns across declared repos and cites them as sha-pinned GitHub permalinks. Supports a TDD owner / consumer split: the canonical TDD lives in the owning repo, and consumer repos init via a pointer file (no body copy) so they can plan their own slice independently |
 | `@refactor` | Analyze code for CRAP score, DRY violations, and refactoring opportunities |
 
 ## CLI Tools
