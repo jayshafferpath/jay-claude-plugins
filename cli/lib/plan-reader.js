@@ -101,13 +101,19 @@ export function readChecklist(
 
 export function readReviewPlan(
   worktreeDir,
-  _ticketKey,
+  ticketKey,
   { branch, repoRoot } = {},
 ) {
+  if (!ticketKey) return null;
+  const escapedKey = ticketKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const reviewPattern = new RegExp(
+    `^(pr-review-|pr-)${escapedKey}(\\.md|[-_].*\\.md)$`,
+  );
+
   if (worktreeDir) {
     const plansDir = join(worktreeDir, ".claude", "plans");
     if (existsSync(plansDir)) {
-      const files = glob(plansDir, /^(pr-review-|pr-.*).md$/);
+      const files = glob(plansDir, reviewPattern);
       if (files.length) {
         const content = readFileSync(join(plansDir, files[0]), "utf-8");
         return parseReviewContent(content);
@@ -118,9 +124,11 @@ export function readReviewPlan(
   if (branch && repoRoot) {
     const lsResult = gitShow(branch, ".claude/plans", repoRoot);
     if (lsResult) {
-      const match = lsResult.match(/(pr-review-[^\s]+\.md|pr-[^\s]+\.md)/);
+      const match = lsResult
+        .split(/\s+/)
+        .find((name) => reviewPattern.test(name));
       if (match) {
-        const content = gitShow(branch, `.claude/plans/${match[1]}`, repoRoot);
+        const content = gitShow(branch, `.claude/plans/${match}`, repoRoot);
         if (content) return parseReviewContent(content);
       }
     }

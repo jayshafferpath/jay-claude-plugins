@@ -45,7 +45,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 - **ClaudeExecuting**: /plan-execute running
 - **ClaudeStackReady**: code review complete, stack unblocked. For feature branches: awaiting merge. For standard: awaiting user consent to open PR.
 - **ClaudePRApproved**: user approved PR creation, eligible for PR push (user-applied, standard workflow only)
-- **ClaudeNeedsReview**: merged to feature branch or PR pushed, user: review and move ticket to Done
+- **ClaudeNeedsReview**: merged to feature branch or PR pushed, user: review the PR. After it merges to main, run `/cleanup {KEY}` to delete the branch, transition the ticket to Done, and (if last in stack) note completion on the container.
 - **ClaudeFailed**: execution failed, user: investigate
 - **ClaudeStackComplete**: all tickets in stack finished (added to stack container). If feature branch set, triggers Mode C (feature branch PR to main).
 - **ClaudeMainPR**: used by `/promote-to-main` — not part of the ticket-work lifecycle
@@ -83,7 +83,7 @@ ClaudePlanApproved          -> user approved, eligible for execution
 ClaudeExecuting             -> /plan-execute running
 ClaudeStackReady            -> code review done, stack unblocked, awaiting PR consent
 ClaudePRApproved            -> user approved PR creation, eligible for PR push
-ClaudeNeedsReview           -> PR pushed, user: review PR and move ticket to Done
+ClaudeNeedsReview           -> PR pushed, user: review PR. Post-merge: run /cleanup {KEY}
 ClaudeFailed                -> error, user: investigate
 ClaudeStackComplete         -> all tickets in stack finished (added to stack container)
 ```

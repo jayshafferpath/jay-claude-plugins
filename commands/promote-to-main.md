@@ -162,18 +162,67 @@ git rebase origin/main
 
 ### 2d: Handle Conflicts
 
-If the rebase encounters conflicts:
+Initialize `AUTO_RESOLVED = []` (a list of `{file, summary}` records) to be reported at the end of the run.
 
-1. Run `git diff --name-only --diff-filter=U` to list conflicting files
-2. Abort the rebase: `git rebase --abort`
-3. Display:
+If the rebase encounters conflicts, attempt **semantic auto-resolution** using the loop below. Do **not** abort on the first conflict — work through them.
+
+#### 2d.i: Resolve the Current Conflict Set
+
+Loop while `git status --porcelain` shows files in `UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD` state (i.e. an in-progress rebase with conflicts):
+
+1. List conflicting files:
+   ```bash
+   git diff --name-only --diff-filter=U
+   ```
+
+2. For **each** conflicting file:
+   - Read the file with the Read tool to inspect the conflict markers (`<<<<<<<`, `=======`, `>>>>>>>`).
+   - Inspect both sides:
+     - Run `git log --oneline -5 HEAD -- {file}` to see what `HEAD` (the base, currently `origin/main`) brings.
+     - Run `git log --oneline -5 MERGE_HEAD -- {file} 2>/dev/null` or `git log --oneline -5 REBASE_HEAD -- {file} 2>/dev/null` to see what the incoming commit brings.
+     - If helpful, run `git show :1:{file}` (common ancestor), `git show :2:{file}` (HEAD/ours), `git show :3:{file}` (incoming/theirs) to view the three-way state.
+   - Use the ticket context (`CURRENT_TICKET`) and the conflict shape to decide on a semantic resolution. Prefer the change whose intent matches `CURRENT_TICKET`. If both sides modify the same lines but the changes are *additive and non-overlapping in intent*, combine them.
+   - Write the resolved file with Edit/Write, removing all conflict markers.
+   - **If you cannot confidently resolve a file** (genuine semantic ambiguity, conflicting business logic, or the resolution requires information you don't have), fall through to **2d.iii**.
+   - Stage the resolved file: `git add {file}`.
+   - Append to `AUTO_RESOLVED`: `{ file, summary: "<one-line description of the resolution>" }`.
+
+3. Continue the rebase:
+   ```bash
+   git rebase --continue
+   ```
+   This may surface a new set of conflicts on the next commit — loop back to the top of 2d.i.
+
+4. If `git rebase --continue` succeeds and `git status` reports a clean working tree (no rebase in progress), exit the loop and proceed to **2d.ii**.
+
+#### 2d.ii: Validate the Resolution
+
+If `AUTO_RESOLVED` is non-empty, validate before pushing:
+
+1. Detect available checks in `{REPO_ROOT}` (look for `package.json` scripts, `tsconfig.json`, `pyproject.toml`, etc.). Run whatever is cheap and relevant — typically one of:
+   - `npm run typecheck` / `tsc --noEmit`
+   - `npm run lint`
+   - `npm test` (only if fast; skip long suites)
+   - Project-specific equivalents
+2. If any check fails, fall through to **2d.iii**.
+3. If checks pass (or none are applicable), continue to Step 2e.
+
+#### 2d.iii: Bail Out
+
+If semantic resolution fails or post-rebase validation fails:
+
+1. Abort the rebase if still in progress: `git rebase --abort` (safe to run even if not in a rebase — it'll just error harmlessly).
+2. Display:
 
 ```
-CONFLICT rebasing {BRANCH_NAME} onto main
+CONFLICT rebasing {BRANCH_NAME} onto main — auto-resolution failed
 
-Conflicting files:
-- path/to/file1.ts
-- path/to/file2.ts
+Files Claude attempted to resolve:
+- path/to/file1.ts — {summary}
+- path/to/file2.ts — {summary}
+
+Files Claude could not resolve / failing validation:
+- path/to/file3.ts — {reason}
 
 Rebase aborted. Resolve manually:
   cd {REPO_ROOT}
@@ -183,7 +232,7 @@ Rebase aborted. Resolve manually:
   git rebase --continue
 ```
 
-4. **STOP** — do not continue.
+3. **STOP** — do not continue.
 
 After resolving manually, re-run `/promote-to-main {KEY}` to resume.
 
@@ -258,6 +307,22 @@ Promote to Main - {KEY}
 
 Branch: {BRANCH_NAME}
 PR: {PR_URL}
+```
+
+If `AUTO_RESOLVED` is non-empty, append:
+
+```
+
+Auto-resolved conflicts during rebase:
+  - path/to/file1.ts — {summary}
+  - path/to/file2.ts — {summary}
+
+Review the resolution in the PR diff before merging.
+```
+
+Then append:
+
+```
 
 Next steps:
   1. Review and merge the PR
@@ -271,7 +336,7 @@ Next steps:
 ## Error Handling
 
 - If a branch doesn't exist for a ticket: skip it with a warning
-- If rebase has conflicts: STOP immediately and report — never auto-resolve
+- If rebase has conflicts: attempt semantic auto-resolution per Step 2d. If auto-resolution or post-rebase validation fails, abort the rebase and report.
 - If force-push fails: report the error and stop (branch protection, etc.)
 - If `gh pr create` fails: report and stop
 - If Jira operations fail: warn but continue (non-critical)
