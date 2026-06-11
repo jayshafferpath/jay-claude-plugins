@@ -139,19 +139,20 @@ Container:      {CONTAINER_KEY or "(standalone)"}
 Feature branch: {FEATURE_BRANCH or "(none)"}
 
 Actions:
-  1. Delete local branch {BRANCH_NAME} (if present)
-  2. Delete remote branch origin/{BRANCH_NAME} (if present)
-  3. Transition {TICKET_KEY} in Jira to Done
-  4. Remove progress labels (ClaudeReady, ClaudePlanning, ClaudeExecuting, ClaudeStackReady, ClaudePRApproved, ClaudeNeedsReview, ClaudeFailed)
-  5. Append "Shipped" entry to {TICKET_KEY} activity log
+  1. Remove worktree on {BRANCH_NAME} (if present and clean)
+  2. Delete local branch {BRANCH_NAME} (if present)
+  3. Delete remote branch origin/{BRANCH_NAME} (if present)
+  4. Transition {TICKET_KEY} in Jira to Done
+  5. Remove progress labels (ClaudeReady, ClaudePlanning, ClaudeExecuting, ClaudeStackReady, ClaudePRApproved, ClaudeNeedsReview, ClaudeFailed)
+  6. Append "Shipped" entry to {TICKET_KEY} activity log
 {if this is the last unmerged ticket in CONTAINER_KEY:
-  "  6. Append \"Stack complete\" entry to " + CONTAINER_KEY + " activity log"}
+  "  7. Append \"Stack complete\" entry to " + CONTAINER_KEY + " activity log"}
 {if REBASE_DOWNSTREAM is true:
-  "  7. Cascade-rebase downstream tickets onto main: " + comma-separated DOWNSTREAM_KEYS + " (force-push each)"}
+  "  8. Cascade-rebase downstream tickets onto main: " + comma-separated DOWNSTREAM_KEYS + " (force-push each)"}
 {else if DOWNSTREAM_KEYS is non-empty AND --no-rebase was passed:
   "  (skipping cascade rebase per --no-rebase; downstream still bases on the deleted branch: " + comma-separated DOWNSTREAM_KEYS + ")"}
 {if REFRESH_FEATURE is true AND FEATURE_BRANCH is non-null:
-  "  8. Refresh feature branch " + FEATURE_BRANCH + ": reset --hard to origin/main, re-merge unmerged ticket branches (" + comma-separated DOWNSTREAM_KEYS + "), force-push"}
+  "  9. Refresh feature branch " + FEATURE_BRANCH + ": reset --hard to origin/main, re-merge unmerged ticket branches (" + comma-separated DOWNSTREAM_KEYS + "), force-push"}
 {else if FEATURE_BRANCH is non-null AND --no-refresh-feature was passed:
   "  (skipping feature-branch refresh per --no-refresh-feature; " + FEATURE_BRANCH + " stays as-is and may diverge from main)"}
 ```
@@ -184,7 +185,42 @@ git checkout main && git pull origin main --ff-only
 
 If the checkout fails (uncommitted changes, etc.): display the error and **stop** before touching anything else.
 
-### 4b: Delete Local Branch
+### 4b: Remove Worktree on Merged Branch
+
+`git branch -D` refuses to delete a branch that is checked out in any worktree. Detect and remove a worktree on `{BRANCH_NAME}` before attempting the delete.
+
+```bash
+cd {REPO_ROOT} && git worktree list --porcelain
+```
+
+Parse the porcelain output into `(worktree_path, branch)` pairs. Find the entry whose `branch` is `refs/heads/{BRANCH_NAME}`, if any. If none, skip to 4c.
+
+If a matching worktree exists, check it for uncommitted changes:
+
+```bash
+git -C {worktree_path} status --porcelain
+```
+
+If the output is non-empty, display:
+
+```
+Refuse to clean up — worktree at {worktree_path} on branch {BRANCH_NAME}
+has uncommitted changes. Commit or stash them, then re-run /cleanup.
+```
+
+and **stop**. The merged ticket's branch is about to be deleted, but we won't silently destroy in-progress edits in its worktree.
+
+If clean, remove the worktree:
+
+```bash
+cd {REPO_ROOT} && git worktree remove {worktree_path}
+```
+
+If `git worktree remove` fails for any reason (locked worktree, etc.), report the error and **stop** — the user needs to resolve manually before we proceed.
+
+Display: "Removed worktree {worktree_path}."
+
+### 4c: Delete Local Branch
 
 ```bash
 cd {REPO_ROOT} && git branch -D {BRANCH_NAME} 2>/dev/null
@@ -192,7 +228,7 @@ cd {REPO_ROOT} && git branch -D {BRANCH_NAME} 2>/dev/null
 
 `-D` is intentional — the branch was merged via squash, so `-d` would refuse. If the branch doesn't exist locally, the command exits non-zero; that's fine — continue.
 
-### 4c: Delete Remote Branch
+### 4d: Delete Remote Branch
 
 ```bash
 cd {REPO_ROOT} && git push origin --delete {BRANCH_NAME} 2>&1
@@ -571,6 +607,8 @@ else if FEATURE_BRANCH is non-null AND refresh was skipped:
 - If no merged PR to main is found: refuse to run — direct the user to `/prune` (abandon) or wait for merge.
 - If the merge SHA is not reachable from `origin/main`: refuse — main may have been rewritten, or the merge isn't local yet.
 - If the working tree is dirty when we need to switch off the branch: stop before touching anything.
+- If a worktree is checked out on the merged ticket's branch and has uncommitted changes: refuse to clean up. The user must commit/stash before re-running.
+- If `git worktree remove` fails (locked worktree, etc.): stop before deleting the branch.
 - If `git branch -D` fails because the branch is absent locally: continue.
 - If `git push origin --delete` fails for any reason other than "ref does not exist": warn but continue.
 - If the Jira Done transition is unavailable: fall back to labels-only and warn.

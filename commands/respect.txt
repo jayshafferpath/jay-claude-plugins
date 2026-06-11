@@ -1,0 +1,57 @@
+System Architecture Summary: Continuous, Non-Blocking AI Code Orchestration Engine
+This document provides a highly condensed, structurally dense architectural summary for an autonomous implementation agent. It outlines the core logic, execution rules, and state boundaries required to program the orchestration engine without prescribing syntax or language-specific code.
+
+1. Core Paradigm & Operational Constraints
+Zero-Infrastructure Lifecycle: The engine operates as a stateless, transactional, run-once CLI utility. It must not run as a continuous daemon or webhook listener. It relies entirely on native Git history and external Jira API state to track operational progress.
+
+Jira as the State Ledger: To enforce absolute process idempotency and prevent duplicate executions or token loops, the engine checks the target ticket's comments before any work begins. If an orchestrator signature header is detected in the comment history, the transaction aborts instantly.
+
+2. Branch Allocation & Dependency Topologies
+The system routes work into two structural patterns depending on ticket relationship boundaries:
+
+A. Intra-Epic Dependencies (Stacked Commit Topology)
+For tasks within a single Epic that possess a clear sequential order, the engine enforces a non-blocking linear branch chain:
+
+Ancestry Logic: The engine evaluates Jira's native backlog ranking order.
+
+Branch Execution: The branch for the active ticket is cut directly from the tip of its immediate predecessor story branch, even if that predecessor's Pull Request is open, unmerged, or actively under review.
+
+Target Masking: The generated Pull Request points directly to the immediate parent story branch as its merge target, rather than main or an epic base.
+
+B. Parallel Intra-Epic Dependencies (Hub-and-Spoke Topology)
+For tasks within the same Epic that can be executed concurrently:
+
+Ancestry Logic: The engine identifies independent tasks sharing a common historical ancestor.
+
+Branch Execution: The engine provisions isolated, concurrent branches rooted at the exact same commit head of the long-lived Epic base branch.
+
+Target Masking: Each independent branch runs in structural isolation and opens a Pull Request targeting the long-lived Epic base branch.
+
+C. Inter-Epic Dependencies (Base-Merge Complete Gate)
+For cross-epic dependencies where Epic B depends entirely on Epic A:
+
+The Hard Block: Epic B is structurally barred from generating any workspaces or branches until Epic A is 100% complete.
+
+The Completion Trigger: A human lead applies an epic-baseline-stable label only after all constituent stories in Epic A are verified, approved, and fully merged into the long-lived epic/EPIC-A-base branch.
+
+The Handshake: The engine detects the completion label, drops an immutable tracking tag (snapshot/EPIC-A-complete) on the head of the integrated base branch, and cuts the downstream dependent base branch (epic/EPIC-B-base) directly from that snapshot tag.
+
+3. Algorithmic Upstream Change Propagation (The Merge Train)
+When an upstream branch is updated by a human reviewer or an integrated parent branch moves forward, changes must cascade down through active descendant branches:
+
+Plaintext
+Linear Propagation:  [Parent Update] ──► Rebase Child 1 ──► Rebase Child 2
+Parallel Fan-Out:    [Base Update]   ──► Rebase Sibling A
+                                     ──► Rebase Sibling B
+Execution Pattern: The engine loops through the active downstream branch array in strict chronological or hierarchical order, executing sequential automated git rebases.
+
+Automated Conflict Remediation: If a merge conflict marker is encountered, the rebase process pauses. The engine isolates the conflict diff blocks, hands the raw context to a localized AI sub-routine for code resolution, verifies the fix against local test suites, and continues the rebase train. If tests fail, the engine triggers a hard operational halt.
+
+4. Token Budget Guardrails & Financial Governance
+To defend against runaway recursive execution loops, every individual ticket transaction is wrapped in an immutable local budget capsule:
+
+Iteration Limiter: A hard execution ceiling on automated test-remediation loops per ticket (Maximum: 3 attempts).
+
+Cost Circuit Breaker: A maximum financial cost threshold calculated per transaction (Maximum: $0.50 USD).
+
+Halt Protocol: If either limit is breached, the engine immediately halts code generation, rolls back workspace alterations, transitions the Jira ticket to a distinct human intervention status, logs a comprehensive error telemetry report to the ticket comments, and locks all downstream descendant branches from processing.
