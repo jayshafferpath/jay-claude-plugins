@@ -19,6 +19,8 @@ allowed-tools:
 
 # Prune
 
+> **Label source of truth**: `cli/lib/labels.js` is canonical for the Claude lifecycle label set. The `PROGRESS_LABELS` removed in Step 8 and the `TERMINAL_LABELS` (`ClaudePruned`) added in its place both come from there. The JSON patch enumerates them explicitly because Atlassian's API needs the exact list.
+
 Remove a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket.
 
 Use when a ticket's work is being abandoned and should be pulled out cleanly — different from `/rework` (which restarts implementation) and `/promote-to-main` (which ships it).
@@ -67,7 +69,7 @@ Store this list as `DOWNSTREAM` (each entry: key, summary, status).
 
 ## Step 2: Detect Merge Status
 
-If `FEATURE_BRANCH` is set, check whether the ticket has been merged into it. Use the merge commit subject convention from `/ticket-work` S4.8: `Merge {TICKET_KEY}: ...`.
+If `FEATURE_BRANCH` is set, check whether the ticket has been merged into it. Use the merge commit subject convention from `/ticket-work` S4.7: `Merge {TICKET_KEY}: ...`.
 
 ```bash
 cd {REPO_ROOT} && git fetch origin

@@ -125,11 +125,11 @@ For each subtask discovered via a parent, sync the parent's labels and assignmen
 
 ### Single ticket — run directly
 
-If only **one** work item results (single ticket, or a Story with one subtask), proceed to **Single Ticket Lifecycle** below.
+If only **one** work item results (single ticket, or a Story with one subtask), proceed to **Single Ticket Lifecycle** below. `SERIAL_MODE` is irrelevant when there's only one ticket — there is no parallelism to suppress — but it is still propagated into the lifecycle (`SERIAL_MODE` controls per-ticket worktree-vs-branch handling in S2a/S2b regardless of how many tickets ran). Do not strip `--serial` when handing off.
 
 ### Multiple tickets — parallel agents (or serial)
 
-If **multiple** work items result, run the **Queue Pipeline** (Step Q3 onward) using these tickets instead of JQL discovery. If `SERIAL_MODE`, tickets will be processed sequentially per Q6b.
+If **multiple** work items result, run the **Queue Pipeline** (Step Q3 onward) using these tickets instead of JQL discovery. `SERIAL_MODE` propagates: it controls Q6a vs Q6b dispatch, and each spawned per-ticket invocation inherits the flag (Q6b passes `--serial` to the child invocations explicitly so worktree-vs-branch handling stays consistent across the queue).
 
 ---
 
@@ -138,6 +138,82 @@ If **multiple** work items result, run the **Queue Pipeline** (Step Q3 onward) u
 Run the full queue pipeline: discover → gate → prepare → execute → promote.
 
 Proceed to **Queue Pipeline** below.
+
+---
+
+# Shared sub-procedure: PR Push & Review
+
+This sub-procedure is parameterized and called from both **S4.9–S4.12** (per-ticket PR flow) and **C3.1–C3.7** (Mode C feature-branch PR flow). It captures the common shape — generate description, push as draft, review-plan + execute, Copilot loop, post review summary — so changes to that shape only need to be made once.
+
+## Inputs
+
+| Param | Per-ticket (S4) | Mode C |
+|---|---|---|
+| `WORK_DIR` | the ticket's worktree or repo root | the container's `REPO_ROOT` |
+| `BRANCH` | `BRANCH_NAME` (ticket branch) | `FEATURE_BRANCH` |
+| `BASE` | `PR_TARGET` | `PR_BASE` |
+| `JIRA_KEY` | `TICKET_KEY` | `CONTAINER_KEY` |
+| `STORAGE` | Jira checklist via `sync-checklist` | local file `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md` |
+| `MARK_READY` | `false` (PR stays draft until human marks ready) | `true` (run `gh pr ready {BRANCH}` at the end) |
+| `LABEL_FLIP` | on push, `{"remove": "ClaudePRApproved", "add": "ClaudeNeedsReview"}` | none (Mode C does not touch ticket labels — the container's `ClaudeStackComplete` is independent) |
+
+> **Storage divergence note**: the per-ticket flow's resume state lives in Jira (the checklist on the ticket itself, accessed via `sync-checklist`). Mode C's resume state lives in a local file because the container itself doesn't have a per-step checklist of its own — its checklist is the *roll-up* of its subtasks. The intent is for both flows to converge on Jira-comment storage in the future; for now, treat `STORAGE` as a black box: each step ends with "mark step N done in `STORAGE`".
+
+## Steps
+
+### Step P1: PR description generated
+**Skip if**: step is already marked done in `STORAGE`.
+
+1. `cd {WORK_DIR}`
+2. For Mode C only: `git checkout {BRANCH}` first.
+3. Use the Skill tool to run skill `jay-pr-description`.
+4. Mark step P1 done in `STORAGE`.
+
+### Step P2: PR created as draft
+**Skip if**: step is already marked done in `STORAGE`, OR a draft/open PR for `{BRANCH}` → `{BASE}` already exists (probe with `gh pr list --head {BRANCH} --base {BASE} --state open --json number,url --limit 1`); if so, capture its URL into `PR_URL` and continue.
+
+1. `cd {WORK_DIR}`
+2. Run `ensure-pr {BRANCH} --base {BASE} --body-file ./pr.md --draft`. Parse the JSON output, store `pr.url` as `PR_URL`.
+3. If this flow has a `LABEL_FLIP`: apply it via `mcp__atlassian__editJiraIssue`.
+4. Append to the activity log: `append-activity {JIRA_KEY} --heading "Draft PR opened" --body "{BRANCH} → {BASE}: {PR_URL}"`.
+5. Mark step P2 done in `STORAGE`.
+
+### Step P3: PR review plan generated
+**Skip if**: step is already marked done in `STORAGE`.
+
+1. `cd {WORK_DIR}`
+2. Use the Skill tool to run skill `pr-review`.
+3. Mark step P3 done in `STORAGE`.
+
+### Step P4: PR review plan executed
+**Skip if**: step is already marked done in `STORAGE`.
+
+1. `cd {WORK_DIR}`
+2. Use the Skill tool to run skill `pr-execute-plan`.
+3. After execution: if there are uncommitted changes, stage and commit, then push: `git push origin {BRANCH}`.
+4. Mark step P4 done in `STORAGE`.
+
+### Step P5: Copilot review comments resolved
+**Skip if**: step is already marked done in `STORAGE`.
+
+1. `cd {WORK_DIR}`
+2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`.
+3. If pr-watch made changes and pushed, update `HEAD_SHA`.
+4. Mark step P5 done in `STORAGE`.
+
+### Step P6: PR review summary posted
+**Skip if**: step is already marked done in `STORAGE`.
+
+1. `cd {WORK_DIR}`
+2. Run `post-review-summary {BRANCH} --plans-dir .claude/plans --ticket-key {JIRA_KEY}`.
+3. If output `posted: true`, mark step P6 done. If `posted: false` with reason `no_plan_file`, mark done anyway (nothing to post).
+
+### Step P7: PR marked ready for review (Mode C only)
+**Skip if**: step is already marked done in `STORAGE`, OR `MARK_READY` is false.
+
+1. Run `gh pr ready {BRANCH}`.
+2. Append to the activity log: `append-activity {JIRA_KEY} --heading "Feature branch PR ready" --body "Ready for human review: {PR_URL}"`.
+3. Mark step P7 done in `STORAGE`.
 
 ---
 
@@ -222,100 +298,17 @@ created: {ISO_TIMESTAMP}
 
 ## C3: Execute Checklist
 
-Work through each unchecked step in order. After completing each step, immediately update the checklist file.
+Run the **Shared sub-procedure: PR Push & Review** (defined above) with these bindings:
 
----
+- `WORK_DIR` = `REPO_ROOT`
+- `BRANCH` = `FEATURE_BRANCH`
+- `BASE` = `PR_BASE`
+- `JIRA_KEY` = `CONTAINER_KEY`
+- `STORAGE` = the local checklist file at `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md` (read/update with checkbox edits)
+- `MARK_READY` = true
+- `LABEL_FLIP` = none
 
-### Step C3.1: PR description generated
-
-**Skip if**: step 1 is already checked `[x]`.
-
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Ensure we are on the feature branch: `git checkout {FEATURE_BRANCH}`
-3. Use the Skill tool to run skill `jay-pr-description`
-4. Mark step 1 as `[x]`
-
----
-
-### Step C3.2: PR created as draft
-
-**Skip if**: step 2 is already checked `[x]`.
-
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Run:
-   ```bash
-   ensure-pr {FEATURE_BRANCH} --base {PR_BASE} --body-file ./pr.md --draft
-   ```
-3. Parse the JSON output. Store `pr.url` as `PR_URL`.
-4. Append to the activity log on `{CONTAINER_KEY}`:
-   ```bash
-   append-activity {CONTAINER_KEY} --heading "Draft PR opened" --body "Feature branch \`{FEATURE_BRANCH}\` → \`{PR_BASE}\`: {PR_URL}"
-   ```
-5. Mark step 2 as `[x]`
-
----
-
-### Step C3.3: PR review plan generated
-
-**Skip if**: step 3 is already checked `[x]`.
-
-1. Make sure we are in the repo root on the feature branch: `cd {REPO_ROOT}`
-2. Use the Skill tool to run skill `pr-review`
-3. Mark step 3 as `[x]`
-
----
-
-### Step C3.4: PR review plan executed
-
-**Skip if**: step 4 is already checked `[x]`.
-
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Use the Skill tool to run skill `pr-execute-plan`
-3. After execution: stage and commit any changes if present, then push:
-   ```bash
-   cd {REPO_ROOT} && git push origin {FEATURE_BRANCH}
-   ```
-4. Mark step 4 as `[x]`
-
----
-
-### Step C3.5: Copilot review comments resolved
-
-**Skip if**: step 5 is already checked `[x]`.
-
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
-3. If pr-watch made changes and pushed, note updated HEAD
-4. Mark step 5 as `[x]`
-
----
-
-### Step C3.6: PR review summary posted
-
-**Skip if**: step 6 is already checked `[x]`.
-
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Run:
-   ```bash
-   post-review-summary {FEATURE_BRANCH} --plans-dir .claude/plans --ticket-key {CONTAINER_KEY}
-   ```
-3. Mark step 6 as `[x]`
-
----
-
-### Step C3.7: PR marked ready for review
-
-**Skip if**: step 7 is already checked `[x]`.
-
-1. Mark the PR as ready for review:
-   ```bash
-   gh pr ready {FEATURE_BRANCH}
-   ```
-2. Append to the activity log on `{CONTAINER_KEY}`:
-   ```bash
-   append-activity {CONTAINER_KEY} --heading "Feature branch PR ready" --body "Ready for human review: {PR_URL}"
-   ```
-3. Mark step 7 as `[x]`
+Each `Step P{n}` in the sub-procedure maps onto checklist item `n` in this file (P1 ↔ "PR description generated", …, P7 ↔ "PR marked ready for review"). Before starting P1, ensure we are on `{FEATURE_BRANCH}`: `cd {REPO_ROOT} && git checkout {FEATURE_BRANCH}`. The sub-procedure handles the rest.
 
 ---
 
@@ -917,7 +910,10 @@ Additionally, apply the Stage Squash Protocol at each stage boundary (record HEA
 
 ### Step S4.2: Plan executed with TDD (Red-Green-Refactor)
 
-**Skip if**: step 2 is already checked `[x]`.
+**Skip if** any of:
+- step 2 is already checked `[x]` in the Jira checklist, OR
+- the Jira plan's task list already shows every task marked done (verify via `sync-plan {TICKET_KEY} --read` and inspecting `sections[*].tasks[*].done`), OR
+- git log on the current branch already contains an `[{TICKET_KEY}] execute:` stage commit (the squash from a prior completed S4.2 run).
 
 Execution follows test-driven development: for each plan task, write a failing test derived from the Gherkin acceptance criteria first (Red), then implement to make it pass (Green), then refactor. Tests are written in the project's native test framework.
 
@@ -1140,9 +1136,13 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
 
 ### Step S4.7: Stack ready
 
+S4.7 has two sub-steps. S4.7a always runs and is the only thing that "marks the ticket as stack-ready". S4.7b only runs when the ticket sits inside a Story/Epic stack with a `FEATURE_BRANCH` — it merges the reviewed branch into that feature branch and shifts the label from `ClaudeStackReady` to `ClaudeNeedsReview`.
+
+#### Step S4.7a: Mark stack ready
+
 **Skip if**: step 7 is already checked `[x]`.
 
-This step marks the ticket as stack-ready, which unblocks downstream tickets without requiring a PR to be opened.
+This sub-step marks the ticket stack-ready, which unblocks downstream tickets without requiring a PR to be opened. It runs for every ticket — feature-branch and standalone alike.
 
 1. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeStackReady"}]}`
@@ -1152,56 +1152,60 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    ```
 3. Mark step 7 as done and sync checklist to Jira.
 
-**If `FEATURE_BRANCH` is set**: verify all review issues are resolved, then merge into the local feature branch.
+After S4.7a:
+- If `FEATURE_BRANCH` is null (standalone workflow): this is the terminal state for non-feature-branch tickets. Display:
+  ```
+  Ticket {TICKET_KEY} - Stack Ready (terminal)
 
-   1. **Verify review is clean**: Read the PR review plan file from `{PLANS_DIR}/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`). Parse all items in the plan:
-      - If any issues are marked unresolved or incomplete: set `ClaudeFailed` label, append the unresolved-issues list to the activity log (`append-activity {TICKET_KEY} --heading "Review issues unresolved" --body-file <issues.md>`), and **stop**.
-      - Display: "Review has unresolved issues. Fix them and re-run `/ticket-work {TICKET_KEY}`."
-      - Only proceed if ALL issues identified by the review have been resolved.
-   2. Ensure feature branch is up to date:
-      ```bash
-      cd {WORK_DIR} && git fetch origin && git checkout {FEATURE_BRANCH} && git pull origin {FEATURE_BRANCH}
-      ```
-   3. Merge the ticket branch:
-      ```bash
-      git merge {BRANCH_NAME} --no-ff -m "Merge {TICKET_KEY}: {SUMMARY}"
-      ```
-   4. If merge conflicts occur:
-      - Attempt automatic resolution for trivial conflicts
-      - If unresolvable: abort the merge (`git merge --abort`), set `ClaudeFailed` label, and **stop**
-      - Display: "Merge conflict merging {BRANCH_NAME} into {FEATURE_BRANCH}. Investigate and re-run."
-   5. Push the updated feature branch:
-      ```bash
-      git push origin {FEATURE_BRANCH}
-      ```
-   6. Return to the ticket's working directory:
-      - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
-      - If worktree mode: `cd {WORK_DIR}`
-   7. Mark steps 8-12 as done and sync checklist to Jira (not applicable for feature branch workflow).
-   8. Append to the activity log:
-      ```bash
-      append-activity {TICKET_KEY} --heading "Merged to feature branch" --body "Merged into feature branch \`{FEATURE_BRANCH}\`."
-      ```
-   9. Update Jira labels:
-      - `update`: `{"labels": [{"remove": "ClaudeStackReady"}, {"add": "ClaudeNeedsReview"}]}`
-   10. Display:
-       ```
-       Ticket {TICKET_KEY} - Merged to Feature Branch
+  Branch: {BRANCH_NAME}
+  Code review complete. Downstream tickets are unblocked.
+  To open the PR later: add `ClaudePRApproved` in Jira, then re-run `/ticket-work {TICKET_KEY}`.
+  ```
+  Proceed to S6 (promote downstream), then stop. Do **not** run S4.7b.
+- If `FEATURE_BRANCH` is set: continue to S4.7b.
 
-       Branch: {BRANCH_NAME} → {FEATURE_BRANCH}
-       All review issues resolved. Merged locally and pushed.
-       ```
-   11. Proceed to S6 (promote downstream), then stop.
+#### Step S4.7b: Merge into feature branch (feature-branch workflow only)
 
-**If `FEATURE_BRANCH` is null (standard workflow)**: terminal state. Display:
+**Skip if**: `FEATURE_BRANCH` is null. Feature-branch tickets stop after S4.7b; the container's Mode C checklist takes over from there. The S4.8–S4.12 steps in this command's per-ticket checklist are stamped done by S4.7b (see step 7 below) because the work they describe is owned by Mode C, not by the per-ticket lifecycle.
+
+1. **Verify review is clean**: Read the PR review plan file from `{PLANS_DIR}/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`). Parse all items in the plan:
+   - If any issues are marked unresolved or incomplete: set `ClaudeFailed` label, append the unresolved-issues list to the activity log (`append-activity {TICKET_KEY} --heading "Review issues unresolved" --body-file <issues.md>`), and **stop**.
+   - Display: "Review has unresolved issues. Fix them and re-run `/ticket-work {TICKET_KEY}`."
+   - Only proceed if ALL issues identified by the review have been resolved.
+2. Ensure feature branch is up to date:
+   ```bash
+   cd {WORK_DIR} && git fetch origin && git checkout {FEATURE_BRANCH} && git pull origin {FEATURE_BRANCH}
    ```
-   Ticket {TICKET_KEY} - Stack Ready (terminal)
-
-   Branch: {BRANCH_NAME}
-   Code review complete. Downstream tickets are unblocked.
-   To open the PR later: add `ClaudePRApproved` in Jira, then re-run `/ticket-work {TICKET_KEY}`.
+3. Merge the ticket branch:
+   ```bash
+   git merge {BRANCH_NAME} --no-ff -m "Merge {TICKET_KEY}: {SUMMARY}"
    ```
-   Proceed to S6 (promote downstream), then stop.
+4. If merge conflicts occur:
+   - Attempt automatic resolution for trivial conflicts
+   - If unresolvable: abort the merge (`git merge --abort`), set `ClaudeFailed` label, and **stop**
+   - Display: "Merge conflict merging {BRANCH_NAME} into {FEATURE_BRANCH}. Investigate and re-run."
+5. Push the updated feature branch:
+   ```bash
+   git push origin {FEATURE_BRANCH}
+   ```
+6. Return to the ticket's working directory:
+   - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
+   - If worktree mode: `cd {WORK_DIR}`
+7. Mark steps 8-12 as done in this ticket's checklist and sync to Jira. Those steps describe per-ticket PR work that does not apply here — feature-branch tickets do not get their own main-targeting PR; the container's Mode C flow ships them as a single feature-branch PR. Stamping 8-12 as done keeps the resume logic from looping back into per-ticket PR steps that have nothing left to do.
+8. Append to the activity log:
+   ```bash
+   append-activity {TICKET_KEY} --heading "Merged to feature branch" --body "Merged into feature branch \`{FEATURE_BRANCH}\`."
+   ```
+9. Update Jira labels:
+   - `update`: `{"labels": [{"remove": "ClaudeStackReady"}, {"add": "ClaudeNeedsReview"}]}`
+10. Display:
+    ```
+    Ticket {TICKET_KEY} - Merged to Feature Branch
+
+    Branch: {BRANCH_NAME} → {FEATURE_BRANCH}
+    All review issues resolved. Merged locally and pushed.
+    ```
+11. Proceed to S6 (promote downstream), then stop.
 
 ---
 
@@ -1227,6 +1231,30 @@ Check the ticket's current labels:
 
 ---
 
+### Steps S4.9–S4.12: PR Push & Review (shared sub-procedure)
+
+S4.9 through S4.12 are an instance of the **Shared sub-procedure: PR Push & Review** (defined earlier in this file). Use these bindings:
+
+- `WORK_DIR` = `WORK_DIR`
+- `BRANCH` = `BRANCH_NAME`
+- `BASE` = `PR_TARGET`
+- `JIRA_KEY` = `TICKET_KEY`
+- `STORAGE` = the Jira checklist on `{TICKET_KEY}` (use `sync-checklist {TICKET_KEY}` to read/write)
+- `MARK_READY` = false (per-ticket PRs stay draft until the human marks them ready)
+- `LABEL_FLIP` = `{"remove": "ClaudePRApproved", "add": "ClaudeNeedsReview"}` applied at P2 (creates draft PR)
+
+The mapping is:
+- S4.9 ↔ P1 (PR description)
+- S4.10 ↔ P2 (push as draft) — keep S4.10's existing skip-if conditions (PR already exists for `{BRANCH_NAME}` to `{PR_TARGET}`, etc.)
+- S4.11 ↔ P5 (Copilot review loop)
+- S4.12 ↔ P6 (post review summary)
+
+S4 does **not** run P3 / P4 / P7 — those are Mode-C-only (review plan generation/execution and ready-for-review flip). The per-ticket flow handled review at S4.5/S4.6 already; the Mode C flow re-runs review at the feature-branch level for the integrated diff.
+
+The legacy step-by-step body for S4.9–S4.12 is retained below for resume-from-prior-version compatibility, but the sub-procedure above is the source of truth.
+
+---
+
 ### Step S4.9: PR description and title generated with /jay-pr-description
 
 **Skip if**: step 9 is already checked `[x]`.
@@ -1239,7 +1267,10 @@ Check the ticket's current labels:
 
 ### Step S4.10: PR pushed as draft
 
-**Skip if**: step 10 is already checked `[x]`.
+**Skip if** any of:
+- step 10 is already checked `[x]` in the Jira checklist, OR
+- a PR already exists for `{BRANCH_NAME}` targeting `{PR_TARGET}` (probe with `gh pr list --head {BRANCH_NAME} --base {PR_TARGET} --state open --json number,url --limit 1`); if so, capture its URL into `PR_URL` and continue without creating a new one, OR
+- the ticket already carries `ClaudeNeedsReview` and a PR URL is recorded in the activity log (resume scenario where the push succeeded but the checklist sync after step 10 didn't).
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Run:
@@ -1310,7 +1341,7 @@ Filter out:
 - Tickets not assigned to the current user
 - Tickets that already have any progress label (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`)
 
-### S6c: Promote and Run Next Ticket
+### S6b: Promote and Run Next Ticket
 
 If exactly **one** eligible downstream ticket is found:
 

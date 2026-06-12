@@ -47,11 +47,11 @@ If `--status` and `--auto-all` are both present: display "Cannot combine --statu
 - `mcp__atlassian__getAccessibleAtlassianResources` → first `id` is `CLOUD_ID`.
 - `mcp__atlassian__atlassianUserInfo` → `account_id` is `MY_ACCOUNT_ID`.
 
-### 1b: Find Active Stacks
+### 1b: Enumerate Container Keys
 
 If `SCOPE_KEY` is set, skip this step — Step 2 will resolve directly from the scope key.
 
-Otherwise, find all containers that have at least one in-flight ticket assigned to the user:
+Otherwise, enumerate every container that has at least one in-flight ticket assigned to the user. This step only collects keys; the per-stack `resolve-stack --fetch` runs in Step 2.
 
 `mcp__atlassian__searchJiraIssuesUsingJql` with:
 
@@ -70,7 +70,7 @@ Deduplicate to a list of unique `CONTAINER_KEYS`. If empty, display "No active s
 
 ---
 
-## Step 2: Survey Each Stack
+## Step 2: Resolve Each Stack
 
 Initialize `STACKS = []` (per-container snapshot).
 
@@ -100,10 +100,10 @@ Compute helpers (only meaningful when `repoRoot` and `branch` exist):
 
 Decision table, in order — first match wins:
 
-1. **`mergedIntoMain === true` AND branch still exists locally OR remote** → `next_action = "cleanup"`, **auto-safe**.
+1. **`mergedIntoMain === true` AND branch still exists locally OR remote** → `next_action = "cleanup-terminal"`, **auto-safe**.
    *Why safe: `/cleanup` re-verifies the merge SHA is reachable from `origin/main` before doing anything destructive. If the ticket carries `ClaudePendingMainPromotion`, this is the deferred terminal cleanup that completes the two-phase Story-container flow.*
 
-1a. **`branch === featureBranch` AND `parentFeatureBranch` is non-null AND a merged PR `--base {parentFeatureBranch}` exists AND `mergedIntoMain === false` AND `labels` does NOT include `ClaudePendingMainPromotion`** → `next_action = "cleanup"`, **auto-safe** (Phase 1).
+1a. **`branch === featureBranch` AND `parentFeatureBranch` is non-null AND a merged PR `--base {parentFeatureBranch}` exists AND `mergedIntoMain === false` AND `labels` does NOT include `ClaudePendingMainPromotion`** → `next_action = "cleanup-phase-1"`, **auto-safe**.
    *Why safe: cleanup will detect `MERGE_TARGET = parentFeatureBranch`, set `DEFER_DESTRUCTIVE = true`, retain the branch, leave Jira In Progress, apply `ClaudePendingMainPromotion`, and run sibling cascade-rebase + Epic-feature-branch refresh. The Story branch stays alive for `/promote-to-main`. The label gates re-entry — once it's applied, this rule no longer matches and the ticket waits for promotion or for terminal cleanup (rule 1).*
 
 2. **`labels` includes `ClaudePRApproved` AND no open PR to main exists** → `next_action = "promote-to-main"`, **auto-safe**.
@@ -113,7 +113,11 @@ Decision table, in order — first match wins:
 
 4. **`labels` includes `ClaudeStackReady` AND no PR to main yet** → `next_action = "awaiting-pr-approval"`, **manual**.
 
-5. **`labels` includes `ClaudeFailed`** → `next_action = "failed"`, **ask** (could be `/rework` or `/fix-drift` depending on user judgment).
+5. **`labels` includes `ClaudeFailed`** → `next_action = "failed"`, **ask**. Read the most recent entry from the ticket's `[claude-activity-log]` Jira comment (search for the heading naming a `ticket-work` step like `S4.2`, `S4.3`, `S4.7`) and capture the failing step into `failed_step`. Use it to bias the prompt:
+   - Failure at S4.2 (TDD execute) → recommend `/rework` (implementation went off the rails).
+   - Failure at S4.3 (TDD verify) → recommend `/fix-drift` (code drifted from acceptance criteria).
+   - Failure at S4.7 (review issues) → recommend manual investigation; neither auto-action is appropriate.
+   - Failure step unknown / log not found → present both options without a recommendation.
 
 6. **`labels` includes `ClaudeExecuting` OR `ClaudePlanning`** → `next_action = "in-flight"`, **none** — another run is in progress, do nothing.
 
@@ -145,7 +149,8 @@ Print one section per stack, in order. Use a tree layout that mirrors `ticket-st
 ```
 
 Annotate each ticket's `→ {next_action}` line with one of:
-- `✓ auto: cleanup` — safe, will run.
+- `✓ auto: cleanup-terminal` — safe, will run (PR merged to main; full teardown).
+- `✓ auto: cleanup-phase-1` — safe, will run (Story-container PR merged into parent Epic feature branch; branch retained for /promote-to-main, sibling rebase + Epic-feature-branch refresh only).
 - `✓ auto: promote-to-main` — safe, will run.
 - `? ask: rework or fix-drift` — failed, will prompt.
 - `? ask: ticket-work` — ready, will prompt (long-running).
@@ -196,8 +201,8 @@ Running {N} auto-safe actions (sequential, re-survey at end of round):
 Then run them in order. For each entry:
 
 - Use the **Skill** tool to invoke the matching skill with the ticket key as args:
-  - `cleanup` → `Skill: cleanup` with args `{KEY}`
-  - `promote-to-main` → `Skill: promote-to-main` with args `{KEY}`
+  - `cleanup-phase-1` and `cleanup-terminal` → use the Skill tool to run skill `cleanup` with args `{KEY} --yes`. The `--yes` flag bypasses the interactive confirmation prompt that `/cleanup` issues at the end of its Step 3 — without it, the auto-safe batch would deadlock waiting on a "type confirm" prompt. The orchestrator already showed the queue in Step 4, so the user has seen the full set of cleanups before any of them run.
+  - `promote-to-main` → use the Skill tool to run skill `promote-to-main` with args `{KEY}`.
 - Capture stdout/stderr summary into `RUN_RESULTS[]`: `{ key, action, outcome: "success" | "failed" | "stopped", note }`.
 - If a skill invocation halts with a refusal (e.g., `/cleanup` refuses because the merge SHA isn't reachable), record `outcome: "stopped"` with the refusal reason and continue to the next action — do not retry.
 - If the skill errors mid-run (e.g., rebase conflict bailout in `/promote-to-main`), record `outcome: "failed"` with the failing step name and continue.
@@ -208,14 +213,17 @@ Do **not** re-survey between actions in the batch. We re-survey once at the end 
 
 ## Step 6: Ask About Risky Actions
 
-For each ticket whose `next_action` is `"failed"`, `"ticket-work"`, or where the stack has `needs_stack_rebase = true`:
+This step covers two scopes:
+
+- **Per-ticket prompts** — one prompt per ticket whose `next_action` is `"failed"` or `"ticket-work"`. Each ticket gets its own prompt; the user answers each independently.
+- **Per-stack prompts** — one prompt per stack whose `needs_stack_rebase = true`, regardless of how many tickets it contains. The stack-rebase action runs once on the leading ticket and cascades to the rest of the chain.
 
 If `AUTO_ALL` is true, queue them as auto:
-- `failed` → run `/fix-drift {KEY}` first (less destructive); if it bails or labels stay `ClaudeFailed`, stop and surface for manual `/rework`.
-- `ticket-work` → run `/ticket-work {KEY}`.
-- `needs_stack_rebase` → run `/stack-rebase {leading-ticket-of-stack}`.
+- per-ticket `failed` → run `/fix-drift {KEY}` first (less destructive); if it bails or labels stay `ClaudeFailed`, stop and surface for manual `/rework`.
+- per-ticket `ticket-work` → run `/ticket-work {KEY}`.
+- per-stack `needs_stack_rebase` → run `/stack-rebase {leading-ticket-of-stack}` once for the whole stack.
 
-Run each via Skill, append to `RUN_RESULTS`.
+Run each via the Skill tool (e.g., for `failed`, use the Skill tool to run skill `fix-drift` with args `{KEY}`; for `ticket-work`, run skill `ticket-work` with args `{KEY}`; for `needs_stack_rebase`, run skill `stack-rebase` with args `{leading-ticket-of-stack}`), append to `RUN_RESULTS`.
 
 Otherwise (default), ask the user **per ticket**, not in a single mega-prompt:
 
@@ -225,12 +233,16 @@ For each `failed` ticket:
 {KEY}: {summary}
   Branch: {branch}
   Last labels: {claude-prefixed labels}
+  Failed at: {failed_step or "unknown"}
+  Recommendation: {recommendation derived from failed_step, or "(none)"}
 
 What should I do?
   [1] /fix-drift {KEY}   — adjust code to match AC, less destructive
   [2] /rework {KEY}      — reset branch and restart from scratch (destructive)
   [3] skip               — leave as-is, surface again next /orchestrate
 ```
+
+Mark the recommended option with `(recommended)` in the prompt rendering when a recommendation is set.
 
 For each `ticket-work` candidate:
 
@@ -239,7 +251,15 @@ For each `ticket-work` candidate:
   Run /ticket-work {KEY}? [y/N/skip]
 ```
 
-Run the chosen action via Skill, append to `RUN_RESULTS`. A skip records `outcome: "skipped-by-user"`.
+For each stack with `needs_stack_rebase = true`, prompt **once** (not per-ticket):
+
+```
+{CONTAINER_KEY}: {summary} — stale stacked branches
+  Tickets needing rebase: {KEY-A}, {KEY-B}, ...
+  Run /stack-rebase {leading-key}? [y/N/skip]
+```
+
+Run the chosen action via the Skill tool (e.g., for option `[1]`, run skill `fix-drift` with args `{KEY}`; for `[2]`, run skill `rework` with args `{KEY}`), append to `RUN_RESULTS`. A skip records `outcome: "skipped-by-user"`.
 
 ---
 

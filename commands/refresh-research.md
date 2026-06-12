@@ -75,15 +75,13 @@ This usually means the ticket was created before per-ticket research was added t
 
 ## Step 3: Run the Drift Check
 
-Apply the protocol from `commands/ticket-work.md` **S3.5: Drift Check**:
+This command is a **manual entry point into the protocol defined at `commands/ticket-work.md` S3.5**. Follow that section verbatim — sub-steps S3.5a (parse), S3.5b (diff), S3.5c (decide), and S3.5d (continue) — instead of repeating their detail here. Only the deltas below apply when running via `/refresh-research` rather than from inside a `/ticket-work` session:
 
-- **S3.5a**: Parse the existing Implementation Notes block. Extract `IMPL_NOTES_BASELINE` (per-repo SHA map) and `IMPL_NOTES_CITATIONS` (list of `{repo, path, start, end, baseline_sha}` records).
-- **S3.5b**: For each citation, in the citation's `{repo}` working dir, run `git log --oneline -L {start},{end}:{path} {baseline_sha}..HEAD`. Detect line-range edits, file removal (path missing at HEAD), and renames (`git log --follow`). Mark drifted citations.
-- **S3.5c**: Decide:
-  - **No drift** → Append an activity log entry: `Drift check passed (manual) — research baseline still current.` Display a confirmation to the user. Do **not** add `ClaudeDriftChecked` (this command is independent of the ticket-work session lifecycle and shouldn't pre-empt the automatic check there).
-  - **Drift** → Re-run per-ticket research (Phase 5.0 from `agents/planner.md`) at current HEAD, compose a new Implementation Notes block, replace it in the ticket description via `mcp__atlassian__editJiraIssue`, and post a Jira comment via `mcp__atlassian__addCommentToJiraIssue` showing old vs new baselines, drifted citations, and replacements. The comment format and warnings (e.g., "Plan was approved against the prior baseline") follow the same shape as S3.5c in ticket-work.
+- **S3.5c "no drift" branch**: append an activity-log entry `Drift check passed (manual) — research baseline still current.` and display a confirmation to the user. Do **not** add the `ClaudeDriftChecked` label — that label belongs to the ticket-work session lifecycle and applying it here would suppress the automatic check on the next `/ticket-work` run.
+- **S3.5c "drift" branch**: same as ticket-work (re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, post the diff comment).
+- **S3.5d (continue)**: this command exits after the drift check. There is no S4 to flow into; print the Step 4 report and stop.
 
-For full detail on parsing, diffing, comment format, and edge cases, **follow `commands/ticket-work.md` S3.5 verbatim** — this command is a manual entry point into that same protocol.
+If the protocol in `commands/ticket-work.md` S3.5 changes, this command inherits the change automatically.
 
 ---
 

@@ -14,11 +14,14 @@ allowed-tools:
   - Bash(gh *)
   - Bash(resolve-stack *)
   - Bash(append-activity *)
+  - Bash(cascade-rebase *)
   - Read
   - Write
 ---
 
 # Cleanup
+
+> **Label source of truth**: `cli/lib/labels.js` is canonical for the Claude lifecycle label set (`PROGRESS_LABELS`, `DURABLE_LABELS`, `CONTAINER_LABELS`, `TERMINAL_LABELS`). The JSON patches below enumerate labels explicitly because Atlassian's API needs the exact list — but if a label is added or removed lifecycle-wide, update `labels.js` first and then sync the patches here.
 
 Post-merge teardown for a single ticket: verify its PR landed on its merge target (typically `main`, but the parent Epic's feature branch when the cleaned ticket *is* a Story-container that PR'd to its Epic), delete the local + remote branch, remove progress labels, transition Jira to Done, append a "stack complete" note to the container's activity log if applicable, cascade-rebase any unmerged downstream tickets onto the merge target so their branches don't dangle off the deleted branch, and refresh the long-lived feature branch by resetting it to fresh `origin/{target}` and re-merging the still-unmerged ticket branches.
 
@@ -33,11 +36,13 @@ Required: a Jira ticket key (e.g., `PROJ-123`). The ticket must have a `repo:` l
 Optional flags:
 - `--no-rebase` — skip the post-cleanup cascade rebase of downstream stacked tickets (Step 7). Useful when downstream branches are intentionally being abandoned, or when you'd rather rebase manually later.
 - `--no-refresh-feature` — skip the feature-branch refresh (Step 8). Useful if the feature branch carries hand-authored integration commits you don't want clobbered, or if you'd rather refresh manually.
+- `--yes` (alias: `--no-confirm`) — skip the interactive confirmation prompt at the end of Step 3. Print the plan, then proceed straight into Step 4. Used by `/orchestrate` so its auto-safe cleanup pass doesn't deadlock on a prompt; humans should generally omit the flag and review the plan first.
 
 Parse `$ARGUMENTS` into:
 - `TICKET_KEY` — the first non-flag token.
 - `REBASE_DOWNSTREAM` (boolean) — defaults to `true`, set to `false` if `--no-rebase` is present.
 - `REFRESH_FEATURE` (boolean) — defaults to `true`, set to `false` if `--no-refresh-feature` is present.
+- `AUTO_CONFIRM` (boolean) — defaults to `false`, set to `true` if `--yes` or `--no-confirm` is present.
 
 ---
 
@@ -112,11 +117,9 @@ When `MERGE_TARGET ≠ main`, the cleaned ticket is itself a stack-container (it
 
 This step is **strict** — refuse to clean up unless we can prove the ticket actually shipped to its `MERGE_TARGET`.
 
-### 2a: Fetch
+### 2a: Fetch (skipped — already fetched in Step 1b)
 
-```bash
-cd {REPO_ROOT} && git fetch origin
-```
+`resolve-stack {TICKET_KEY} --fetch` from Step 1b already ran `git fetch origin` for this repo. The previous numbering kept a duplicate `git fetch` here for symmetry; it's redundant. Treat origin refs as fresh from Step 1b — only refetch if Step 1b reported the fetch as failed.
 
 ### 2b: PR State
 
@@ -153,6 +156,8 @@ merge has not yet landed locally. Investigate before continuing.
 ```
 and **stop**.
 
+(This refusal is intentionally stricter than `/prune`'s parallel check at `commands/prune.md:162-168`. `/cleanup` is about to delete the branch and transition Jira to Done — both irreversible — so it requires the merge to be a confirmed ancestor of `origin/{MERGE_TARGET}`. `/prune` is about to *revert* a merge from the feature branch; if the merge isn't reachable there, there's simply nothing to revert and prune can safely skip step 6c and continue with PR close + Jira cancel. The asymmetry reflects what each command is doing, not an oversight.)
+
 ---
 
 ## Step 3: Confirm with User
@@ -175,7 +180,7 @@ Actions:
   "  1. Delete local branch {BRANCH_NAME} (if present)
   2. Delete remote branch origin/{BRANCH_NAME} (if present)
   3. Transition {TICKET_KEY} in Jira to Done
-  4. Remove progress labels (ClaudeReady, ClaudePlanning, ClaudeExecuting, ClaudeStackReady, ClaudePRApproved, ClaudeNeedsReview, ClaudeFailed)
+  4. Remove every progress label currently set on the ticket (the canonical list lives at `cli/lib/labels.js` `PROGRESS_LABELS`; the JSON patch in Step 5b enumerates them explicitly so the API call is unambiguous)
   5. Append \"Shipped\" entry to {TICKET_KEY} activity log"
 else:
   "  1. (deferred) Branch {BRANCH_NAME} kept alive — needed for /promote-to-main onto main
@@ -196,7 +201,11 @@ else:
   "  (no feature-branch refresh applies — the cleaned branch IS the feature branch)"}
 ```
 
-Then prompt:
+If `AUTO_CONFIRM` is `true` (set by `--yes` / `--no-confirm`):
+- Display: "Auto-confirmed via --yes — proceeding without prompt."
+- Skip the prompt and continue to Step 4.
+
+Otherwise prompt:
 
 ```
 Type "confirm" to proceed, or anything else to abort.
@@ -380,7 +389,9 @@ The container itself is not auto-transitioned — leave that to the user or a se
 
 Skip this step if `REBASE_DOWNSTREAM` is false (no downstream, standalone ticket, or `--no-rebase` was passed).
 
-This step cascades rebases through every downstream ticket in `DOWNSTREAM_KEYS`, retargeting them onto `MERGE_TARGET` (typically `main`, but the parent Epic's feature branch when cleaning a Story-container) since the branch they were stacked on has just been merged and deleted. It mirrors `/stack-rebase` Scenario A semantics, run inline so post-merge teardown and stack repair are one flow.
+This step cascades rebases through every downstream ticket in `DOWNSTREAM_KEYS`, retargeting them onto `MERGE_TARGET` (typically `main`, but the parent Epic's feature branch when cleaning a Story-container) since the branch they were stacked on has just been merged and deleted.
+
+> **Shared with `/stack-rebase`**: The rebase loop is implemented once in `cli/lib/cascade-rebase.js` (and exposed as the `cascade-rebase` CLI). Both `/cleanup` Step 7 and `/stack-rebase` Step 4 call into it instead of maintaining parallel inline implementations. The CLI returns JSON results that this step reports through `REBASE_RESULTS`. The per-ticket retarget-PR and activity-log calls (7b-v, 7b-vi) are NOT in the shared CLI — they're command-specific side effects that loop over the CLI's results.
 
 ### 7a: Refresh Stack View
 
@@ -391,80 +402,50 @@ resolve-stack {TICKET_KEY} --fetch
 
 Recompute `DOWNSTREAM_KEYS` from the fresh output (in case anything changed). If now empty, skip to Step 8.
 
-### 7b: Iterate Downstream Tickets
+### 7b: Run Cascade Rebase
+
+Build the `--downstreams` argument by joining `{ticket}:{branch}` pairs from `DOWNSTREAM_KEYS` (in stack order) with commas. Skip entries whose branch is null — the CLI will record them as `skipped` regardless, but pre-filtering keeps the command line shorter.
+
+```bash
+cascade-rebase \
+  --repo-root {REPO_ROOT} \
+  --origin {BRANCH_NAME} \
+  --new-root {MERGE_TARGET} \
+  --downstreams {ticket1}:{branch1},{ticket2}:{branch2},...
+```
+
+Parse stdout as JSON. Store the `results` array as `REBASE_RESULTS`. Each entry has `{ ticket, branch, status, ... }` where `status` is one of `rebased`, `pushed-failed`, `conflict`, `not-attempted`, or `skipped`. Then iterate `REBASE_RESULTS` to apply the per-ticket side effects below.
+
+> **Worktree note**: when a downstream ticket has a worktree, run the CLI from inside that worktree's `REPO_ROOT` (the worktree shares the main repo's branch storage). The shared lib uses `git checkout` against the named branch in the given `repoRoot`, which fails if a worktree currently has the branch checked out. If you hit that error, either (a) cd into the worktree and re-run for that ticket, or (b) detach the worktree first.
 
 Initialize:
 - `REBASE_RESULTS = []` — accumulate per-ticket outcome (`rebased`, `skipped`, `conflict`, `push-failed`).
 - `PREVIOUS_BASE = {MERGE_TARGET}` — what the next branch in the chain should be rebased onto.
 - `PREVIOUS_OLD_BASE = {BRANCH_NAME}` — what the first downstream's branch was *originally* based on (the deleted branch). For subsequent iterations, this becomes the previous downstream's branch name.
 
-For each `DOWNSTREAM_TICKET` in `DOWNSTREAM_KEYS`, in stack order:
+### 7b-side-effects: Per-Ticket Activity Log + PR Retarget
 
-#### 7b-i: Determine Branch
-
-Look up `DOWNSTREAM_TICKET`'s entry in the refreshed `STACK_ORDER`. Extract `DOWNSTREAM_BRANCH = entry.branch`.
-
-If `DOWNSTREAM_BRANCH` is null: append `{ ticket: DOWNSTREAM_TICKET, status: "skipped", reason: "no branch on record" }` to `REBASE_RESULTS` and continue.
-
-#### 7b-ii: Detect Worktree
+For each entry in `REBASE_RESULTS` whose `status` is `rebased` or `pushed-failed`, run the activity-log entry:
 
 ```bash
-cd {REPO_ROOT} && git worktree list | grep {DOWNSTREAM_BRANCH}
+append-activity {entry.ticket} --heading "Branch rebased" --body "Rebased onto \`{entry.new_base}\` after {TICKET_KEY} merged to \`{MERGE_TARGET}\` (cleanup cascade)."
 ```
 
-If a worktree exists, run subsequent git commands inside it. Otherwise operate on the branch directly inside `REPO_ROOT`.
-
-#### 7b-iii: Rebase
+For the **first** result in `REBASE_RESULTS` whose `status` is `rebased` (the head of the chain), retarget its PR from the deleted `{BRANCH_NAME}` to `{MERGE_TARGET}`:
 
 ```bash
-cd {REPO_ROOT} && git checkout {DOWNSTREAM_BRANCH}
-cd {REPO_ROOT} && git rebase --onto {PREVIOUS_BASE} {PREVIOUS_OLD_BASE} {DOWNSTREAM_BRANCH}
+cd {REPO_ROOT} && gh pr list --head {entry.branch} --state open --json number --limit 1
 ```
 
-If the rebase reports conflicts:
-
-1. Capture conflicting files: `git diff --name-only --diff-filter=U`
-2. Abort: `git rebase --abort`
-3. Append `{ ticket: DOWNSTREAM_TICKET, status: "conflict", files: [...] }` to `REBASE_RESULTS`.
-4. **Stop iterating downstream** — do not attempt subsequent tickets, since they transitively depend on this branch's rebased state. Continue to Step 7c with the partial results.
-
-If the rebase succeeds, continue.
-
-#### 7b-iv: Force-Push
-
-```bash
-cd {REPO_ROOT} && git push --force-with-lease origin {DOWNSTREAM_BRANCH}
-```
-
-If the push fails (branch protection, lease mismatch, etc.): append `{ ticket: DOWNSTREAM_TICKET, status: "push-failed", error: "..." }` to `REBASE_RESULTS` and **continue** to the next ticket — the local branch is still rebased correctly.
-
-Otherwise, append `{ ticket: DOWNSTREAM_TICKET, status: "rebased", new_base: PREVIOUS_BASE }` to `REBASE_RESULTS`.
-
-#### 7b-v: Retarget PR (First Downstream Only)
-
-If this is the first ticket in `DOWNSTREAM_KEYS` (`PREVIOUS_BASE == {MERGE_TARGET}`), its PR currently targets `{BRANCH_NAME}` (which no longer exists on the remote). Retarget it:
-
-```bash
-cd {REPO_ROOT} && gh pr list --head {DOWNSTREAM_BRANCH} --state open --json number --limit 1
-```
-
-If a PR exists, run:
+If a PR exists:
 
 ```bash
 cd {REPO_ROOT} && gh pr edit {PR_NUMBER} --base {MERGE_TARGET}
 ```
 
-If `gh pr edit` fails or no open PR is found, log a warning to `REBASE_RESULTS[*].pr_retarget_warning` but continue.
+If `gh pr edit` fails or no open PR is found, attach `pr_retarget_warning` to that result entry but continue.
 
-#### 7b-vi: Append Activity Log
-
-```bash
-append-activity {DOWNSTREAM_TICKET} --heading "Branch rebased" --body "Rebased onto \`{PREVIOUS_BASE}\` after {TICKET_KEY} merged to \`{MERGE_TARGET}\` (cleanup cascade)."
-```
-
-#### 7b-vii: Advance Iterator
-
-Set `PREVIOUS_OLD_BASE = DOWNSTREAM_BRANCH` and `PREVIOUS_BASE = DOWNSTREAM_BRANCH` for the next iteration.
+For entries with status `skipped`, `conflict`, or `not-attempted`: nothing to do here (they're surfaced in the Step 7c report).
 
 ### 7c: Report Rebase Outcome
 
@@ -643,6 +624,21 @@ Next steps:
   - /promote-to-main " + CONTAINER_KEY + " when ready to promote " + TICKET_KEY + " (and the rest of the Epic stack) to main.
   - After " + TICKET_KEY + "'s main-targeting PR merges, re-run /cleanup " + TICKET_KEY + " for the destructive phase: branch delete + Jira Done."}
 ```
+
+### Machine-readable outcome line
+
+After the human-readable summary, print a single structured line that callers (`/promote-to-main`, `/orchestrate`) can grep for. Format is one line, key=value pairs separated by spaces, prefix `[cleanup-outcome]`:
+
+```
+[cleanup-outcome] ticket={TICKET_KEY} phase={"phase-1"|"terminal"} branch={"retained"|"deleted"} merge_target={MERGE_TARGET} feature_refresh={"refreshed"|"partial-merge-conflict"|"pushed-failed"|"skipped"|"n/a"} stack_rebase={"completed"|"conflict"|"skipped"|"n/a"} status={"ok"|"partial"}
+```
+
+Field rules:
+- `phase=phase-1` when `DEFER_DESTRUCTIVE` is true; otherwise `phase=terminal`.
+- `branch=retained` only in Phase 1; `deleted` in terminal.
+- `status=ok` when nothing in this run reported a failure; `partial` if any sub-step (rebase, push, refresh) bailed cleanly without aborting the whole command.
+
+`/promote-to-main` parses this line to decide whether the inline `/cleanup` produced terminal state (safe to advance) or Phase 1 state (must wait for main-merge before re-attempting). Without it, `/promote-to-main` had no signal to distinguish the two and could loop in pathological cases.
 
 ---
 

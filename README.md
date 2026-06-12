@@ -7,12 +7,14 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | Command | Description |
 |---|---|
 | `/ticket-work [KEY...]` | Run Jira tickets end-to-end: drift-check, plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/orchestrate` | Project-level coordinator: surveys all active stacks, auto-runs safe lifecycle steps (cleanup merged tickets, promote PR-approved tickets), and surfaces decisions that need a human (failed tickets, drift, plan/PR approvals) |
 | `/refresh-research KEY` | Manually re-run the research drift check on a ticket: diff cited code against the research baseline SHA and refresh the Implementation Notes if drift is detected |
 | `/fix-drift KEY` | Detect drift between a ticket's acceptance criteria and the current branch implementation, then fix the code to match |
 | `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
 | `/prune KEY` | Prune a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket |
+| `/rework KEY` | Reset a ticket's branch to its base, clear all progress labels and checklist, then restart the ticket-work lifecycle from scratch. Destructive counterpart to `/prune` — use when implementation is unsalvageable and a fresh start is faster than fixing |
 | `/cleanup KEY [--no-rebase] [--no-refresh-feature]` | Post-merge teardown: verify the ticket landed on main, delete its branch (local + remote), transition Jira to Done, note completion on the container if last in stack, cascade-rebase any unmerged downstream tickets onto main, and refresh the long-lived feature branch by resetting to fresh main and re-merging the still-open ticket branches |
 | `/ears-requirements [topic]` | Ideate and write EARS (Easy Approach to Requirements Syntax) requirements interactively |
 
@@ -28,15 +30,23 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 #### Single ticket lifecycle
 
-0. **Drift check** — diff cited code in the ticket's `Implementation Notes` against the research baseline SHA; refresh the notes (and post a Jira comment) if any cited line range moved
-1. Plan generated with `/jira-start`
-2. Plan executed with `/plan-execute`
-3. PR description generated with `/pr-description`
-4. PR pushed as draft
-5. PR review plan generated with `/pr-review`
-6. PR review plan executed with `/pr-execute-plan`
-7. Changes pushed to PR
-8. PR review summary posted as comment
+S3.5. **Drift check** — diff cited code in the ticket's `Implementation Notes` against the research baseline SHA; refresh the notes (and post a Jira comment) if any cited line range moved
+S4.1. Plan generated with `/jira-start`
+S4.2. Plan executed with `/plan-execute` (TDD execute)
+S4.3. Implementation verified against the ticket's acceptance criteria (TDD verify)
+S4.4. Refactor pass on the diff
+S4.5. PR review plan generated with `/pr-review`
+S4.6. PR review plan executed with `/pr-execute-plan`
+S4.7. **Stack-ready** — for tickets in a Story/Epic stack: merge the ticket branch into the container's feature branch and set `ClaudeNeedsReview`. For standalone tickets: set `ClaudeStackReady` and stop until the user adds `ClaudePRApproved`.
+S4.8. **PR-approved gate** — for non-feature-branch tickets, wait for `ClaudePRApproved` before pushing a PR.
+S4.9. PR description generated with `/jay-pr-description`
+S4.10. Draft PR pushed
+S4.11. Copilot review loop via `/pr-watch`
+S4.12. PR review summary posted as a Jira comment
+
+#### Mode C: feature branch PR to main
+
+Once every ticket in a stack reaches stack-ready (the container is `ClaudeStackComplete`), `/ticket-work` enters Mode C and ships the container's feature branch to main as a single PR. Mode C runs through its own checklist (stored locally at `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md`): generate description, push, run `/pr-watch`, post the review summary. Subtasks under a Story-container go through Phase-1 cleanup individually (Story PRs merged into the parent Epic's feature branch); the Story-container itself is then promoted to main via `/promote-to-main`.
 
 ## Label State Machine
 
@@ -46,10 +56,14 @@ ClaudeDriftChecked            -- research drift check ran; Implementation Notes 
 ClaudeReady                   -- eligible for planning
 ClaudePlanning                -- /jira-start in progress
 ClaudeExecuting               -- /plan-execute in progress
-ClaudeNeedsReview             -- done, user: review PR. Post-merge: run /cleanup KEY
+ClaudeStackReady              -- code review done, stack unblocked. Feature branch: awaiting merge. Standalone: awaiting ClaudePRApproved
+ClaudePRApproved              -- user-applied: approves PR creation for a standalone ticket; gate for /ticket-work S4.10
+ClaudeNeedsReview             -- merged to feature branch or PR pushed, user: review PR. Post-merge: run /cleanup KEY
 ClaudePendingMainPromotion    -- Story-container shipped to its parent Epic's feature branch via Phase-1 cleanup; awaiting /promote-to-main and a follow-up terminal /cleanup
+ClaudeMainPR                  -- /promote-to-main opened a main-targeting PR; cleared by terminal /cleanup
 ClaudeFailed                  -- error, user: investigate
-ClaudeStackComplete           -- all tickets in stack finished (added to stack container)
+ClaudeStackComplete           -- all tickets in stack finished (added to stack container); triggers Mode C if a feature branch is set
+ClaudePruned                  -- /prune marked the ticket abandoned (work was reverted; PR closed)
 ```
 
 ### User actions
@@ -164,7 +178,7 @@ A **stack container** is a Story, Task, or Epic in Jira. Its subtasks (or Epic c
 
 ### Feature branch model
 
-Every Story/Epic container is automatically a feature branch, named after the container's Jira key (e.g. `EPIC-123`). The tooling creates the branch on first ticket-work invocation — no manual setup, no `branch:` label.
+Every Story/Epic container is automatically a feature branch. The branch name is derived from the container's Jira key by default (e.g. `EPIC-123`); set a `branch:<name>` label on the container to override it. The tooling creates the branch on first ticket-work invocation — no manual setup required.
 
 During development, tickets in a stack are layered as git branches: each ticket branch is based on the previous ticket's branch (or on the feature branch if it's the first), accumulating ancestor changes. All ticket PRs target the shared feature branch. This means ticket-3's branch contains ticket-1 + ticket-2 + ticket-3 changes.
 
@@ -229,7 +243,7 @@ This will:
 1. Symlink commands into `~/.claude/commands/` and agents into `~/.claude/agents/`
 2. Create `.env` from `.env.example` (project-level credentials)
 3. Create `~/.claude/.env` (machine-level config like `DEV_ROOT`)
-4. Install the `ticket-status` CLI via `npm link`
+4. `npm install` the CLI dependencies and generate standalone wrappers in `~/.local/bin/` for every CLI declared in `cli/package.json`'s `bin` field. The wrappers embed an absolute path to the node binary so the CLIs survive `asdf reshim` and don't trip version prompts when run from repos with a different `.tool-versions`. Make sure `~/.local/bin` is on your `PATH` ahead of `~/.asdf/shims`.
 
 After running, edit:
 - **`.env`** — set your Jira credentials
@@ -265,7 +279,7 @@ The queue uses `DEV_ROOT` to locate repo clones. Tickets need a `repo:` label (e
 
 ## CLI Tools
 
-All CLI tools live in `cli/` and are installed globally via `npm link` during setup.
+All CLI tools live in `cli/`. `install.sh` runs `npm install` and writes a wrapper in `~/.local/bin/` for each entry in `cli/package.json`'s `bin` field — the wrappers exec a hardcoded node binary so the CLIs work everywhere `~/.local/bin` is on `PATH`.
 
 ### `ticket-status`
 
@@ -281,12 +295,14 @@ These are called by the commands/agents during ticket execution:
 
 | Script | Description |
 |---|---|
+| `append-activity` | Append a timestamped entry to the ticket's `[claude-activity-log]` Jira comment — the canonical narrative log for ticket-work and friends |
 | `sync-checklist` | Sync checklist state between Jira and local plan |
 | `sync-plan` | Sync plan content to Jira ticket description |
 | `resolve-stack` | Resolve stack ordering from Jira issue links |
 | `ensure-pr` | Create or update a draft PR for the current branch |
 | `post-review-summary` | Post a PR review summary as a Jira comment |
 | `seed-checklist` | Initialize a checklist on a Jira ticket from a plan |
+| `backfill-jira` | One-off helper to backfill Jira fields/links across a project |
 
 ### Web Dashboard
 

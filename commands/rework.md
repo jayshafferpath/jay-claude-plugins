@@ -20,6 +20,8 @@ allowed-tools:
 
 # Rework
 
+> **Label source of truth**: `cli/lib/labels.js` `PROGRESS_LABELS` is the canonical list this command clears. If a new progress label is introduced, add it there first; the JSON patch below enumerates labels explicitly because Atlassian's API needs the exact list, but the inline list must mirror `labels.js`.
+
 Reset a ticket's branch to its base, clear all progress (labels, checklist, plan), and restart the ticket-work lifecycle from scratch.
 
 Use when the current implementation is unsalvageable — wrong approach, bad assumptions, or so much drift that fixing is slower than starting over.
