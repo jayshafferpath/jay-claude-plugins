@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { LABEL_DISPLAY_ORDER } from "./labels.js";
 
 export function glob(dir, pattern) {
   try {
@@ -11,17 +12,7 @@ export function glob(dir, pattern) {
 }
 
 export function labelState(labels) {
-  const STATES = [
-    ["ClaudeFailed", "FAILED"],
-    ["ClaudeNeedsReview", "PR open"],
-    ["ClaudePRApproved", "PR approved"],
-    ["ClaudeStackReady", "stack ready"],
-    ["ClaudeExecuting", "executing..."],
-    ["ClaudePlanning", "planning..."],
-    ["ClaudeReady", "ready"],
-  ];
-
-  for (const [label, display] of STATES) {
+  for (const [label, display] of LABEL_DISPLAY_ORDER) {
     if (labels.includes(label)) return { label, display };
   }
   return { label: null, display: "unknown" };

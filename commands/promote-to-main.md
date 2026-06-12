@@ -92,7 +92,11 @@ For each entry in `UNCLEANED`, in stack order (earliest first):
 1. Display: "Detected merged-but-uncleaned ancestor {KEY} — running /cleanup {KEY}."
 2. Execute the `/cleanup {KEY}` workflow inline (follow the instructions in `commands/cleanup.md`). Keep cleanup's confirmation prompt — the user must type "confirm" before each ticket's destructive work proceeds.
 3. If the user does not confirm: display "Promote-to-main halted: cleanup of {KEY} was aborted. Re-run /promote-to-main once the stack is reconciled." and **stop**.
-4. If cleanup ends with a cascade-rebase conflict, a feature-branch refresh failure, or any other partial-state outcome: display "Promote-to-main halted: cleanup of {KEY} did not complete cleanly (see output above). Resolve the issue and re-run." and **stop**.
+4. **Parse cleanup's `[cleanup-outcome]` line** (printed at the end of cleanup's Step 9 — see `commands/cleanup.md` "Machine-readable outcome line"). Behavior depends on its fields:
+   - `phase=phase-1` → cleanup correctly identified that this ancestor PR'd to its parent Epic's feature branch but hasn't been promoted to main yet. The Story branch is intentionally retained. Promote-to-main cannot advance through it: display "Promote-to-main halted: cleanup of {KEY} reports phase=phase-1 (awaiting main promotion). Run /promote-to-main {KEY} to ship its main PR first, then re-run /cleanup {KEY} (terminal), then re-run /promote-to-main." and **stop**.
+   - `phase=terminal` AND `status=ok` → cleanup completed; the branch is deleted and Jira is Done. Continue to the next entry in `UNCLEANED`.
+   - `phase=terminal` AND `status=partial` → terminal cleanup ran but a sub-step (cascade rebase, feature refresh, etc.) reported partial completion. Display "Promote-to-main halted: cleanup of {KEY} completed terminal-phase but reported status=partial — review the cleanup output and re-run." and **stop**.
+   - Outcome line missing (older /cleanup version or printed-but-not-captured): fall back to the legacy heuristic — if cleanup ended with a cascade-rebase conflict, a feature-branch refresh failure, or any other visible partial-state outcome, halt with the same message as `status=partial`.
 
 #### 1b-final.iii: Re-Resolve Stack
 
@@ -176,12 +180,15 @@ The goal is to isolate just this ticket's changes on top of main, even though th
 
 Look up the branch name for `UPSTREAM_BRANCH` from the corresponding entry in `STACK_ORDER`.
 
-### 2b: Fetch and Checkout
+### 2b: Checkout
+
+`resolve-stack {RESOLVED_KEY} --fetch` from Step 1b (and again in Step 1d after any inline cleanup) has already refreshed remote refs. Skip the redundant `git fetch origin` and check out directly:
 
 ```bash
-cd {REPO_ROOT} && git fetch origin
-git checkout {BRANCH_NAME}
+cd {REPO_ROOT} && git checkout {BRANCH_NAME}
 ```
+
+If `git checkout` reports the index is stale and refuses, fall back to a single `git fetch origin` and retry — but do not fetch unconditionally.
 
 ### 2c: Rebase
 

@@ -11,7 +11,8 @@
     "ensure-pr": "./bin/ensure-pr.js",
     "post-review-summary": "./bin/post-review-summary.js",
     "seed-checklist": "./bin/seed-checklist.js",
-    "append-activity": "./bin/append-activity.js"
+    "append-activity": "./bin/append-activity.js",
+    "cascade-rebase": "./bin/cascade-rebase.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",

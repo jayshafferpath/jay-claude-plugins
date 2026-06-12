@@ -14,6 +14,7 @@ allowed-tools:
   - Bash(gh pr edit *)
   - Bash(resolve-stack *)
   - Bash(append-activity *)
+  - Bash(cascade-rebase *)
 ---
 
 # Stack Rebase - Cascade rebase through a stacked PR chain
@@ -46,7 +47,7 @@ Stack detected ({CONTAINER_TYPE}: {CONTAINER_KEY}):
 Starting rebase from: {given_ticket_key}
 ```
 
-## Step 3: Determine Rebase Scenario
+## Step 2: Determine Rebase Scenario
 
 Check the given ticket's entry in `STACK_CHAIN` — use its `mergedIntoMain` field from the resolve-stack output:
 
@@ -55,7 +56,7 @@ Check the given ticket's entry in `STACK_CHAIN` — use its `mergedIntoMain` fie
 
 Display: "Scenario: {A or B} — {merged to main / branch updated}"
 
-## Step 4: Identify Tickets to Rebase
+## Step 3: Identify Tickets to Rebase
 
 From the `STACK_CHAIN`, find all tickets **after** the given ticket. These are the ones that need rebasing.
 
@@ -69,87 +70,68 @@ Tickets to rebase:
 - {KEY-3}: current base {KEY-2} -> (cascading rebase)
 ```
 
-## Step 5: Execute Rebase Chain
+## Step 4: Execute Rebase Chain
 
-For each ticket in `REBASE_LIST`, in order:
+The rebase loop is implemented once in `cli/lib/cascade-rebase.js` (and exposed as the `cascade-rebase` CLI). This step shells out to that CLI rather than re-implementing the loop inline. `/cleanup` Step 7 calls into the same library.
 
-### 5a: Determine Bases
+### 4a: Determine Inputs
 
-- `OLD_BASE`: The ticket this branch was originally based on
-  - For the first ticket in REBASE_LIST: this is the given ticket key
-  - For subsequent tickets: this is the previous ticket in REBASE_LIST
-- `NEW_BASE`:
-  - **Scenario A (merged)** and this is the first in REBASE_LIST: `main`
-  - **All other cases**: The previous ticket in REBASE_LIST (or `main` if the previous was also merged)
+- `ORIGIN_BRANCH` = the given ticket's branch name (the branch the chain was originally based on, the one that just merged or moved).
+- `NEW_ROOT`:
+  - **Scenario A** (`mergedIntoMain === true`): `main`
+  - **Scenario B** (branch updated, not merged): the given ticket's own branch
+- `DOWNSTREAMS` = `REBASE_LIST` projected to `{ ticket, branch }` pairs in stack order.
 
-### 5b: Check for Worktree
+If `DOWNSTREAMS` is empty, display "No downstream tickets to rebase." and exit.
 
-Check if a worktree exists for this ticket:
-
-```bash
-git worktree list | grep {ticket_key}
-```
-
-If a worktree exists, operate inside it. Otherwise, operate on the branch directly.
-
-### 5c: Fetch and Rebase
+### 4b: Run Cascade Rebase
 
 ```bash
-git fetch origin
-git checkout {ticket_key}
-git rebase --onto {NEW_BASE} {OLD_BASE} {ticket_key}
+cascade-rebase \
+  --repo-root {REPO_ROOT} \
+  --origin {ORIGIN_BRANCH} \
+  --new-root {NEW_ROOT} \
+  --downstreams {ticket1}:{branch1},{ticket2}:{branch2},...
 ```
 
-### 5d: Handle Conflicts
+Parse stdout as JSON. Store the `results` array as `REBASE_RESULTS`. Each entry has `{ ticket, branch, status, ... }` where `status` is one of `rebased`, `pushed-failed`, `conflict`, `not-attempted`, or `skipped`.
 
-If the rebase encounters conflicts:
+> **Worktree note**: when a downstream ticket has a worktree, run the CLI from inside that worktree's `REPO_ROOT`. The lib uses `git checkout` against the named branch in the given `repoRoot` and fails if a worktree currently has the branch checked out — cd into the worktree first or detach the worktree.
 
-1. Run `git diff --name-only --diff-filter=U` to list conflicting files
-2. Abort the rebase: `git rebase --abort`
-3. Display:
+### 4c: Handle Conflict Reporting
+
+If any entry in `REBASE_RESULTS` has `status === "conflict"`, display:
 
 ```
-CONFLICT in {ticket_key} during rebase onto {NEW_BASE}
+CONFLICT in {entry.ticket} during rebase onto {previous step's NEW_BASE}
 
 Conflicting files:
-- path/to/file1.ts
-- path/to/file2.ts
+{entry.files joined as a bullet list}
 
 Rebase aborted. Remaining tickets in stack were NOT rebased:
-- {KEY-next}
-- {KEY-next+1}
+{remaining tickets with status not-attempted}
 
 Resolve conflicts manually:
-  cd ../{ticket_key}
-  git rebase --onto {NEW_BASE} {OLD_BASE} {ticket_key}
+  cd ../{entry.ticket}
+  git rebase --onto {NEW_BASE} {OLD_BASE} {entry.branch}
   # resolve conflicts
   git rebase --continue
-Then re-run: /stack-rebase {ticket_key}
+Then re-run: /stack-rebase {entry.ticket}
 ```
 
-4. STOP processing — do not continue to subsequent tickets
+The CLI already aborted the in-progress rebase and skipped subsequent tickets. Do not retry — surface the report and stop the cascade.
 
-### 5e: Push
+### 4d: Activity Log Per Ticket
 
-After a successful rebase, push the updated branch:
+For each entry whose `status` is `rebased` or `pushed-failed`:
 
 ```bash
-git push --force-with-lease origin {ticket_key}
+append-activity {entry.ticket} --heading "Branch rebased" --body "Rebased onto \`{entry.new_base}\` as part of stack rebase cascade (triggered by {given_ticket_key})."
 ```
 
-If force-push fails (e.g., branch protection), warn the user and continue to the next ticket.
+If `status` is `pushed-failed`, also note "(local rebase succeeded but force-push failed: {entry.error})".
 
-### 5f: Append to Activity Log
-
-```bash
-append-activity {ticket_key} --heading "Branch rebased" --body "Rebased onto \`{NEW_BASE}\` as part of stack rebase cascade (triggered by {given_ticket_key})."
-```
-
-### 5g: Continue
-
-Proceed to the next ticket in REBASE_LIST.
-
-## Step 6: PR Retargeting (Scenario A Only)
+## Step 5: PR Retargeting (Scenario A Only)
 
 If Scenario A (base branch merged to main), the first downstream PR needs its target branch changed:
 
@@ -167,7 +149,7 @@ Or update manually in GitHub.
 
 If `gh` CLI is available, offer to run it. Otherwise, display the manual instructions.
 
-## Step 7: Summary
+## Step 6: Summary
 
 ```
 Stack Rebase Complete

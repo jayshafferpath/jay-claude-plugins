@@ -15,6 +15,8 @@ allowed-tools:
 
 Final pass before merge. Updates the PR description to reflect the actual shipped state, then posts a finalization comment with context that downstream agents can use when working on stacked tickets.
 
+> **Jira side effects, despite the missing `mcp__atlassian__*` allow-list entries**: this command touches Jira (it appends to the ticket's `[claude-activity-log]` comment) via the `append-activity` CLI rather than the Atlassian MCP server. The CLI authenticates with `JIRA_EMAIL` / `JIRA_API_TOKEN` from `.env` and posts directly through the Jira REST API. So the activity log on the ticket *will* be updated even though no MCP tool is listed.
+
 ## Step 1: Gather Context
 
 1. Determine the base branch:
