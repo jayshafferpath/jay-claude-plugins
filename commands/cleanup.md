@@ -15,6 +15,8 @@ allowed-tools:
   - Bash(resolve-stack *)
   - Bash(append-activity *)
   - Bash(cascade-rebase *)
+  - Bash(verify-merge *)
+  - Bash(cleanup-feature-refresh *)
   - Read
   - Write
 ---
@@ -64,9 +66,9 @@ Determine the **merge target** for this ticket's PR. The same Story-container ca
 - If `BRANCH_NAME === FEATURE_BRANCH` AND `PARENT_FEATURE_BRANCH` is non-null:
   - Probe for a merged main-targeting PR first:
     ```bash
-    pr-state {BRANCH_NAME} --base main --state merged --cwd {REPO_ROOT}
+    verify-merge {BRANCH_NAME} --base main --cwd {REPO_ROOT}
     ```
-    If the output is non-null, this is the post-promotion second pass: set `MERGE_TARGET = "main"`. Terminal cleanup applies.
+    If `merged` is `true` in the output, this is the post-promotion second pass: set `MERGE_TARGET = "main"`. Terminal cleanup applies.
   - Otherwise `MERGE_TARGET = PARENT_FEATURE_BRANCH`. The Story-container has only PR'd to the Epic's feature branch so far.
 - Otherwise: `MERGE_TARGET = "main"`. Default flow — ticket-branch PRs go to main once promoted.
 
@@ -105,44 +107,32 @@ When `MERGE_TARGET ≠ main`, the cleaned ticket is itself a stack-container (it
 
 This step is **strict** — refuse to clean up unless we can prove the ticket actually shipped to its `MERGE_TARGET`.
 
-### 2a: Fetch (skipped — already fetched in Step 1b)
-
-`resolve-stack {TICKET_KEY} --fetch` from Step 1b already ran `git fetch origin` for this repo. The previous numbering kept a duplicate `git fetch` here for symmetry; it's redundant. Treat origin refs as fresh from Step 1b — only refetch if Step 1b reported the fetch as failed.
-
-### 2b: PR State
+`resolve-stack {TICKET_KEY} --fetch` from Step 1b already ran `git fetch origin` for this repo. Treat origin refs as fresh — only refetch if Step 1b reported the fetch as failed.
 
 ```bash
-pr-state {BRANCH_NAME} --base {MERGE_TARGET} --state merged --cwd {REPO_ROOT}
+verify-merge {BRANCH_NAME} --base {MERGE_TARGET} --cwd {REPO_ROOT} --strict
 ```
 
-If the output is `null` (no merged PR to `{MERGE_TARGET}`), display:
+This single call collapses what was previously two steps: probe for a merged PR via `gh pr list --state merged`, pull the merge commit SHA, and run `git merge-base --is-ancestor` against `origin/{MERGE_TARGET}`. With `--strict`, the CLI exits 2 and populates `refusalReason` whenever any of those checks fails (no merged PR, missing merge SHA, or SHA not an ancestor).
 
-```
-Refuse to clean up — no merged PR to {MERGE_TARGET} found for {BRANCH_NAME}.
+If `refusalReason` is non-null, display the appropriate refusal message and **stop**:
 
-Open PRs and unmerged history are handled by /prune (abandon) or by waiting
-for the PR to merge. /cleanup only runs after a successful merge.
-```
-and **stop**.
+- `no merged PR to {MERGE_TARGET}`:
+  ```
+  Refuse to clean up — no merged PR to {MERGE_TARGET} found for {BRANCH_NAME}.
 
-Store `PR_NUMBER` = `number`, `PR_URL` = `url`, and `MERGE_SHA` = `mergeCommit` from the matched PR JSON.
+  Open PRs and unmerged history are handled by /prune (abandon) or by waiting
+  for the PR to merge. /cleanup only runs after a successful merge.
+  ```
+- `no merge commit SHA`: "Merged PR {prUrl} has no merge commit SHA on record. Cannot verify against {MERGE_TARGET}; stopping."
+- `not reachable from origin/{MERGE_TARGET}`:
+  ```
+  Refuse to clean up — merge commit {mergeSha} (PR {prUrl}) is not reachable
+  from origin/{MERGE_TARGET}. Either {MERGE_TARGET} has been rewritten or the
+  merge has not yet landed locally. Investigate before continuing.
+  ```
 
-If `MERGE_SHA` is empty/null (rare — happens for some merge strategies on very old PRs): display "Merged PR {PR_URL} has no merge commit SHA on record. Cannot verify against {MERGE_TARGET}; stopping." and **stop**.
-
-### 2c: Verify SHA Reachable from Target
-
-```bash
-cd {REPO_ROOT} && git merge-base --is-ancestor {MERGE_SHA} origin/{MERGE_TARGET}
-```
-
-If exit code is non-zero: display:
-
-```
-Refuse to clean up — merge commit {MERGE_SHA} (PR {PR_URL}) is not reachable
-from origin/{MERGE_TARGET}. Either {MERGE_TARGET} has been rewritten or the
-merge has not yet landed locally. Investigate before continuing.
-```
-and **stop**.
+Otherwise, store `PR_NUMBER` = `prNumber`, `PR_URL` = `prUrl`, `MERGE_SHA` = `mergeSha` from the JSON.
 
 (This refusal is intentionally stricter than `/prune`'s parallel check at `commands/prune.md:162-168`. `/cleanup` is about to delete the branch and transition Jira to Done — both irreversible — so it requires the merge to be a confirmed ancestor of `origin/{MERGE_TARGET}`. `/prune` is about to *revert* a merge from the feature branch; if the merge isn't reachable there, there's simply nothing to revert and prune can safely skip step 6c and continue with PR close + Jira cancel. The asymmetry reflects what each command is doing, not an oversight.)
 
@@ -410,122 +400,76 @@ Skip this step if any of:
 - `REFRESH_FEATURE` is `false` (`--no-refresh-feature` was passed).
 - `FEATURE_BRANCH` is null (no long-lived feature branch in this container).
 - `BRANCH_NAME == FEATURE_BRANCH` (the cleaned branch IS the feature branch — there is nothing left to refresh; the container's stack is already shipped). Set outcome to `feature-refresh-not-applicable` and continue to Step 9.
-- Step 7 ended with a `conflict` outcome (the cascade is in a partial state — refreshing the feature branch on top of half-rebased downstream would mask the conflict). Display "Skipping feature-branch refresh — cascade rebase did not complete." and continue to Step 9.
 
-Otherwise, rebuild the feature branch as `origin/{MERGE_TARGET}` plus a clean re-merge of every still-unmerged ticket branch. This avoids the patch-id failure mode of `git rebase origin/{MERGE_TARGET}` against squash-merged commits.
+The detection / reset / re-merge / push pipeline is implemented in `cli/lib/feature-refresh.js` and exposed as the `cleanup-feature-refresh` CLI. It rebuilds the feature branch as `origin/{MERGE_TARGET}` plus a clean re-merge of every still-unmerged ticket branch (avoiding the patch-id failure mode of `git rebase origin/{MERGE_TARGET}` against squash-merged commits) and refuses safely on orphans, dirty worktrees, or a partial cascade.
 
-### 8a: Detect Local-Only Commits on Feature Branch
+### 8a: Run the refresh
 
-We must not silently destroy hand-authored integration commits that aren't part of any ticket branch. Compute the set of commits reachable from `FEATURE_BRANCH` but *not* reachable from `origin/{MERGE_TARGET}` or from any branch in `DOWNSTREAM_KEYS`:
-
-```bash
-cd {REPO_ROOT} && git fetch origin
-cd {REPO_ROOT} && git log {FEATURE_BRANCH} --not origin/{MERGE_TARGET} {space-separated DOWNSTREAM_BRANCH names from STACK_ORDER} --oneline
-```
-
-If the output is non-empty, display:
-
-```
-Refuse to refresh feature branch {FEATURE_BRANCH} — found commits reachable
-from the feature branch that are NOT in origin/{MERGE_TARGET} and NOT in any tracked
-ticket branch:
-
-  {commit list}
-
-These would be destroyed by a reset. Resolve manually:
-  - Move these commits onto a ticket branch, or
-  - Re-run with --no-refresh-feature.
-
-Continuing without refreshing the feature branch.
-```
-
-Set the feature-refresh outcome to `skipped-orphans` and continue to Step 9.
-
-### 8b: Detect Dirty Worktrees on Feature Branch
+Determine the cascade verdict from `REBASE_RESULTS` (Step 7): if any entry has `status: "conflict"`, set `CASCADE_STATUS = "conflict"`; otherwise `"completed"`. Build the `--downstreams` argument by joining `{ticket}:{branch}:{status}:{summary}` quadruples (in stack order) from `STACK_ORDER` entries whose `mergedIntoMain === false`. Use the Step 7 status per ticket if available; default to `rebased`. Skip entries with no branch.
 
 ```bash
-cd {REPO_ROOT} && git worktree list --porcelain
+cleanup-feature-refresh \
+  --repo-root {REPO_ROOT} \
+  --feature-branch {FEATURE_BRANCH} \
+  --merge-target {MERGE_TARGET} \
+  --downstreams {ticket1}:{branch1}:{status1}:{summary1},... \
+  --cascade-status {CASCADE_STATUS}
 ```
 
-For any worktree whose `branch` is `refs/heads/{FEATURE_BRANCH}`, check its working tree state by running `git -C {worktree_path} status --porcelain`. If any output exists (uncommitted changes), display:
+Parse stdout as JSON. The `outcome` field is one of:
+- `refreshed` — full success.
+- `skipped-orphans` — feature branch carries commits not in `origin/{MERGE_TARGET}` and not in any tracked ticket branch. The CLI returns the orphan commits in `orphans`.
+- `skipped-dirty-worktree` — a secondary worktree on the feature branch has uncommitted changes (paths in `dirtyWorktrees`).
+- `skipped-checkout-failed` — primary worktree refused checkout (`checkoutError` field has details).
+- `skipped-cascade-conflict` — Step 7 conflicted; refusing to refresh on top of a half-rebased cascade.
+- `partial-merge-conflict` — re-merge conflicted on `conflictBranch`; pushed whatever merged cleanly. `conflictFiles` lists the files.
+- `pushed-failed` — local refresh succeeded but force-push failed (`pushError` has details).
 
-```
-Refuse to refresh feature branch {FEATURE_BRANCH} — worktree at {worktree_path}
-has uncommitted changes. Force-pushing would create reflog churn there.
+Store the outcome and `oldSha` (the pre-refresh feature-branch SHA, recoverable via reflog if anything goes sideways).
 
-Either commit/stash those changes or re-run with --no-refresh-feature.
-```
+### 8b: Display the appropriate refusal / status
 
-Set the feature-refresh outcome to `skipped-dirty-worktree` and continue to Step 9.
+Map the outcome to a human-readable message:
 
-### 8c: Capture Pre-Refresh SHA
+- `skipped-orphans`:
+  ```
+  Refuse to refresh feature branch {FEATURE_BRANCH} — found commits reachable
+  from the feature branch that are NOT in origin/{MERGE_TARGET} and NOT in any tracked
+  ticket branch:
 
-```bash
-cd {REPO_ROOT} && git rev-parse {FEATURE_BRANCH}
-```
+    {one orphan per line}
 
-Store as `FEATURE_OLD_SHA` — included in the activity log so the prior state is recoverable via reflog or direct SHA reference if anything goes sideways.
+  These would be destroyed by a reset. Resolve manually:
+    - Move these commits onto a ticket branch, or
+    - Re-run with --no-refresh-feature.
 
-### 8d: Reset to origin/{MERGE_TARGET}
+  Continuing without refreshing the feature branch.
+  ```
+- `skipped-dirty-worktree`: "Refuse to refresh — worktree at {dirtyWorktrees[0]} has uncommitted changes. Either commit/stash those changes or re-run with --no-refresh-feature."
+- `skipped-cascade-conflict`: "Skipping feature-branch refresh — cascade rebase did not complete."
+- `skipped-checkout-failed`: display `checkoutError`, note that local edits weren't touched.
+- `partial-merge-conflict`:
+  ```
+  Conflict merging {conflictBranch} into {FEATURE_BRANCH}.
+  Conflicting files:
+  - {one file per line}
 
-Switch to the feature branch and hard-reset to fresh `MERGE_TARGET`:
+  Stopping feature-branch refresh. The feature branch is at
+  origin/{MERGE_TARGET} + the cleanly-merged tickets so far. To finish manually:
+    git checkout {FEATURE_BRANCH}
+    git merge --no-ff {conflictBranch}
+    # resolve conflicts
+    git push --force-with-lease
+  ```
+- `pushed-failed`: warn — local branch is the source of truth; user can push manually. Show `pushError`.
+- `refreshed`: continue silently to Step 8c.
 
-```bash
-cd {REPO_ROOT} && git checkout {FEATURE_BRANCH}
-cd {REPO_ROOT} && git reset --hard origin/{MERGE_TARGET}
-```
-
-If `git checkout` fails (uncommitted changes in the primary worktree), display the error, set outcome to `skipped-checkout-failed`, and continue to Step 9. Don't risk losing local edits.
-
-### 8e: Re-Merge Unmerged Ticket Branches
-
-For each `DOWNSTREAM_BRANCH` corresponding to a `DOWNSTREAM_KEYS` entry whose Step 7 status was `rebased` (skip `skipped`, `conflict`, `push-failed` entries — `push-failed` is fine to remerge since the local branch is correct, but `conflict` and `skipped` mean the branch state is unreliable):
-
-Actually, refine: re-merge every `DOWNSTREAM_BRANCH` whose Step 7 status is `rebased` OR `push-failed` (both have correct local state). Skip `conflict` and `skipped` entries.
-
-For each eligible branch in stack order:
-
-```bash
-cd {REPO_ROOT} && git merge --no-ff {DOWNSTREAM_BRANCH} -m "Merge {DOWNSTREAM_TICKET}: {summary} into {FEATURE_BRANCH}"
-```
-
-If a merge reports conflicts (this should be rare since the ticket branches were just rebased onto fresh `MERGE_TARGET`, but ticket-vs-ticket conflicts are possible):
-
-1. Capture conflicting files: `git diff --name-only --diff-filter=U`
-2. Abort: `git merge --abort`
-3. Display:
-   ```
-   Conflict merging {DOWNSTREAM_BRANCH} into {FEATURE_BRANCH}.
-   Conflicting files:
-   - {paths}
-
-   Stopping feature-branch refresh. The feature branch is currently at
-   origin/{MERGE_TARGET} + the cleanly-merged tickets so far. To finish manually:
-     git checkout {FEATURE_BRANCH}
-     git merge --no-ff {DOWNSTREAM_BRANCH}
-     # resolve conflicts
-     git push --force-with-lease
-   ```
-4. Record outcome `partial-merge-conflict`, capture the partial merge list, and **stop** the merge loop. Continue to Step 8f to push whatever did merge cleanly.
-
-### 8f: Force-Push the Refreshed Feature Branch
-
-Even on partial completion, push what we have so the remote reflects the refreshed state:
-
-```bash
-cd {REPO_ROOT} && git push --force-with-lease origin {FEATURE_BRANCH}
-```
-
-If the push fails: warn, set outcome to `pushed-failed` (but local state is correct), and continue.
-
-Otherwise, set outcome to `refreshed` (or `partial-merge-conflict` if step 8e bailed early).
-
-### 8g: Append Activity Log
+### 8c: Append Activity Log
 
 Append to the container's activity log:
 
 ```bash
-append-activity {CONTAINER_KEY} --heading "Feature branch refreshed" --body "Reset \`{FEATURE_BRANCH}\` from \`{FEATURE_OLD_SHA}\` to \`origin/{MERGE_TARGET}\` after {TICKET_KEY} merged. Re-merged: {comma-separated re-merged ticket keys}. Outcome: {outcome}."
+append-activity {CONTAINER_KEY} --heading "Feature branch refreshed" --body "Reset \`{FEATURE_BRANCH}\` from \`{oldSha}\` to \`origin/{MERGE_TARGET}\` after {TICKET_KEY} merged. Re-merged: {comma-separated re-merged ticket keys}. Outcome: {outcome}."
 ```
 
 If `CONTAINER_KEY` is null but `FEATURE_BRANCH` is not (unusual but possible), skip the activity log.
@@ -554,7 +498,7 @@ Jira:           {if DEFER_DESTRUCTIVE: "still In Progress; ClaudePendingMainProm
 else if DOWNSTREAM_KEYS was non-empty AND --no-rebase was passed:
 "Stack rebase:    skipped (--no-rebase) — " + comma-separated DOWNSTREAM_KEYS + " still base on the deleted branch"}
 {if feature-branch refresh ran:
-"Feature branch:  " + FEATURE_BRANCH + " — " + outcome + " (was " + FEATURE_OLD_SHA[:8] + ", re-merged " + count + " ticket(s))"
+"Feature branch:  " + FEATURE_BRANCH + " — " + outcome + " (was " + oldSha[:8] + ", re-merged " + count + " ticket(s))"
 else if FEATURE_BRANCH is non-null AND refresh was skipped:
 "Feature branch:  " + FEATURE_BRANCH + " — refresh skipped (" + skip_reason + ")"}
 {if DEFER_DESTRUCTIVE is true:
@@ -601,4 +545,4 @@ Field rules:
 - If the cascade rebase ended with a `conflict` outcome: skip the feature-branch refresh entirely — refreshing on top of a half-rebased downstream would mask the conflict.
 - If a re-merge into the feature branch conflicts: abort that merge, push whatever merged cleanly so far, and surface the conflicting branch with manual recovery instructions. Don't attempt subsequent merges.
 - If the feature-branch force-push fails: warn — the local branch is the source of truth and the user can push manually.
-- The pre-refresh feature-branch SHA is recorded in the activity log and remains in the reflog. Recovery from an unwanted refresh is `git reset --hard {FEATURE_OLD_SHA}` followed by `git push --force-with-lease`.
+- The pre-refresh feature-branch SHA is recorded in the activity log and remains in the reflog. Recovery from an unwanted refresh is `git reset --hard {oldSha}` followed by `git push --force-with-lease`.
