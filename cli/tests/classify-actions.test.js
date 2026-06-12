@@ -268,9 +268,7 @@ describe("classifyActions input validation", () => {
       stacks: [
         {
           container: { key: "EPIC-1", featureBranch: "feat/x" },
-          tickets: [
-            { key: "PROJ-NB", labels: [], mergedIntoFeature: false },
-          ],
+          tickets: [{ key: "PROJ-NB", labels: [], mergedIntoFeature: false }],
         },
       ],
     });

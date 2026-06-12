@@ -336,7 +336,7 @@ describe("refreshFeatureBranch", () => {
       mergeTarget: "main",
       downstreams: [{ ticket: "T-1", branch: "t1", status: "rebased" }],
     });
-    expect(seen[0]).toContain('Merge T-1 into feat');
+    expect(seen[0]).toContain("Merge T-1 into feat");
     expect(seen[0]).not.toContain(":");
   });
 });
