@@ -12,13 +12,20 @@ allowed-tools:
   - Bash(git diff *)
   - Bash(git log *)
   - AskUserQuestion
+  - Skill
 ---
 
 # Rebase on Main
 
 Rebase the current feature branch onto `origin/main`, abort cleanly on conflict, and force-push with `--force-with-lease`.
 
-No arguments. Always operates on the current branch.
+## Arguments
+
+`$ARGUMENTS`
+
+Optional: `--cascade`. After a successful rebase **and** push, hand off to `/stack-rebase` so any downstream stacked tickets get rebased onto this branch's new base. The container key is auto-detected from the current branch name (a Jira-key-shaped substring like `PROJ-123`).
+
+The skill always operates on the current branch — no other arguments.
 
 ## Step 1: Preflight
 
@@ -129,3 +136,37 @@ Rebased {BRANCH} onto origin/main
   Commits:  {N} ({list from git log --oneline origin/main..HEAD})
   Pushed:   {yes/no}
 ```
+
+## Step 6: Cascade (optional)
+
+Only runs if **all** of the following are true:
+- `$ARGUMENTS` contains `--cascade`.
+- Step 2 produced a non-no-op rebase (i.e. Step 1d did not exit early).
+- Step 4 successfully pushed (the user picked "Yes, force-push" and `git push` exited 0).
+
+Otherwise, skip cascade and stop.
+
+### 6a: Detect container key
+
+Extract the first Jira-key-shaped substring from `BRANCH` matching `[A-Z][A-Z0-9]+-\d+`.
+
+If no match, print:
+
+```
+--cascade requested but could not detect a Jira key in branch name "{BRANCH}".
+Run /stack-rebase {KEY} manually if downstream tickets need rebasing.
+```
+
+Stop.
+
+### 6b: Hand off to /stack-rebase
+
+Invoke the `stack-rebase` skill with the detected key. `/stack-rebase` runs its own preflight (resolves the stack via Jira, picks Scenario B since the branch was updated rather than merged), so we do not need to pre-validate the stack here.
+
+Print:
+
+```
+Cascading downstream rebases via /stack-rebase {KEY}...
+```
+
+Then call the skill.

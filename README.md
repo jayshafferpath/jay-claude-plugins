@@ -13,7 +13,7 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
 | `/promote-to-main` | Promote stacked tickets to main one at a time: rebase onto main, open PR, wait for merge, advance to next |
 | `/stack-rebase KEY` | Rebase a stacked PR chain after a base PR is merged or updated |
-| `/rebase-on-main` | Rebase the current feature branch onto `origin/main` and force-push (refuses on dirty tree, main, or no-op) |
+| `/rebase-on-main [--cascade]` | Rebase the current feature branch onto `origin/main` and force-push (refuses on dirty tree, main, or no-op). With `--cascade`, hands off to `/stack-rebase` after a successful push to rebase any downstream stacked tickets |
 | `/prune KEY` | Prune a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket |
 | `/rework KEY` | Reset a ticket's branch to its base, clear all progress labels and checklist, then restart the ticket-work lifecycle from scratch. Destructive counterpart to `/prune` — use when implementation is unsalvageable and a fresh start is faster than fixing |
 | `/cleanup KEY [--no-rebase] [--no-refresh-feature]` | Post-merge teardown: verify the ticket landed on main, delete its branch (local + remote), transition Jira to Done, note completion on the container if last in stack, cascade-rebase any unmerged downstream tickets onto main, and refresh the long-lived feature branch by resetting to fresh main and re-merging the still-open ticket branches |
