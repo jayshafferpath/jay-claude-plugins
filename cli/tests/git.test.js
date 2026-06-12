@@ -23,6 +23,7 @@ const {
   getStageCommits,
   hasStageCommit,
   getLastStageCommitSha,
+  getFeatureBranchMergeOrder,
 } = await import("../lib/git.js");
 
 describe("findBranch", () => {
@@ -371,5 +372,48 @@ describe("getLastStageCommitSha", () => {
       throw new Error("fail");
     });
     expect(getLastStageCommitSha("TICK-1", "main", "/repo")).toBeNull();
+  });
+});
+
+describe("getFeatureBranchMergeOrder", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns empty array when featureBranch is falsy", () => {
+    expect(getFeatureBranchMergeOrder(null, "/repo")).toEqual([]);
+  });
+
+  it("returns empty array when cwd is falsy", () => {
+    expect(getFeatureBranchMergeOrder("feat", null)).toEqual([]);
+  });
+
+  it("returns empty array when command fails", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(getFeatureBranchMergeOrder("feat", "/repo")).toEqual([]);
+  });
+
+  it("returns merge keys reversed to chronological order", () => {
+    // git log returns newest-first; the function reverses to oldest-first.
+    execSync.mockReturnValue(
+      "ccc3333 Merge ABC-3 into feat\nbbb2222 Merge ABC-2 into feat\naaa1111 Merge ABC-1 into feat",
+    );
+    expect(getFeatureBranchMergeOrder("feat", "/repo")).toEqual([
+      "ABC-1",
+      "ABC-2",
+      "ABC-3",
+    ]);
+  });
+
+  it("skips lines that don't match the merge pattern", () => {
+    execSync.mockReturnValue(
+      "ccc3333 Merge ABC-3 into feat\nzzz9999 Merge pull request #7\nbbb2222 Merge ABC-2 into feat",
+    );
+    expect(getFeatureBranchMergeOrder("feat", "/repo")).toEqual([
+      "ABC-2",
+      "ABC-3",
+    ]);
   });
 });

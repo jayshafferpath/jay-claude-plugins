@@ -198,6 +198,84 @@ describe("cascadeRebase", () => {
     ).toThrow(/newRoot/);
   });
 
+  it("throws when downstreams is not an array", () => {
+    expect(() =>
+      cascadeRebase({
+        repoRoot: "/x",
+        originBranch: "y",
+        newRoot: "z",
+        downstreams: "not-an-array",
+      }),
+    ).toThrow(/downstreams must be an array/);
+    expect(() =>
+      cascadeRebase({
+        repoRoot: "/x",
+        originBranch: "y",
+        newRoot: "z",
+        downstreams: null,
+      }),
+    ).toThrow(/downstreams must be an array/);
+  });
+
+  it("skips a downstream when checkout fails (branch missing locally)", () => {
+    const { repoRoot } = setupRepo("checkout-fail");
+
+    makeBranch(repoRoot, "C-1", "main", "c1.txt", "c1\n");
+
+    git("checkout main", repoRoot);
+    git("merge --squash C-1", repoRoot);
+    git("commit -m squash-c-1", repoRoot);
+    git("push origin main", repoRoot);
+
+    const out = cascadeRebase({
+      repoRoot,
+      originBranch: "C-1",
+      newRoot: "main",
+      // C-DOES-NOT-EXIST has a branch name but it's not a real branch
+      downstreams: [{ ticket: "C-2", branch: "C-DOES-NOT-EXIST" }],
+    });
+
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]).toMatchObject({
+      ticket: "C-2",
+      branch: "C-DOES-NOT-EXIST",
+      status: "skipped",
+    });
+    expect(out.results[0].reason).toMatch(/checkout failed/);
+  });
+
+  it("reports pushed-failed when push to remote fails", () => {
+    const { repoRoot, remote } = setupRepo("push-fail");
+
+    makeBranch(repoRoot, "P-1", "main", "p1.txt", "p1\n");
+    makeBranch(repoRoot, "P-2", "P-1", "p2.txt", "p2\n");
+
+    git("checkout main", repoRoot);
+    git("merge --squash P-1", repoRoot);
+    git("commit -m squash-p-1", repoRoot);
+    git("push origin main", repoRoot);
+
+    // Break the remote so the push fails. The rebase succeeds locally,
+    // but the force-with-lease push to origin will error out.
+    rmSync(remote, { recursive: true, force: true });
+
+    const out = cascadeRebase({
+      repoRoot,
+      originBranch: "P-1",
+      newRoot: "main",
+      downstreams: [{ ticket: "P-2", branch: "P-2" }],
+    });
+
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]).toMatchObject({
+      ticket: "P-2",
+      branch: "P-2",
+      status: "pushed-failed",
+      new_base: "main",
+    });
+    expect(out.results[0].error).toBeTruthy();
+  });
+
   it("supports --no-push semantics (pushAfterRebase: false leaves remote untouched)", () => {
     const { repoRoot } = setupRepo("no-push");
 
