@@ -52,17 +52,10 @@ Store as `WORK_DIR`.
 
 ### 1c: Resolve Stack Context
 
-Run:
-```bash
-resolve-stack {TICKET_KEY} --repo-root {WORK_DIR}
-```
-
-Parse the JSON output. Extract:
+Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `REPO_ROOT={WORK_DIR}`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
 - `BASE_BRANCH` = ticket's `baseBranch`
 - `BRANCH_NAME` = ticket's `branch` (or current branch if null)
-- `FEATURE_BRANCH` = `container.featureBranch` (null if standard workflow)
 - `SUMMARY` = ticket's `summary`
-- `REPO_ROOT` = detect via `git worktree list --porcelain` (main worktree path)
 
 ### 1d: Verify Branch
 
@@ -168,22 +161,10 @@ rm -f {WORK_DIR}/pr.md
 
 ### 6a: Remove Progress Labels
 
-Use `mcp__atlassian__editJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`:
+Run `set-ticket-state` to clear every progress label currently on the ticket and re-mark it `ClaudeReady`. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
 
-```json
-{
-  "update": {
-    "labels": [
-      {"remove": "ClaudePlanning"},
-      {"remove": "ClaudeExecuting"},
-      {"remove": "ClaudeStackReady"},
-      {"remove": "ClaudePRApproved"},
-      {"remove": "ClaudeNeedsReview"},
-      {"remove": "ClaudeFailed"},
-      {"add": "ClaudeReady"}
-    ]
-  }
-}
+```bash
+set-ticket-state {TICKET_KEY} --to ClaudeReady
 ```
 
 Note: `ClaudeWork` is never removed (durable tag).

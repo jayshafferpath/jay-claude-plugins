@@ -52,12 +52,7 @@ Store as `WORK_DIR`. All subsequent work happens here.
 
 ### 1c: Resolve Stack Context
 
-Run:
-```bash
-resolve-stack {TICKET_KEY} --repo-root {WORK_DIR}
-```
-
-Parse the JSON output. Extract:
+Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `REPO_ROOT={WORK_DIR}`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
 - `BASE_BRANCH` = ticket's `baseBranch`
 - `BRANCH_NAME` = ticket's `branch` (or current branch if null)
 - `SUMMARY` = ticket's `summary`
@@ -221,26 +216,11 @@ After all fixes are applied, re-run the drift analysis (Step 4 logic) against th
 
 ## Step 6: Squash and Push
 
-Apply the stage squash protocol for the drift fix commits:
+Apply the Stage Squash Protocol for the drift fix commits — `stage-squash` derives the start SHA automatically (most recent `[{TICKET_KEY}]` stage commit, falling back to the merge-base with `origin/{BASE_BRANCH}`):
 
-1. Find the start point (commit before drift fixes):
-   ```bash
-   DRIFT_START_SHA=$(git log --grep="^Red: drift fix" --reverse -1 --format="%H"~1)
-   ```
-   If that fails, use:
-   ```bash
-   DRIFT_START_SHA=$(git log --oneline | grep -v "drift fix" | head -1 | awk '{print $1}')
-   ```
-
-2. Squash all drift fix commits:
-   ```bash
-   git reset --soft {DRIFT_START_SHA} && git commit -m "[{TICKET_KEY}] fix: drift alignment with acceptance criteria"
-   ```
-
-3. Push:
-   ```bash
-   git push origin {BRANCH_NAME} --force-with-lease
-   ```
+```bash
+stage-squash {TICKET_KEY} --label "fix: drift alignment with acceptance criteria" --base {BASE_BRANCH} --branch {BRANCH_NAME}
+```
 
 ---
 

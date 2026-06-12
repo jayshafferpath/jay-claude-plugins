@@ -252,6 +252,11 @@ describe("readExecutionPlanRaw", () => {
       readExecutionPlanRaw(null, "TICK-1", { branch: "b", repoRoot: "/r" }),
     ).toBeNull();
   });
+
+  it("returns null when worktree probe fails and no branch fallback is supplied", () => {
+    existsSync.mockReturnValue(false);
+    expect(readExecutionPlanRaw("/wt", "TICK-1")).toBeNull();
+  });
 });
 
 describe("syncChecklistToJira", () => {

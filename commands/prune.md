@@ -42,20 +42,10 @@ Required: a Jira ticket key (e.g., `PROJ-123`). The ticket must have a `repo:` l
 
 ### 1b: Resolve Stack Context
 
-Run:
-```bash
-resolve-stack {TICKET_KEY} --fetch
-```
-
-Parse the JSON output. Extract:
-- `CONTAINER_KEY` = `container.key`
-- `FEATURE_BRANCH` = `container.featureBranch` (may be null)
-- `REPO_ROOT` = `container.repoRoot`
-- `STACK_ORDER` = `stack` array
-- Find this ticket's entry in `stack` and extract:
-  - `BRANCH_NAME` = ticket's `branch` (may be null)
-  - `BASE_BRANCH` = ticket's `baseBranch`
-  - `SUMMARY` = ticket's `summary`
+Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `FETCH=true`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
+- `BRANCH_NAME` = ticket's `branch` (may be null)
+- `BASE_BRANCH` = ticket's `baseBranch`
+- `SUMMARY` = ticket's `summary`
 
 If `REPO_ROOT` is null: display "Cannot resolve repo root for {TICKET_KEY}. Ensure a `repo:` label is set on the ticket or its container." and **stop**.
 
@@ -236,23 +226,10 @@ If no matching transition is found:
 
 ### 7b: Update Labels
 
-Use `mcp__atlassian__editJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`:
+Run `set-ticket-state` to clear every progress label currently on the ticket and apply the terminal `ClaudePruned` marker. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
 
-```json
-{
-  "update": {
-    "labels": [
-      {"remove": "ClaudeReady"},
-      {"remove": "ClaudePlanning"},
-      {"remove": "ClaudeExecuting"},
-      {"remove": "ClaudeStackReady"},
-      {"remove": "ClaudePRApproved"},
-      {"remove": "ClaudeNeedsReview"},
-      {"remove": "ClaudeFailed"},
-      {"add": "ClaudePruned"}
-    ]
-  }
-}
+```bash
+set-ticket-state {TICKET_KEY} --clear-progress --add ClaudePruned
 ```
 
 Note: `ClaudeWork` is durable and never removed.

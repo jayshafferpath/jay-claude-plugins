@@ -75,13 +75,17 @@ This usually means the ticket was created before per-ticket research was added t
 
 ## Step 3: Run the Drift Check
 
-This command is a **manual entry point into the protocol defined at `commands/ticket-work.md` S3.5**. Follow that section verbatim — sub-steps S3.5a (parse), S3.5b (diff), S3.5c (decide), and S3.5d (continue) — instead of repeating their detail here. Only the deltas below apply when running via `/refresh-research` rather than from inside a `/ticket-work` session:
+Run:
 
-- **S3.5c "no drift" branch**: append an activity-log entry `Drift check passed (manual) — research baseline still current.` and display a confirmation to the user. Do **not** add the `ClaudeDriftChecked` label — that label belongs to the ticket-work session lifecycle and applying it here would suppress the automatic check on the next `/ticket-work` run.
-- **S3.5c "drift" branch**: same as ticket-work (re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, post the diff comment).
-- **S3.5d (continue)**: this command exits after the drift check. There is no S4 to flow into; print the Step 4 report and stop.
+```bash
+drift-check {TICKET_KEY} --repo-root {WORK_DIR}
+```
 
-If the protocol in `commands/ticket-work.md` S3.5 changes, this command inherits the change automatically.
+Parse the JSON output (see `commands/ticket-work.md` S3.5a/b for the field semantics).
+
+- **`status === "no-notes"`**: stop and display "{TICKET_KEY} has no Implementation Notes block — nothing to refresh." (Already handled in Step 2.)
+- **`status === "current"`** (no drift): append an activity-log entry `Drift check passed (manual) — research baseline still current.` and display a confirmation to the user. Do **not** add the `ClaudeDriftChecked` label — that label belongs to the ticket-work session lifecycle and applying it here would suppress the automatic check on the next `/ticket-work` run.
+- **`status === "drifted"`**: re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, and post the diff comment per `commands/ticket-work.md` S3.5c "Drift detected" branch.
 
 ---
 
