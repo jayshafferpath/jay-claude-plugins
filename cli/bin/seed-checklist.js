@@ -42,7 +42,6 @@ const plansDir = join(workDir, ".claude", "plans");
 
 const STEP_LABELS = [
   "Plan generated with /jira-start",
-  "Plan approved",
   "Plan executed with /plan-execute",
   "Acceptance criteria verified against Gherkin",
   "Refactoring pass with @refactor agent",
@@ -57,7 +56,7 @@ const STEP_LABELS = [
 ];
 
 async function seedSteps() {
-  const steps = Array(13).fill(false);
+  const steps = Array(STEP_LABELS.length).fill(false);
 
   const issue = await getIssue(ticketKey);
   const labels = issue.fields.labels || [];
@@ -72,19 +71,15 @@ async function seedSteps() {
   const hasAny = (...ls) => ls.some(hasLabel);
 
   if (prExists) {
-    for (let i = 0; i < 11; i++) steps[i] = true;
+    for (let i = 0; i < 10; i++) steps[i] = true;
   } else if (hasAny("ClaudePRApproved", "ClaudeNeedsReview")) {
-    for (let i = 0; i < 9; i++) steps[i] = true;
-  } else if (hasAny("ClaudeStackReady")) {
     for (let i = 0; i < 8; i++) steps[i] = true;
-  } else if (
-    hasAny("ClaudeStackReady", "ClaudePRApproved", "ClaudeNeedsReview")
-  ) {
-    for (let i = 0; i < 5; i++) steps[i] = true;
+  } else if (hasLabel("ClaudeStackReady")) {
+    for (let i = 0; i < 7; i++) steps[i] = true;
   } else {
     const reviewPlan = readReviewPlan(workDir, ticketKey);
     if (reviewPlan) {
-      for (let i = 0; i < 6; i++) steps[i] = true;
+      for (let i = 0; i < 5; i++) steps[i] = true;
     } else {
       const execPlan = readExecutionPlan(workDir, ticketKey);
       const executingDone =
@@ -93,14 +88,10 @@ async function seedSteps() {
         execPlan.completed === execPlan.total &&
         execPlan.total > 0;
 
-      if (
-        hasAny("ClaudeStackReady", "ClaudePRApproved", "ClaudeNeedsReview") ||
-        executingDone
-      ) {
-        for (let i = 0; i < 5; i++) steps[i] = true;
-      } else if (hasAny("ClaudePlanApproved", "ClaudeExecuting")) {
+      if (executingDone) {
+        for (let i = 0; i < 4; i++) steps[i] = true;
+      } else if (hasLabel("ClaudeExecuting")) {
         steps[0] = true;
-        steps[1] = true;
       } else if (planExists) {
         steps[0] = true;
       }
@@ -110,10 +101,10 @@ async function seedSteps() {
   // Secondary signal: git stage commits
   const stageMap = [
     { step: 0, prefix: "plan" },
-    { step: 2, prefix: "execute" },
-    { step: 3, prefix: "verify" },
-    { step: 4, prefix: "refactor" },
-    { step: 6, prefix: "review" },
+    { step: 1, prefix: "execute" },
+    { step: 2, prefix: "verify" },
+    { step: 3, prefix: "refactor" },
+    { step: 5, prefix: "review" },
   ];
 
   for (const { step, prefix } of stageMap) {

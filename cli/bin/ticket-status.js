@@ -45,9 +45,7 @@ ${chalk.dim("Environment:")}
   JIRA_DOMAIN             Jira domain (e.g., myorg.atlassian.net)
 
 ${chalk.dim("Actions (interactive):")}
-  p KEY    Approve plan
   r KEY    Approve PR
-  ap       Approve all pending plans
   ar       Approve all pending PRs
   v KEY    Verbose view
   q        Quit
@@ -78,7 +76,7 @@ async function interactiveLoop(stacks) {
     new Promise((resolve) => {
       rl.question(
         chalk.dim(
-          "\nActions: (p KEY) plan, (r KEY) PR, (ap) all plans, (ar) all PRs, (v KEY) verbose, (q) quit\n> ",
+          "\nActions: (r KEY) PR, (ar) all PRs, (v KEY) verbose, (q) quit\n> ",
         ),
         resolve,
       );
@@ -96,33 +94,7 @@ async function interactiveLoop(stacks) {
     const cmd = parts[0].toLowerCase();
     const keyArg = parts[1]?.toUpperCase();
 
-    if (cmd === "p" && keyArg) {
-      const ticket = allTickets.find(
-        (t) => t.key === keyArg || t.key.endsWith(`-${keyArg}`),
-      );
-      if (!ticket) {
-        console.log(
-          chalk.red(`Ticket ${keyArg} not found in current results.`),
-        );
-        continue;
-      }
-      if (!ticket.labels.includes("ClaudePlanNeedsApproval")) {
-        console.log(chalk.red(`${ticket.key} is not awaiting plan approval.`));
-        continue;
-      }
-      await swapLabel(
-        ticket.key,
-        "ClaudePlanNeedsApproval",
-        "ClaudePlanApproved",
-      );
-      ticket.labels = ticket.labels.filter(
-        (l) => l !== "ClaudePlanNeedsApproval",
-      );
-      ticket.labels.push("ClaudePlanApproved");
-      console.log(chalk.green(`Approved plan for ${ticket.key}`));
-      console.log(renderTree(stacks));
-      console.log(renderSummary(stacks));
-    } else if (cmd === "r" && keyArg) {
+    if (cmd === "r" && keyArg) {
       const ticket = allTickets.find(
         (t) => t.key === keyArg || t.key.endsWith(`-${keyArg}`),
       );
@@ -140,26 +112,6 @@ async function interactiveLoop(stacks) {
       ticket.labels = ticket.labels.filter((l) => l !== "ClaudeStackReady");
       ticket.labels.push("ClaudePRApproved");
       console.log(chalk.green(`Approved PR for ${ticket.key}`));
-      console.log(renderTree(stacks));
-      console.log(renderSummary(stacks));
-    } else if (cmd === "ap") {
-      const pending = allTickets.filter((t) =>
-        t.labels.includes("ClaudePlanNeedsApproval"),
-      );
-      if (!pending.length) {
-        console.log(chalk.dim("No plans pending approval."));
-        continue;
-      }
-      for (const t of pending) {
-        await swapLabel(t.key, "ClaudePlanNeedsApproval", "ClaudePlanApproved");
-        t.labels = t.labels.filter((l) => l !== "ClaudePlanNeedsApproval");
-        t.labels.push("ClaudePlanApproved");
-      }
-      console.log(
-        chalk.green(
-          `Approved plans for: ${pending.map((t) => t.key).join(", ")}`,
-        ),
-      );
       console.log(renderTree(stacks));
       console.log(renderSummary(stacks));
     } else if (cmd === "ar") {
@@ -185,9 +137,7 @@ async function interactiveLoop(stacks) {
     } else if (cmd === "v" && keyArg) {
       await verboseMode(keyArg);
     } else {
-      console.log(
-        chalk.dim("Unknown action. Try: p KEY, r KEY, ap, ar, v KEY, q"),
-      );
+      console.log(chalk.dim("Unknown action. Try: r KEY, ar, v KEY, q"));
     }
   }
 }
@@ -254,8 +204,6 @@ async function verboseMode(ticketKey) {
   const prompt = () =>
     new Promise((resolve) => {
       const actions = [];
-      if (labels.includes("ClaudePlanNeedsApproval"))
-        actions.push("(p) approve plan");
       if (labels.includes("ClaudeStackReady")) actions.push("(r) approve PR");
       actions.push("(q) quit");
       rl.question(chalk.dim(`\nActions: ${actions.join(", ")}\n> `), resolve);
@@ -268,20 +216,7 @@ async function verboseMode(ticketKey) {
       return;
     }
 
-    if (input === "p") {
-      if (!labels.includes("ClaudePlanNeedsApproval")) {
-        console.log(chalk.red("Not awaiting plan approval."));
-        continue;
-      }
-      await swapLabel(
-        ticketKey,
-        "ClaudePlanNeedsApproval",
-        "ClaudePlanApproved",
-      );
-      console.log(chalk.green(`Approved plan for ${ticketKey}`));
-      rl.close();
-      return;
-    } else if (input === "r") {
+    if (input === "r") {
       if (!labels.includes("ClaudeStackReady")) {
         console.log(chalk.red("Not awaiting PR approval."));
         continue;

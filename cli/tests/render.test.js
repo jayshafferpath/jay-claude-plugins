@@ -40,12 +40,12 @@ describe("renderTree", () => {
         containerKey: "EPIC-1",
         containerSummary: "E",
         tickets: [
-          { key: "T-1", summary: "Plan", labels: ["ClaudePlanNeedsApproval"] },
+          { key: "T-1", summary: "Stack", labels: ["ClaudeStackReady"] },
         ],
       },
     ];
     const output = renderTree(stacks);
-    expect(output).toContain("approve plan?");
+    expect(output).toContain("ready for PR?");
   });
 
   it("renders feature branch header with depth-indented stack", () => {
@@ -99,18 +99,6 @@ describe("renderSummary", () => {
     ];
     const output = renderSummary(stacks);
     expect(output).toContain("2 tickets across 1 stacks");
-  });
-
-  it("reports plan approvals pending", () => {
-    const stacks = [
-      {
-        containerKey: "E",
-        containerSummary: "E",
-        tickets: [{ key: "T-1", labels: ["ClaudePlanNeedsApproval"] }],
-      },
-    ];
-    const output = renderSummary(stacks);
-    expect(output).toContain("Plan approvals pending: T-1");
   });
 
   it("reports PR approvals pending", () => {

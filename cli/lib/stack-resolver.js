@@ -96,6 +96,7 @@ export function isFinished(labels, statusCategoryKey) {
   if (statusCategoryKey === "done") return true;
   if (labels.includes("ClaudeStackReady")) return true;
   if (labels.includes("ClaudeNeedsReview")) return true;
+  if (labels.includes("ClaudeStackComplete")) return true;
   return false;
 }
 
@@ -176,6 +177,36 @@ export async function resolveStack(ticketKey, opts = {}) {
     repoRoot,
   );
 
+  let containerBaseBranch = containerBase.baseBranch;
+  if (containerBase.unmergedBlockers.length === 1) {
+    const blockerKey = containerBase.unmergedBlockers[0];
+    const blockerIssue = await getIssue(blockerKey);
+    const blockerLabels = blockerIssue.fields?.labels || [];
+    const blockerBranchLabel = blockerLabels.find((l) =>
+      l.startsWith("branch:"),
+    );
+    containerBaseBranch = blockerBranchLabel
+      ? blockerBranchLabel.slice("branch:".length)
+      : blockerKey;
+  }
+
+  let parentContainerKey = null;
+  let parentFeatureBranch = null;
+  if (container.type === "Story") {
+    const parentField = containerIssue.fields.parent;
+    if (parentField && parentField.fields?.issuetype?.name === "Epic") {
+      parentContainerKey = parentField.key;
+      const parentIssue = await getIssue(parentField.key);
+      const parentLabels = parentIssue.fields?.labels || [];
+      const parentBranchLabel = parentLabels.find((l) =>
+        l.startsWith("branch:"),
+      );
+      parentFeatureBranch = parentBranchLabel
+        ? parentBranchLabel.slice("branch:".length)
+        : featureBranchFromContainer(parentField.key);
+    }
+  }
+
   const jql =
     container.type === "Story"
       ? `parent = ${container.key}`
@@ -249,6 +280,10 @@ export async function resolveStack(ticketKey, opts = {}) {
       const blocker = ticketMap.get(bKey);
       if (!blocker) return false;
       if (!isFinished(blocker.labels, blocker.statusCategoryKey)) return true;
+      // ClaudeStackComplete blockers are stack-containers (Stories with their
+      // own subtasks) that PR directly to main; their branch is not merged
+      // into the parent's feature branch. Trust the completion label.
+      if (blocker.labels.includes("ClaudeStackComplete")) return false;
       if (featureBranch && repoRoot) {
         const blockerBranch = findBranch(bKey, repoRoot);
         if (
@@ -289,9 +324,11 @@ export async function resolveStack(ticketKey, opts = {}) {
       type: container.type,
       summary: containerSummary,
       featureBranch,
-      baseBranch: containerBase.baseBranch,
+      baseBranch: containerBaseBranch,
       blockerContainers: containerBase.blockerContainers,
       unmergedBlockers: containerBase.unmergedBlockers,
+      parentContainerKey,
+      parentFeatureBranch,
       repoRoot,
     },
     stack,

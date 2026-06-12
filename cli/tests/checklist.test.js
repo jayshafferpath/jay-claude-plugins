@@ -47,8 +47,8 @@ stack: EPIC-1
 ---
 
 - [x] 1. Plan
-- [ ] 2. Approve plan
-- [x] 3. Execute
+- [ ] 2. Execute
+- [x] 3. Verify
 `;
 
 const PLAN_MD = `## Phase 1
@@ -79,7 +79,7 @@ describe("readChecklist", () => {
     expect(result.steps[1]).toEqual({
       num: 2,
       done: false,
-      label: "Approve plan",
+      label: "Execute",
     });
     expect(result.frontmatter.ticket).toBe("TICK-1");
   });

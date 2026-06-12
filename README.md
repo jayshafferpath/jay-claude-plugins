@@ -20,7 +20,7 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 
 Idempotent — reads checklist state and resumes from wherever it left off.
 
-**Single ticket mode** (`/ticket-work PROJ-123`): Runs one ticket through the full lifecycle — plan, approve, execute, create draft PR, self-review, push.
+**Single ticket mode** (`/ticket-work PROJ-123`): Runs one ticket through the full lifecycle — plan, execute, create draft PR, self-review, push.
 
 **Queue mode** (`/ticket-work`): Discovers all eligible tickets via JQL, gates on stack dependencies, creates worktrees, and launches parallel agents — one per ticket.
 
@@ -30,37 +30,33 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 0. **Drift check** — diff cited code in the ticket's `Implementation Notes` against the research baseline SHA; refresh the notes (and post a Jira comment) if any cited line range moved
 1. Plan generated with `/jira-start`
-2. Plan approved (gate — waits for `ClaudePlanApproved` label)
-3. Plan executed with `/plan-execute`
-4. PR description generated with `/pr-description`
-5. PR pushed as draft
-6. PR review plan generated with `/pr-review`
-7. PR review plan executed with `/pr-execute-plan`
-8. Changes pushed to PR
-9. PR review summary posted as comment
+2. Plan executed with `/plan-execute`
+3. PR description generated with `/pr-description`
+4. PR pushed as draft
+5. PR review plan generated with `/pr-review`
+6. PR review plan executed with `/pr-execute-plan`
+7. Changes pushed to PR
+8. PR review summary posted as comment
 
 ## Label State Machine
 
 ```
-ClaudeWork                 -- durable tag: Claude owns this ticket (never removed)
-ClaudeDriftChecked         -- research drift check ran; Implementation Notes are current
-ClaudeReady                -- eligible for planning
-ClaudePlanning             -- /jira-start in progress
-ClaudePlanNeedsApproval    -- plan ready, user: review and apply ClaudePlanApproved
-ClaudePlanApproved         -- user approved, eligible for execution
-ClaudeExecuting            -- /plan-execute in progress
-ClaudeNeedsReview          -- done, user: review PR. Post-merge: run /cleanup KEY
-ClaudeFailed               -- error, user: investigate
-ClaudeStackComplete        -- all tickets in stack finished (added to stack container)
+ClaudeWork                    -- durable tag: Claude owns this ticket (never removed)
+ClaudeDriftChecked            -- research drift check ran; Implementation Notes are current
+ClaudeReady                   -- eligible for planning
+ClaudePlanning                -- /jira-start in progress
+ClaudeExecuting               -- /plan-execute in progress
+ClaudeNeedsReview             -- done, user: review PR. Post-merge: run /cleanup KEY
+ClaudePendingMainPromotion    -- Story-container shipped to its parent Epic's feature branch via Phase-1 cleanup; awaiting /promote-to-main and a follow-up terminal /cleanup
+ClaudeFailed                  -- error, user: investigate
+ClaudeStackComplete           -- all tickets in stack finished (added to stack container)
 ```
 
 ### User actions
 - **Label `ClaudeWork`** + **`ClaudeReady`**: mark a ticket for Claude and signal it's ready for planning
-- **Apply `ClaudePlanApproved`**: approve a plan after reviewing it
 - **Run `/cleanup KEY`** after a PR merges to main: deletes the branch and transitions the ticket to Done
 
 ### `ClaudeNeeds*` = user action required
-- `ClaudePlanNeedsApproval` → review plan, apply `ClaudePlanApproved`
 - `ClaudeNeedsReview` → review PR, iterate. After merge to main: run `/cleanup KEY`
 
 ## TDDs and Research
@@ -195,6 +191,15 @@ After a ticket merges to main, `/cleanup KEY` does the full teardown in one pass
 4. **Refreshes the long-lived feature branch** so it doesn't drift from main over the lifetime of an Epic. The feature branch is `reset --hard origin/main` and the still-open ticket branches are re-merged on top with `--no-ff`. This sidesteps the patch-id failure mode of rebasing onto squash-merged commits — the squashed work simply isn't replayed because we throw the old feature-branch state away. Pre-flight refuses if the feature branch has hand-authored commits not present in any tracked ticket branch (would be silently destroyed) or if any worktree on the feature branch is dirty. The pre-refresh SHA is logged so a `git reset --hard {sha}` recovery is always available.
 
 Pass `--no-rebase` to skip step 3 or `--no-refresh-feature` to skip step 4.
+
+#### Two-phase cleanup for Story-containers
+
+A Story whose feature branch was PR'd into the parent Epic's feature branch (a Story-container under an Epic) goes through cleanup **twice**:
+
+- **Phase 1 — Story PR merged into Epic feature branch.** `/cleanup STORY-KEY` detects `MERGE_TARGET = parentFeatureBranch` and sets `DEFER_DESTRUCTIVE = true`. It runs the activity-log update and the cascade-rebase + Epic-feature-branch refresh, but **keeps the Story branch alive** and leaves the Story In Progress with `ClaudePendingMainPromotion` applied. The branch must survive because `/promote-to-main` rebases it onto main next.
+- **Phase 2 — Story PR merged into main (after `/promote-to-main` lands it).** Re-running `/cleanup STORY-KEY` detects the merged main-targeting PR via the Step 1b probe, picks `MERGE_TARGET = main`, and runs terminal cleanup: branch delete, Jira → Done, `ClaudePendingMainPromotion` removed.
+
+Leaf tickets (Subtasks under a Story, or standalone tickets) only see Phase 2 — they go straight from main-merge to terminal cleanup in one pass.
 
 ### Why Jira, not git
 

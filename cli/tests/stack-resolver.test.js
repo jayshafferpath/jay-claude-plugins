@@ -263,6 +263,10 @@ describe("isFinished", () => {
     expect(isFinished(["ClaudeNeedsReview"], "indeterminate")).toBe(true);
   });
 
+  it("returns true when has ClaudeStackComplete label", () => {
+    expect(isFinished(["ClaudeStackComplete"], "indeterminate")).toBe(true);
+  });
+
   it("returns false for in-progress tickets", () => {
     expect(isFinished(["ClaudeExecuting"], "indeterminate")).toBe(false);
   });
@@ -613,6 +617,67 @@ describe("resolveStack", () => {
     expect(result.container.unmergedBlockers).toEqual(["STORY-A"]);
   });
 
+  it("uses blocker container's branch: label when resolving unmerged baseBranch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-B", fields: { summary: "B" } },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-B") {
+        return {
+          key: "STORY-B",
+          fields: issueFields({
+            summary: "B",
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: {
+                  key: "STORY-A",
+                  fields: { issuetype: { name: "Story" } },
+                },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "STORY-A") {
+        return {
+          key: "STORY-A",
+          fields: issueFields({
+            labels: ["repo:backend", "branch:custom_feature_branch"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    expect(result.container.baseBranch).toBe("custom_feature_branch");
+    expect(result.container.unmergedBlockers).toEqual(["STORY-A"]);
+  });
+
   it("returns main as container baseBranch when blocker container is merged", async () => {
     getIssue.mockImplementation(async (key) => {
       if (key === "SUB-1") {
@@ -664,6 +729,268 @@ describe("resolveStack", () => {
     const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
     expect(result.container.baseBranch).toBe("main");
     expect(result.container.unmergedBlockers).toEqual([]);
+  });
+
+  it("surfaces parentFeatureBranch when Story container has an Epic parent with a branch label", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "S" } },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({
+            summary: "S",
+            issuetype: "Story",
+            parent: {
+              key: "EPIC-1",
+              fields: { summary: "E", issuetype: { name: "Epic" } },
+            },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            labels: ["repo:backend", "branch:big_feature"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    expect(result.container.parentContainerKey).toBe("EPIC-1");
+    expect(result.container.parentFeatureBranch).toBe("big_feature");
+  });
+
+  it("falls back to Epic key as parentFeatureBranch when no branch label", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "S" } },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({
+            issuetype: "Story",
+            parent: {
+              key: "EPIC-1",
+              fields: { summary: "E", issuetype: { name: "Epic" } },
+            },
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    expect(result.container.parentContainerKey).toBe("EPIC-1");
+    expect(result.container.parentFeatureBranch).toBe("EPIC-1");
+  });
+
+  it("returns null parentFeatureBranch for top-level Epic containers", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "T-1") {
+        return {
+          key: "T-1",
+          fields: issueFields({
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { name: "Epic" },
+                outwardIssue: {
+                  key: "EPIC-1",
+                  fields: { summary: "E", issuetype: { name: "Epic" } },
+                },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "T-1",
+        fields: issueFields({
+          labels: ["ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
+    expect(result.container.parentContainerKey).toBeNull();
+    expect(result.container.parentFeatureBranch).toBeNull();
+  });
+
+  it("treats ClaudeStackComplete blocker as unblocking even when not merged into feature branch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "STORY-B") {
+        return {
+          key: "STORY-B",
+          fields: issueFields({
+            issuetype: "Story",
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: { key: "STORY-A" },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "STORY-A",
+        fields: issueFields({
+          issuetype: "Story",
+          labels: ["ClaudeStackComplete"],
+          status: { statusCategory: { key: "indeterminate" } },
+          issuelinks: [
+            { type: { outward: "blocks" }, outwardIssue: { key: "STORY-B" } },
+          ],
+        }),
+      },
+      {
+        key: "STORY-B",
+        fields: issueFields({
+          issuetype: "Story",
+          labels: ["ClaudeReady"],
+          issuelinks: [
+            {
+              type: { inward: "is blocked by" },
+              inwardIssue: { key: "STORY-A" },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    // STORY-B is linked to EPIC-1 via parent
+    getIssue.mockImplementation(async (key) => {
+      if (key === "STORY-B") {
+        return {
+          key: "STORY-B",
+          fields: issueFields({
+            issuetype: "Story",
+            parent: {
+              key: "EPIC-1",
+              fields: { summary: "Epic", issuetype: { name: "Epic" } },
+            },
+            labels: ["repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: { key: "STORY-A" },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    findBranch.mockImplementation((key) => key);
+    // STORY-A's branch is NOT an ancestor of the feature branch
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("STORY-B", { repoRoot: "/dev/backend" });
+    const storyB = result.stack.find((t) => t.key === "STORY-B");
+    expect(storyB.eligible).toBe(true);
+    expect(storyB.unblockedBlockers).toEqual([]);
   });
 
   it("ticket with finished blocker still bases on the feature branch", async () => {
