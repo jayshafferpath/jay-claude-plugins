@@ -247,6 +247,37 @@ describe("classifyActions", () => {
   });
 });
 
+describe("classifyActions input validation", () => {
+  it("throws when stacks is not an array", () => {
+    expect(() => classifyActions({ stacks: "not-array" })).toThrow(/array/);
+    expect(() => classifyActions({ stacks: null })).toThrow(/array/);
+    expect(() => classifyActions({})).toThrow(/array/);
+  });
+
+  it("tolerates a stack missing tickets/container", () => {
+    const out = classifyActions({
+      stacks: [{ container: null }, { container: { key: "X" } }],
+    });
+    expect(out.stacks[0].container).toBeNull();
+    expect(out.stacks[0].classifications).toEqual([]);
+    expect(out.stacks[1].container).toBe("X");
+  });
+
+  it("tolerates a ticket missing the blockers array", () => {
+    const out = classifyActions({
+      stacks: [
+        {
+          container: { key: "EPIC-1", featureBranch: "feat/x" },
+          tickets: [
+            { key: "PROJ-NB", labels: [], mergedIntoFeature: false },
+          ],
+        },
+      ],
+    });
+    expect(out.stacks[0].stackFlags.needsStackRebase).toBe(false);
+  });
+});
+
 describe("extractFailedStep", () => {
   it("returns null on empty input", () => {
     expect(extractFailedStep("")).toEqual({
