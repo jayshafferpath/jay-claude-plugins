@@ -11,7 +11,10 @@ vi.mock("../lib/checklist.js", () => ({
 const { appendActivityLog } = await import("../lib/checklist.js");
 const { cascadeRebase } = await import("../lib/cascade-rebase.js");
 
-const ROOT = join(tmpdir(), `cascade-side-effects-${process.pid}-${Date.now()}`);
+const ROOT = join(
+  tmpdir(),
+  `cascade-side-effects-${process.pid}-${Date.now()}`,
+);
 
 function git(cmd, cwd) {
   return execSync(`git ${cmd}`, {
@@ -92,11 +95,9 @@ describe("cascadeRebase activityLog side effect", () => {
 
     const shimDir = join(ROOT, "shims-empty");
     mkdirSync(shimDir, { recursive: true });
-    writeFileSync(
-      join(shimDir, "gh"),
-      `#!/bin/bash\necho '[]'\n`,
-      { mode: 0o755 },
-    );
+    writeFileSync(join(shimDir, "gh"), `#!/bin/bash\necho '[]'\n`, {
+      mode: 0o755,
+    });
     const originalPath = process.env.PATH;
     process.env.PATH = `${shimDir}:${originalPath}`;
     appendActivityLog.mockResolvedValue();
@@ -128,11 +129,9 @@ describe("cascadeRebase activityLog side effect", () => {
 
     const shimDir = join(ROOT, "shims-bad-json");
     mkdirSync(shimDir, { recursive: true });
-    writeFileSync(
-      join(shimDir, "gh"),
-      `#!/bin/bash\necho 'not json'\n`,
-      { mode: 0o755 },
-    );
+    writeFileSync(join(shimDir, "gh"), `#!/bin/bash\necho 'not json'\n`, {
+      mode: 0o755,
+    });
     const originalPath = process.env.PATH;
     process.env.PATH = `${shimDir}:${originalPath}`;
     appendActivityLog.mockResolvedValue();

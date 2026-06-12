@@ -202,7 +202,9 @@ describe("diffCitation", () => {
     // Configure git's similarity threshold so identical content qualifies.
     execSync("git config diff.renames true", { cwd: repo, stdio: "pipe" });
     execSync("git config diff.renameLimit 999", { cwd: repo, stdio: "pipe" });
-    const content = Array.from({ length: 50 }, (_, i) => `line ${i}\n`).join("");
+    const content = Array.from({ length: 50 }, (_, i) => `line ${i}\n`).join(
+      "",
+    );
     writeFileSync(join(repo, "old.ts"), content);
     git("add old.ts", repo);
     git('commit -m "initial"', repo);

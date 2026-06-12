@@ -41,10 +41,7 @@ describe("QUEUE_QUERIES", () => {
 
 describe("buildParentInheritancePatch edge cases", () => {
   it("handles missing labels arrays defensively", () => {
-    const patch = buildParentInheritancePatch(
-      {},
-      {},
-    );
+    const patch = buildParentInheritancePatch({}, {});
     expect(patch).toBeNull();
   });
 
@@ -184,7 +181,11 @@ describe("discoverQueue", () => {
     const result = await discoverQueue();
 
     expect(result.tickets.map((t) => t.key)).toEqual(["X-1", "X-2", "X-4"]);
-    expect(result.tickets[1]).toMatchObject({ key: "X-2", via: "parent", parentSeed: "P-1" });
+    expect(result.tickets[1]).toMatchObject({
+      key: "X-2",
+      via: "parent",
+      parentSeed: "P-1",
+    });
     expect(result.subtaskExpansions).toHaveLength(1);
     expect(result.subtaskExpansions[0].child).toBe("X-2");
     expect(result.parents).toEqual([

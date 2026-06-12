@@ -42,11 +42,7 @@ export function buildParentInheritancePatch(parentFields, subtaskFields) {
   if (labelsToAdd.length > 0) {
     patch.labels = labelsToAdd.map((l) => ({ add: l }));
   }
-  if (
-    parentFields.assignee &&
-    parentFields.assignee.accountId &&
-    !subtaskFields.assignee
-  ) {
+  if (parentFields.assignee?.accountId && !subtaskFields.assignee) {
     patch.assignee = [{ set: { accountId: parentFields.assignee.accountId } }];
   }
 

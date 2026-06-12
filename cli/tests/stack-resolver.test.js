@@ -291,7 +291,10 @@ describe("resolveStack", () => {
           key: "SUB-S",
           fields: issueFields({
             issuetype: "Sub-task",
-            parent: { key: "STANDALONE-1", fields: { summary: "Standalone container" } },
+            parent: {
+              key: "STANDALONE-1",
+              fields: { summary: "Standalone container" },
+            },
             labels: ["repo:x"],
           }),
         };

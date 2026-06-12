@@ -10,7 +10,7 @@ function run(cmd, cwd) {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     }).trim();
-  } catch (err) {
+  } catch (_err) {
     return null;
   }
 }

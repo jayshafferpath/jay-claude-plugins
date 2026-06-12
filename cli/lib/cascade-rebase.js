@@ -208,7 +208,7 @@ async function runCascade({
     }
   }
 
-  if (retargetFirstPr && retargetFirstPr.newBase) {
+  if (retargetFirstPr?.newBase) {
     const head = results.find((r) => r.status === "rebased");
     if (head) {
       const probe = runCapture(

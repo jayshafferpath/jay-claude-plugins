@@ -220,9 +220,9 @@ describe("ensureWorkDir validation", () => {
 
   it("throws when worktree mode has no baseBranch and the branch doesn't exist", () => {
     const { repoRoot } = makeRepo("wt-nobase");
-    expect(() =>
-      ensureWorkDir({ ticketKey: "TIK-NB", repoRoot }),
-    ).toThrow(/baseBranch is required/);
+    expect(() => ensureWorkDir({ ticketKey: "TIK-NB", repoRoot })).toThrow(
+      /baseBranch is required/,
+    );
   });
 
   it("throws when the work-dir path exists but is not a git worktree", () => {
