@@ -10,6 +10,8 @@ allowed-tools:
   - Bash(gh *)
   - Bash(resolve-stack *)
   - Bash(ticket-status *)
+  - Bash(verify-merge *)
+  - Bash(classify-actions *)
   - Read
   - Skill
 ---
@@ -84,44 +86,48 @@ Append the parsed result to `STACKS`.
 
 ## Step 3: Classify Next Action Per Ticket
 
-For each `ticket` in each stack, derive `next_action`. The label state machine is the source of truth; cross-check with git state where it changes the answer.
+The decision table is implemented in `cli/lib/classify-actions.js` and exposed as the `classify-actions` CLI. Pass the resolved `STACKS` snapshot to it; it applies the 9-rule first-match table, surfaces stack-level flags (`needsStackRebase`, `blockedOnContainer`), and emits `pendingProbes` for any rule-1a candidate whose parent-feature-branch merge state is unknown.
 
-Compute helpers (only meaningful when `repoRoot` and `branch` exist):
-- `pr_state` — run `pr-state {branch} --base main --cwd {REPO_ROOT}` (only when needed in branches below).
-- `pr_to_feature_state` — same but `--base {featureBranch}` if there's a feature branch.
+> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch → `cleanup-phase-1`; rule 2 = `ClaudePRApproved` → `promote-to-main`; rules 3-4 = `ClaudeStackReady` → `awaiting-pr-approval`; rule 5 = `ClaudeFailed` → `failed`; rule 6 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 7 = `ClaudeReady && eligible` → `ticket-work`; rule 8 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 9 = idle. Container-blocked overrides every rule.
 
-Decision table, in order — first match wins:
+### 3a: Probe rule-1a candidates
 
-1. **`mergedIntoMain === true` AND branch still exists locally OR remote** → `next_action = "cleanup-terminal"`, **auto-safe**.
-   *Why safe: `/cleanup` re-verifies the merge SHA is reachable from `origin/main` before doing anything destructive. If the ticket carries `ClaudePendingMainPromotion`, this is the deferred terminal cleanup that completes the two-phase Story-container flow.*
+For each ticket whose `branch === container.featureBranch` AND `container.parentFeatureBranch` is non-null AND `labels` does **not** include `ClaudePendingMainPromotion`, probe the parent-feature-branch merge state:
 
-1a. **`branch === featureBranch` AND `parentFeatureBranch` is non-null AND a merged PR `--base {parentFeatureBranch}` exists AND `mergedIntoMain === false` AND `labels` does NOT include `ClaudePendingMainPromotion`** → `next_action = "cleanup-phase-1"`, **auto-safe**.
-   *Why safe: cleanup will detect `MERGE_TARGET = parentFeatureBranch`, set `DEFER_DESTRUCTIVE = true`, retain the branch, leave Jira In Progress, apply `ClaudePendingMainPromotion`, and run sibling cascade-rebase + Epic-feature-branch refresh. The Story branch stays alive for `/promote-to-main`. The label gates re-entry — once it's applied, this rule no longer matches and the ticket waits for promotion or for terminal cleanup (rule 1).*
+```bash
+verify-merge {branch} --base {parentFeatureBranch} --cwd {REPO_ROOT}
+```
 
-2. **`labels` includes `ClaudePRApproved` AND no open PR to main exists** → `next_action = "promote-to-main"`, **auto-safe**.
-   *Why safe: rebase aborts on conflict; force-push uses `--force-with-lease`.*
+Build a JSON map `{ branch: { mergedToParentFeatureBranch: <bool> } }` from the results. Skip tickets that don't fit the prefilter — they don't need probing.
 
-3. **`labels` includes `ClaudeStackReady` AND open PR to main exists** → `next_action = "awaiting-pr-approval"`, **manual** (user adds `ClaudePRApproved`).
+### 3b: Run classifier
 
-4. **`labels` includes `ClaudeStackReady` AND no PR to main yet** → `next_action = "awaiting-pr-approval"`, **manual**.
+Write the `STACKS` array (using the JSON shape `{ container: { key, featureBranch, parentFeatureBranch, unmergedBlockers }, tickets: [{ key, branch, labels, mergedIntoMain, mergedIntoFeature, eligible, blockers }] }`) to a temp file, and the probe map to a second temp file. Then:
 
-5. **`labels` includes `ClaudeFailed`** → `next_action = "failed"`, **ask**. Read the most recent entry from the ticket's `[claude-activity-log]` Jira comment (search for the heading naming a `ticket-work` step like `S4.2`, `S4.3`, `S4.7`) and capture the failing step into `failed_step`. Use it to bias the prompt:
-   - Failure at S4.2 (TDD execute) → recommend `/rework` (implementation went off the rails).
-   - Failure at S4.3 (TDD verify) → recommend `/fix-drift` (code drifted from acceptance criteria).
-   - Failure at S4.7 (review issues) → recommend manual investigation; neither auto-action is appropriate.
-   - Failure step unknown / log not found → present both options without a recommendation.
+```bash
+classify-actions --stacks-file <tmp-stacks.json> --pr-state-file <tmp-pr-state.json>
+```
 
-6. **`labels` includes `ClaudeExecuting` OR `ClaudePlanning`** → `next_action = "in-flight"`, **none** — another run is in progress, do nothing.
+Parse stdout as JSON. The output has:
+- `stacks` — per-stack array with `classifications` (ticket-level) and `stackFlags` (`needsStackRebase`, `blockedOnContainer`).
+- `queues` — pre-bucketed by next-action category: `autoSafe`, `asks`, `manual`, `blocked`, `inFlight`, `idle`.
+- `pendingProbes` — branches that need a probe re-run (should be empty after Step 3a).
 
-7. **`labels` includes `ClaudeReady` AND `eligible === true`** → `next_action = "ticket-work"`, **ask** (long-running, mutates code).
+If `pendingProbes` is non-empty, the CLI exits 3 — re-probe those branches and re-run the classifier. Don't proceed to Step 4 until the queues are settled.
 
-8. **`labels` includes `ClaudeReady` AND `eligible === false`** → `next_action = "blocked-on-stack"`, **none** — waiting on an upstream blocker.
+### 3c: Failed-step recommendation
 
-9. Otherwise → `next_action = "idle"`, **none**.
+For each ticket in `queues.asks` whose `nextAction === "failed"`, also fetch the ticket's `[claude-activity-log]` comment (via `mcp__atlassian__getJiraIssue` and locate the comment) and pass its body through:
 
-Also detect **stale-stacked** branches at the stack level: if any ticket has `mergedIntoFeature === false` AND its blocker has `mergedIntoFeature === true`, the stack may need a `/stack-rebase`. Mark the stack with `needs_stack_rebase = true`. (This is informational — `/cleanup` covers the post-merge cascade automatically; standalone `/stack-rebase` is for the rare manual case.)
+```bash
+classify-actions --extract-failed-step --activity-log-file <tmp-log.md>
+```
 
-Detect **container-blocked**: if `container.unmergedBlockers` is non-empty, mark the stack with `blocked_on_container = unmergedBlockers` and force every ticket in the stack to `next_action = "blocked-on-container"`. The whole stack waits.
+(Or use the `extractFailedStep` lib helper directly if invoking from another script.) Use the recommendation to bias the per-ticket prompt in Step 6:
+- `S4.2` (TDD execute) → recommend `/rework`.
+- `S4.3` (TDD verify) → recommend `/fix-drift`.
+- `S4.7` (review issues) → recommend manual investigation.
+- Unknown / log not found → present both options without a recommendation.
 
 ---
 

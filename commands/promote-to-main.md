@@ -14,6 +14,8 @@ allowed-tools:
   - Bash(gh *)
   - Bash(resolve-stack *)
   - Bash(ensure-pr *)
+  - Bash(pr-state *)
+  - Bash(verify-merge *)
   - Bash(post-review-summary *)
   - Bash(append-activity *)
   - Read
@@ -118,18 +120,17 @@ Branch: {CURRENT_TICKET.branch}
 
 Determine the current state of `CURRENT_TICKET`:
 
-1. Check if branch is merged into main:
+1. Check if a merged PR to main exists (this also covers the "branch already on main" case):
    ```bash
-   git fetch origin && git branch -r --merged origin/main | grep "origin/{BRANCH_NAME}"
+   verify-merge {BRANCH_NAME} --base main --cwd {REPO_ROOT}
    ```
-   If yes: display "{KEY} is already merged to main." and **stop**.
+   If `merged` is `true` in the output: display "{KEY} is already merged to main." and **stop**.
 
-2. Check if a PR to main exists:
+2. Otherwise, check if an open PR to main already exists:
    ```bash
-   pr-state {BRANCH_NAME} --base main --cwd {REPO_ROOT}
+   pr-state {BRANCH_NAME} --base main --state open --cwd {REPO_ROOT}
    ```
-   - If output is non-null and `state` is `"MERGED"`: display "{KEY} PR is already merged." and **stop**.
-   - If output is non-null and `state` is `"OPEN"`: display "PR already open for {KEY}: {url}" and **stop**.
+   If output is non-null: display "PR already open for {KEY}: {url}" and **stop**.
 
 3. Otherwise, proceed to Step 2.
 

@@ -19,7 +19,10 @@
     "promote-downstream": "./bin/promote-downstream.js",
     "drift-check": "./bin/drift-check.js",
     "stage-squash": "./bin/stage-squash.js",
-    "pr-state": "./bin/pr-state.js"
+    "pr-state": "./bin/pr-state.js",
+    "verify-merge": "./bin/verify-merge.js",
+    "classify-actions": "./bin/classify-actions.js",
+    "cleanup-feature-refresh": "./bin/cleanup-feature-refresh.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",
