@@ -74,17 +74,9 @@ Deduplicate to a list of unique `CONTAINER_KEYS`. If empty, display "No active s
 
 Initialize `STACKS = []` (per-container snapshot).
 
-For each container key (or just `SCOPE_KEY` if scoped), in alphabetical order:
+For each container key (or just `SCOPE_KEY` if scoped), in alphabetical order, run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={CONTAINER_KEY}` and `FETCH=true`. The orchestrator additionally captures `stack[*].status`, `stack[*].blockers`, `stack[*].mergedIntoFeature`, and `stack[*].mergedIntoMain` per ticket from the same JSON.
 
-```bash
-resolve-stack {CONTAINER_KEY} --fetch
-```
-
-Parse the JSON. Capture:
-- `container.key`, `container.summary`, `container.featureBranch`, `container.repoRoot`, `container.unmergedBlockers`
-- `stack[]` — for each ticket: `key, summary, branch, baseBranch, prTarget, status, labels, blockers, eligible, mergedIntoFeature, mergedIntoMain`
-
-If `repoRoot` is null: record the stack with an error marker (`error: "no repo root"`) and continue — we can still show its Jira state, but cannot do git-side work.
+If `REPO_ROOT` is null: record the stack with an error marker (`error: "no repo root"`) and continue — we can still show its Jira state, but cannot do git-side work.
 
 Append the parsed result to `STACKS`.
 
@@ -95,7 +87,7 @@ Append the parsed result to `STACKS`.
 For each `ticket` in each stack, derive `next_action`. The label state machine is the source of truth; cross-check with git state where it changes the answer.
 
 Compute helpers (only meaningful when `repoRoot` and `branch` exist):
-- `pr_state` — run `gh pr list --head {branch} --base main --state all --json number,state,url --limit 1` (only when needed in branches below).
+- `pr_state` — run `pr-state {branch} --base main --cwd {REPO_ROOT}` (only when needed in branches below).
 - `pr_to_feature_state` — same but `--base {featureBranch}` if there's a feature branch.
 
 Decision table, in order — first match wins:

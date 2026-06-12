@@ -10,7 +10,7 @@ vi.mock("fs", () => ({
   readFileSync: vi.fn(),
 }));
 
-const { checkPrExists, pushBranch, createPr, ensurePr } = await import(
+const { checkPrExists, pushBranch, createPr, ensurePr, prState } = await import(
   "../lib/pr.js"
 );
 
@@ -41,6 +41,57 @@ describe("checkPrExists", () => {
       throw new Error("fail");
     });
     expect(checkPrExists("feat-1", "main", "/repo")).toBeNull();
+  });
+});
+
+describe("prState", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when no PR matches the filter", () => {
+    execSync.mockReturnValue("[]");
+    expect(prState("feat-1", { cwd: "/repo" })).toBeNull();
+  });
+
+  it("returns a normalized PR record when one matches", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([
+        {
+          number: 7,
+          url: "https://gh/x/y/pull/7",
+          state: "MERGED",
+          title: "feat: x",
+          headRefName: "feat-1",
+          baseRefName: "main",
+          mergeCommit: { oid: "abc123" },
+          mergedAt: "2024-01-01T00:00:00Z",
+        },
+      ]),
+    );
+    const result = prState("feat-1", {
+      base: "main",
+      state: "merged",
+      cwd: "/r",
+    });
+    expect(result).toMatchObject({
+      number: 7,
+      state: "MERGED",
+      mergeCommit: "abc123",
+      headRefName: "feat-1",
+    });
+  });
+
+  it("returns null when gh fails", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(prState("feat-1", { cwd: "/r" })).toBeNull();
+  });
+
+  it("returns null when branch or cwd is missing", () => {
+    expect(prState("", { cwd: "/r" })).toBeNull();
+    expect(prState("feat", {})).toBeNull();
   });
 });
 

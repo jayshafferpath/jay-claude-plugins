@@ -17,6 +17,8 @@ const {
   updateComment,
   deleteComment,
   getPrFromDevStatus,
+  buildSetStatePatch,
+  setTicketState,
 } = await import("../lib/jira.js");
 
 function mockFetch(body, ok = true, status = 200) {
@@ -127,6 +129,112 @@ describe("jira module", () => {
       await swapLabel("X-1", "Old", "New");
       const body = JSON.parse(global.fetch.mock.calls[0][1].body);
       expect(body.update.labels).toEqual([{ remove: "Old" }, { add: "New" }]);
+    });
+  });
+
+  describe("buildSetStatePatch", () => {
+    it("returns null when there is nothing to change", () => {
+      expect(
+        buildSetStatePatch(["ClaudeWork", "ClaudeReady"], {
+          add: ["ClaudeReady"],
+        }),
+      ).toBeNull();
+    });
+
+    it("clears every progress label currently applied when adding a new one", () => {
+      const patch = buildSetStatePatch(
+        ["ClaudeWork", "ClaudeExecuting", "ClaudePlanning"],
+        { add: ["ClaudeStackReady"] },
+      );
+      expect(patch.labels).toEqual(
+        expect.arrayContaining([
+          { remove: "ClaudePlanning" },
+          { remove: "ClaudeExecuting" },
+          { add: "ClaudeStackReady" },
+        ]),
+      );
+      expect(patch.labels).toHaveLength(3);
+    });
+
+    it("does not emit removes for progress labels that are not currently set", () => {
+      const patch = buildSetStatePatch(["ClaudeWork"], {
+        add: ["ClaudeReady"],
+      });
+      expect(patch.labels).toEqual([{ add: "ClaudeReady" }]);
+    });
+
+    it("supports adding a non-progress label without clearing progress", () => {
+      const patch = buildSetStatePatch(["ClaudeWork", "ClaudeStackReady"], {
+        add: ["ClaudePruned"],
+      });
+      // Progress labels are cleared because the operation declares a state move.
+      expect(patch.labels).toEqual(
+        expect.arrayContaining([
+          { remove: "ClaudeStackReady" },
+          { add: "ClaudePruned" },
+        ]),
+      );
+    });
+
+    it("removes arbitrary labels passed via remove", () => {
+      const patch = buildSetStatePatch(["ClaudeWork", "ClaudeStackComplete"], {
+        remove: ["ClaudeStackComplete"],
+      });
+      expect(patch.labels).toEqual([{ remove: "ClaudeStackComplete" }]);
+    });
+
+    it("does not double-remove a label that is also in add", () => {
+      const patch = buildSetStatePatch(["ClaudeWork", "ClaudeReady"], {
+        add: ["ClaudeReady"],
+        remove: ["ClaudeReady"],
+      });
+      // ClaudeReady is already present and being added → no-op.
+      expect(patch).toBeNull();
+    });
+  });
+
+  describe("setTicketState", () => {
+    it("rejects --to values that are not progress labels", async () => {
+      await expect(
+        setTicketState("X-1", { to: "NotARealLabel" }),
+      ).rejects.toThrow(/--to must be one of/);
+    });
+
+    it("fetches current labels and PUTs the diff", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              fields: { labels: ["ClaudeWork", "ClaudePlanning"] },
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      const ops = await setTicketState("X-1", { to: "ClaudeExecuting" });
+      expect(ops).toEqual([
+        { remove: "ClaudePlanning" },
+        { add: "ClaudeExecuting" },
+      ]);
+      const putBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+      expect(putBody.update.labels).toEqual([
+        { remove: "ClaudePlanning" },
+        { add: "ClaudeExecuting" },
+      ]);
+    });
+
+    it("returns null and skips PUT when nothing would change", async () => {
+      global.fetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            fields: { labels: ["ClaudeWork", "ClaudeExecuting"] },
+          }),
+      });
+      const ops = await setTicketState("X-1", { to: "ClaudeExecuting" });
+      expect(ops).toBeNull();
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
   });
 

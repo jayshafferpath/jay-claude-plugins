@@ -12,7 +12,14 @@
     "post-review-summary": "./bin/post-review-summary.js",
     "seed-checklist": "./bin/seed-checklist.js",
     "append-activity": "./bin/append-activity.js",
-    "cascade-rebase": "./bin/cascade-rebase.js"
+    "cascade-rebase": "./bin/cascade-rebase.js",
+    "set-ticket-state": "./bin/set-ticket-state.js",
+    "ensure-work-dir": "./bin/ensure-work-dir.js",
+    "discover-queue": "./bin/discover-queue.js",
+    "promote-downstream": "./bin/promote-downstream.js",
+    "drift-check": "./bin/drift-check.js",
+    "stage-squash": "./bin/stage-squash.js",
+    "pr-state": "./bin/pr-state.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",

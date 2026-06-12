@@ -27,6 +27,52 @@ export function checkPrExists(branch, base, cwd) {
   }
 }
 
+// General-purpose PR-state probe. Hits `gh pr list` with the supplied filters,
+// JSON-decodes the first match, and returns a normalized object. Returns null
+// when no PR matches (callers should treat that as "nothing to act on").
+//
+// `state` ∈ "open" | "closed" | "merged" | "all" (gh accepts these).
+// `fields` defaults to a reasonable superset; pass an array to override.
+export function prState(branch, { base, state = "all", cwd, fields } = {}) {
+  if (!branch || !cwd) return null;
+  const fieldList = (
+    fields || [
+      "number",
+      "url",
+      "state",
+      "title",
+      "headRefName",
+      "baseRefName",
+      "mergeCommit",
+      "mergedAt",
+    ]
+  ).join(",");
+  const baseFlag = base ? `--base ${base}` : "";
+  const stateFlag = state ? `--state ${state}` : "";
+  const result = run(
+    `gh pr list --head ${branch} ${baseFlag} ${stateFlag} --json ${fieldList} --limit 1`,
+    cwd,
+  );
+  if (!result) return null;
+  try {
+    const prs = JSON.parse(result);
+    if (prs.length === 0) return null;
+    const pr = prs[0];
+    return {
+      number: pr.number ?? null,
+      url: pr.url ?? null,
+      state: pr.state ?? null,
+      title: pr.title ?? null,
+      headRefName: pr.headRefName ?? null,
+      baseRefName: pr.baseRefName ?? null,
+      mergeCommit: pr.mergeCommit?.oid || pr.mergeCommit || null,
+      mergedAt: pr.mergedAt ?? null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function pushBranch(branch, cwd, force = false) {
   const flag = force ? "--force-with-lease" : "-u";
   const result = run(`git push ${flag} origin ${branch}`, cwd);

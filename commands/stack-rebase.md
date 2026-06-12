@@ -23,18 +23,9 @@ Given a ticket key, rebase all downstream stacked tickets (connected via "blocks
 
 ## Step 1: Resolve Stack
 
-Run:
-```bash
-resolve-stack {given_ticket_key} --fetch
-```
+Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={given_ticket_key}` and `FETCH=true`. Treat its `STACK_ORDER` binding as `STACK_CHAIN`.
 
-Parse the JSON output. Extract:
-- `CONTAINER_KEY` = `container.key`
-- `CONTAINER_TYPE` = `container.type`
-- `STACK_CHAIN` = `stack` array (topologically sorted with branch names)
-- `REPO_ROOT` = `container.repoRoot`
-
-Find the given ticket's index in `STACK_CHAIN` (from `ticketIndex`).
+Find the given ticket's index in `STACK_CHAIN` (the resolver's JSON output already contains `ticketIndex`).
 
 ### Display the Stack
 
@@ -91,8 +82,12 @@ cascade-rebase \
   --repo-root {REPO_ROOT} \
   --origin {ORIGIN_BRANCH} \
   --new-root {NEW_ROOT} \
-  --downstreams {ticket1}:{branch1},{ticket2}:{branch2},...
+  --downstreams {ticket1}:{branch1},{ticket2}:{branch2},... \
+  --activity-note "as part of stack rebase cascade (triggered by {given_ticket_key})" \
+  {--retarget-first-pr main only when Scenario A (mergedIntoMain)}
 ```
+
+`--activity-note` makes the CLI append a "Branch rebased" entry to each rebased / pushed-failed ticket's activity log. `--retarget-first-pr main` retargets the head-of-chain ticket's open PR base from `{given_ticket_key}` to `main` — only pass it in **Scenario A**; in Scenario B the head-of-chain is still stacked on the (rebased) given ticket's branch, so there's no retargeting to do.
 
 Parse stdout as JSON. Store the `results` array as `REBASE_RESULTS`. Each entry has `{ ticket, branch, status, ... }` where `status` is one of `rebased`, `pushed-failed`, `conflict`, `not-attempted`, or `skipped`.
 
@@ -121,33 +116,9 @@ Then re-run: /stack-rebase {entry.ticket}
 
 The CLI already aborted the in-progress rebase and skipped subsequent tickets. Do not retry — surface the report and stop the cascade.
 
-### 4d: Activity Log Per Ticket
+### 4d: Surface Side-Effect Warnings
 
-For each entry whose `status` is `rebased` or `pushed-failed`:
-
-```bash
-append-activity {entry.ticket} --heading "Branch rebased" --body "Rebased onto \`{entry.new_base}\` as part of stack rebase cascade (triggered by {given_ticket_key})."
-```
-
-If `status` is `pushed-failed`, also note "(local rebase succeeded but force-push failed: {entry.error})".
-
-## Step 5: PR Retargeting (Scenario A Only)
-
-If Scenario A (base branch merged to main), the first downstream PR needs its target branch changed:
-
-```
-PR Retargeting Required:
-
-The following PR needs its target branch updated:
-- {FIRST_REBASE_KEY}: change target from {given_ticket_key} -> main
-
-Run:
-  gh pr edit {FIRST_REBASE_KEY} --base main
-
-Or update manually in GitHub.
-```
-
-If `gh` CLI is available, offer to run it. Otherwise, display the manual instructions.
+The CLI handled per-ticket activity logs and Scenario-A PR retargeting (when `--retarget-first-pr main` was passed). If any result entry carries `pr_retarget_warning` or `activity_log_warning`, surface it in the Step 6 summary so the user can follow up manually. Otherwise nothing else to do — proceed to Step 6.
 
 ## Step 6: Summary
 

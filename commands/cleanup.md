@@ -55,30 +55,18 @@ Parse `$ARGUMENTS` into:
 
 ### 1b: Resolve Stack Context
 
-Run:
-```bash
-resolve-stack {TICKET_KEY} --fetch
-```
-
-Parse the JSON output. Extract:
-- `CONTAINER_KEY` = `container.key` (may be null for standalone tickets)
-- `FEATURE_BRANCH` = `container.featureBranch` (may be null)
-- `REPO_ROOT` = `container.repoRoot`
-- `PARENT_CONTAINER_KEY` = `container.parentContainerKey` (null when container has no parent)
-- `PARENT_FEATURE_BRANCH` = `container.parentFeatureBranch` (null when no parent feature branch)
-- `STACK_ORDER` = `stack` array
-- Find this ticket's entry in `STACK_ORDER` and extract:
-  - `BRANCH_NAME` = ticket's `branch`
-  - `SUMMARY` = ticket's `summary`
+Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `FETCH=true`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
+- `BRANCH_NAME` = ticket's `branch`
+- `SUMMARY` = ticket's `summary`
 
 Determine the **merge target** for this ticket's PR. The same Story-container can be cleaned twice — once after merging into the parent Epic's feature branch (`DEFER_DESTRUCTIVE=true`), and again after `/promote-to-main` lands it on main (terminal cleanup). Pick the target so re-invocation does the right thing:
 
 - If `BRANCH_NAME === FEATURE_BRANCH` AND `PARENT_FEATURE_BRANCH` is non-null:
   - Probe for a merged main-targeting PR first:
     ```bash
-    cd {REPO_ROOT} && gh pr list --head {BRANCH_NAME} --base main --state merged --json number,url,mergeCommit --limit 1
+    pr-state {BRANCH_NAME} --base main --state merged --cwd {REPO_ROOT}
     ```
-    If one exists, this is the post-promotion second pass: set `MERGE_TARGET = "main"`. Terminal cleanup applies.
+    If the output is non-null, this is the post-promotion second pass: set `MERGE_TARGET = "main"`. Terminal cleanup applies.
   - Otherwise `MERGE_TARGET = PARENT_FEATURE_BRANCH`. The Story-container has only PR'd to the Epic's feature branch so far.
 - Otherwise: `MERGE_TARGET = "main"`. Default flow — ticket-branch PRs go to main once promoted.
 
@@ -124,10 +112,10 @@ This step is **strict** — refuse to clean up unless we can prove the ticket ac
 ### 2b: PR State
 
 ```bash
-cd {REPO_ROOT} && gh pr list --head {BRANCH_NAME} --base {MERGE_TARGET} --state all --json number,state,url,mergeCommit --limit 5
+pr-state {BRANCH_NAME} --base {MERGE_TARGET} --state merged --cwd {REPO_ROOT}
 ```
 
-Find the most recent PR whose `state` is `"MERGED"`. If none exists, display:
+If the output is `null` (no merged PR to `{MERGE_TARGET}`), display:
 
 ```
 Refuse to clean up — no merged PR to {MERGE_TARGET} found for {BRANCH_NAME}.
@@ -137,7 +125,7 @@ for the PR to merge. /cleanup only runs after a successful merge.
 ```
 and **stop**.
 
-Store `PR_NUMBER`, `PR_URL`, and `MERGE_SHA` = `mergeCommit.oid` from the matched PR.
+Store `PR_NUMBER` = `number`, `PR_URL` = `url`, and `MERGE_SHA` = `mergeCommit` from the matched PR JSON.
 
 If `MERGE_SHA` is empty/null (rare — happens for some merge strategies on very old PRs): display "Merged PR {PR_URL} has no merge commit SHA on record. Cannot verify against {MERGE_TARGET}; stopping." and **stop**.
 
@@ -271,45 +259,21 @@ If no matching transition is found:
 
 ### 5b: Update Labels
 
-Use `mcp__atlassian__editJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`.
+Run `set-ticket-state` to clear every progress label currently on the ticket. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
 
 If `DEFER_DESTRUCTIVE` is `true`, also add `ClaudePendingMainPromotion` so the orchestrator knows a follow-up cleanup is owed once this ticket merges to main:
 
-```json
-{
-  "update": {
-    "labels": [
-      {"remove": "ClaudeReady"},
-      {"remove": "ClaudePlanning"},
-      {"remove": "ClaudeExecuting"},
-      {"remove": "ClaudeStackReady"},
-      {"remove": "ClaudePRApproved"},
-      {"remove": "ClaudeNeedsReview"},
-      {"remove": "ClaudeFailed"},
-      {"add": "ClaudePendingMainPromotion"}
-    ]
-  }
-}
+```bash
+set-ticket-state {TICKET_KEY} --to ClaudePendingMainPromotion
 ```
 
-Otherwise (terminal cleanup) omit the `ClaudePendingMainPromotion` add and additionally remove it in case it was applied on a prior pass:
+Otherwise (terminal cleanup):
 
-```json
-{
-  "update": {
-    "labels": [
-      {"remove": "ClaudeReady"},
-      {"remove": "ClaudePlanning"},
-      {"remove": "ClaudeExecuting"},
-      {"remove": "ClaudeStackReady"},
-      {"remove": "ClaudePRApproved"},
-      {"remove": "ClaudeNeedsReview"},
-      {"remove": "ClaudeFailed"},
-      {"remove": "ClaudePendingMainPromotion"}
-    ]
-  }
-}
+```bash
+set-ticket-state {TICKET_KEY} --clear-progress
 ```
+
+(`ClaudePendingMainPromotion` is in `PROGRESS_LABELS` and is therefore cleared automatically.)
 
 Note: `ClaudeWork` is durable and never removed. No new terminal label is added — Jira status (Done) is the source of truth for terminal cleanup.
 
@@ -411,41 +375,16 @@ cascade-rebase \
   --repo-root {REPO_ROOT} \
   --origin {BRANCH_NAME} \
   --new-root {MERGE_TARGET} \
-  --downstreams {ticket1}:{branch1},{ticket2}:{branch2},...
+  --downstreams {ticket1}:{branch1},{ticket2}:{branch2},... \
+  --activity-note "after {TICKET_KEY} merged to \`{MERGE_TARGET}\` (cleanup cascade)" \
+  --retarget-first-pr {MERGE_TARGET}
 ```
 
-Parse stdout as JSON. Store the `results` array as `REBASE_RESULTS`. Each entry has `{ ticket, branch, status, ... }` where `status` is one of `rebased`, `pushed-failed`, `conflict`, `not-attempted`, or `skipped`. Then iterate `REBASE_RESULTS` to apply the per-ticket side effects below.
+`--activity-note` makes the CLI append a "Branch rebased" entry to each rebased / pushed-failed ticket's activity log; `--retarget-first-pr` retargets the head-of-chain ticket's open PR base from the deleted `{BRANCH_NAME}` to `{MERGE_TARGET}` (no-op when no PR is open). Failures during either side effect fold into the result entry as `activity_log_warning` / `pr_retarget_warning` rather than aborting the chain.
+
+Parse stdout as JSON. Store the `results` array as `REBASE_RESULTS`. Each entry has `{ ticket, branch, status, ... }` where `status` is one of `rebased`, `pushed-failed`, `conflict`, `not-attempted`, or `skipped`.
 
 > **Worktree note**: when a downstream ticket has a worktree, run the CLI from inside that worktree's `REPO_ROOT` (the worktree shares the main repo's branch storage). The shared lib uses `git checkout` against the named branch in the given `repoRoot`, which fails if a worktree currently has the branch checked out. If you hit that error, either (a) cd into the worktree and re-run for that ticket, or (b) detach the worktree first.
-
-Initialize:
-- `REBASE_RESULTS = []` — accumulate per-ticket outcome (`rebased`, `skipped`, `conflict`, `push-failed`).
-- `PREVIOUS_BASE = {MERGE_TARGET}` — what the next branch in the chain should be rebased onto.
-- `PREVIOUS_OLD_BASE = {BRANCH_NAME}` — what the first downstream's branch was *originally* based on (the deleted branch). For subsequent iterations, this becomes the previous downstream's branch name.
-
-### 7b-side-effects: Per-Ticket Activity Log + PR Retarget
-
-For each entry in `REBASE_RESULTS` whose `status` is `rebased` or `pushed-failed`, run the activity-log entry:
-
-```bash
-append-activity {entry.ticket} --heading "Branch rebased" --body "Rebased onto \`{entry.new_base}\` after {TICKET_KEY} merged to \`{MERGE_TARGET}\` (cleanup cascade)."
-```
-
-For the **first** result in `REBASE_RESULTS` whose `status` is `rebased` (the head of the chain), retarget its PR from the deleted `{BRANCH_NAME}` to `{MERGE_TARGET}`:
-
-```bash
-cd {REPO_ROOT} && gh pr list --head {entry.branch} --state open --json number --limit 1
-```
-
-If a PR exists:
-
-```bash
-cd {REPO_ROOT} && gh pr edit {PR_NUMBER} --base {MERGE_TARGET}
-```
-
-If `gh pr edit` fails or no open PR is found, attach `pr_retarget_warning` to that result entry but continue.
-
-For entries with status `skipped`, `conflict`, or `not-attempted`: nothing to do here (they're surfaced in the Step 7c report).
 
 ### 7c: Report Rebase Outcome
 

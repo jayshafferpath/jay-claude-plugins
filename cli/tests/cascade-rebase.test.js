@@ -52,7 +52,7 @@ afterAll(() => {
 });
 
 describe("cascadeRebase", () => {
-  it("rebases a 2-branch chain after origin merges to newRoot", () => {
+  it("rebases a 2-branch chain after origin merges to newRoot", async () => {
     const { repoRoot } = setupRepo("happy-path");
 
     // Origin branch (the deleted one): a.txt
@@ -68,7 +68,7 @@ describe("cascadeRebase", () => {
     git("commit -m squash-abc-1", repoRoot);
     git("push origin main", repoRoot);
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "ABC-1",
       newRoot: "main",
@@ -99,7 +99,7 @@ describe("cascadeRebase", () => {
     expect(abc2Files).toContain("README.md");
   });
 
-  it("stops the chain at a conflict and marks remaining as not-attempted", () => {
+  it("stops the chain at a conflict and marks remaining as not-attempted", async () => {
     const { repoRoot } = setupRepo("conflict-stop");
 
     // Origin and downstream-1 both touch the same file → rebase will conflict
@@ -118,7 +118,7 @@ describe("cascadeRebase", () => {
     git("commit -m main-shared-different", repoRoot);
     git("push origin main", repoRoot);
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "X-1",
       newRoot: "main",
@@ -139,7 +139,7 @@ describe("cascadeRebase", () => {
     });
   });
 
-  it("skips a downstream entry without a branch but continues the chain", () => {
+  it("skips a downstream entry without a branch but continues the chain", async () => {
     const { repoRoot } = setupRepo("skip-null-branch");
 
     makeBranch(repoRoot, "Y-1", "main", "y1.txt", "y1\n");
@@ -150,7 +150,7 @@ describe("cascadeRebase", () => {
     git("commit -m squash-y-1", repoRoot);
     git("push origin main", repoRoot);
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "Y-1",
       newRoot: "main",
@@ -173,10 +173,10 @@ describe("cascadeRebase", () => {
     });
   });
 
-  it("returns empty results when given no downstreams", () => {
+  it("returns empty results when given no downstreams", async () => {
     const { repoRoot } = setupRepo("empty-downstreams");
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "main",
       newRoot: "main",
@@ -217,7 +217,7 @@ describe("cascadeRebase", () => {
     ).toThrow(/downstreams must be an array/);
   });
 
-  it("skips a downstream when checkout fails (branch missing locally)", () => {
+  it("skips a downstream when checkout fails (branch missing locally)", async () => {
     const { repoRoot } = setupRepo("checkout-fail");
 
     makeBranch(repoRoot, "C-1", "main", "c1.txt", "c1\n");
@@ -227,7 +227,7 @@ describe("cascadeRebase", () => {
     git("commit -m squash-c-1", repoRoot);
     git("push origin main", repoRoot);
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "C-1",
       newRoot: "main",
@@ -244,7 +244,7 @@ describe("cascadeRebase", () => {
     expect(out.results[0].reason).toMatch(/checkout failed/);
   });
 
-  it("reports pushed-failed when push to remote fails", () => {
+  it("reports pushed-failed when push to remote fails", async () => {
     const { repoRoot, remote } = setupRepo("push-fail");
 
     makeBranch(repoRoot, "P-1", "main", "p1.txt", "p1\n");
@@ -259,7 +259,7 @@ describe("cascadeRebase", () => {
     // but the force-with-lease push to origin will error out.
     rmSync(remote, { recursive: true, force: true });
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "P-1",
       newRoot: "main",
@@ -276,7 +276,7 @@ describe("cascadeRebase", () => {
     expect(out.results[0].error).toBeTruthy();
   });
 
-  it("supports --no-push semantics (pushAfterRebase: false leaves remote untouched)", () => {
+  it("supports --no-push semantics (pushAfterRebase: false leaves remote untouched)", async () => {
     const { repoRoot } = setupRepo("no-push");
 
     makeBranch(repoRoot, "Z-1", "main", "z1.txt", "z1\n");
@@ -289,7 +289,7 @@ describe("cascadeRebase", () => {
 
     const beforeRemoteSha = git("rev-parse origin/Z-2", repoRoot);
 
-    const out = cascadeRebase({
+    const out = await cascadeRebase({
       repoRoot,
       originBranch: "Z-1",
       newRoot: "main",

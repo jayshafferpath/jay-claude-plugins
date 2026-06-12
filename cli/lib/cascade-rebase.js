@@ -16,6 +16,8 @@
 
 import { execSync } from "node:child_process";
 
+import { appendActivityLog } from "./checklist.js";
+
 function runCapture(cmd, cwd) {
   try {
     return {
@@ -56,17 +58,28 @@ function listConflicts(repoRoot) {
 //   downstreams    — [{ ticket, branch }, ...] in stack order
 //   pushAfterRebase — when true (default) force-with-lease push each rebased
 //                     branch; when false, callers must push themselves
+//   activityLog    — when present, the per-ticket side-effect kicker. Pass
+//                    `{ note }` (string used as the activity-log body suffix)
+//                    or `false` to skip. Each rebased / pushed-failed entry
+//                    triggers `append-activity {ticket} --heading "Branch rebased"
+//                    --body "Rebased onto \`{new_base}\`. {note}"`.
+//   retargetFirstPr — when present, retarget the head-of-chain ticket's PR
+//                     base to `retargetFirstPr.newBase`. Skipped when no PR
+//                     is open. Errors are folded into the result entry as
+//                     `pr_retarget_warning`.
 //
 // Returns { results: [{ ticket, branch, status, ... }, ...] }
 //   status ∈ "rebased" | "pushed-failed" | "conflict" | "not-attempted" | "skipped"
-export function cascadeRebase({
-  repoRoot,
-  originBranch,
-  newRoot,
-  downstreams,
-  pushAfterRebase = true,
-}) {
-  const results = [];
+export function cascadeRebase(opts) {
+  const {
+    repoRoot,
+    originBranch,
+    newRoot,
+    downstreams,
+    pushAfterRebase = true,
+    activityLog = null,
+    retargetFirstPr = null,
+  } = opts;
 
   if (!repoRoot) throw new Error("cascadeRebase: repoRoot is required");
   if (!originBranch) throw new Error("cascadeRebase: originBranch is required");
@@ -74,6 +87,28 @@ export function cascadeRebase({
   if (!Array.isArray(downstreams)) {
     throw new Error("cascadeRebase: downstreams must be an array");
   }
+
+  return runCascade({
+    repoRoot,
+    originBranch,
+    newRoot,
+    downstreams,
+    pushAfterRebase,
+    activityLog,
+    retargetFirstPr,
+  });
+}
+
+async function runCascade({
+  repoRoot,
+  originBranch,
+  newRoot,
+  downstreams,
+  pushAfterRebase,
+  activityLog,
+  retargetFirstPr,
+}) {
+  const results = [];
 
   let previousBase = newRoot;
   let previousOriginalBase = originBranch;
@@ -134,25 +169,81 @@ export function cascadeRebase({
       );
     }
 
-    if (push && !push.ok) {
-      results.push({
-        ticket,
-        branch,
-        status: "pushed-failed",
-        new_base: previousBase,
-        error: push.stderr.trim() || `exit ${push.code}`,
-      });
-    } else {
-      results.push({
-        ticket,
-        branch,
-        status: "rebased",
-        new_base: previousBase,
-      });
-    }
+    const result =
+      push && !push.ok
+        ? {
+            ticket,
+            branch,
+            status: "pushed-failed",
+            new_base: previousBase,
+            error: push.stderr.trim() || `exit ${push.code}`,
+          }
+        : {
+            ticket,
+            branch,
+            status: "rebased",
+            new_base: previousBase,
+          };
+    results.push(result);
 
     previousOriginalBase = branch;
     previousBase = branch;
+  }
+
+  if (activityLog) {
+    for (const entry of results) {
+      if (entry.status !== "rebased" && entry.status !== "pushed-failed") {
+        continue;
+      }
+      let body = `Rebased onto \`${entry.new_base}\`.`;
+      if (activityLog.note) body += ` ${activityLog.note}`;
+      if (entry.status === "pushed-failed") {
+        body += ` (local rebase succeeded but force-push failed: ${entry.error})`;
+      }
+      try {
+        await appendActivityLog(entry.ticket, "Branch rebased", body);
+      } catch (err) {
+        entry.activity_log_warning = err.message;
+      }
+    }
+  }
+
+  if (retargetFirstPr && retargetFirstPr.newBase) {
+    const head = results.find((r) => r.status === "rebased");
+    if (head) {
+      const probe = runCapture(
+        `gh pr list --head ${head.branch} --state open --json number --limit 1`,
+        repoRoot,
+      );
+      if (probe.ok) {
+        let prNumber = null;
+        try {
+          const parsed = JSON.parse(probe.stdout || "[]");
+          prNumber = parsed[0]?.number ?? null;
+        } catch {
+          prNumber = null;
+        }
+        if (prNumber) {
+          const edit = runCapture(
+            `gh pr edit ${prNumber} --base ${retargetFirstPr.newBase}`,
+            repoRoot,
+          );
+          if (edit.ok) {
+            head.pr_retargeted = {
+              number: prNumber,
+              new_base: retargetFirstPr.newBase,
+            };
+          } else {
+            head.pr_retarget_warning =
+              edit.stderr.trim() || `gh pr edit exit ${edit.code}`;
+          }
+        } else {
+          head.pr_retarget_warning = "no open PR found for head-of-chain";
+        }
+      } else {
+        head.pr_retarget_warning = probe.stderr.trim() || "gh pr list failed";
+      }
+    }
   }
 
   return { results };

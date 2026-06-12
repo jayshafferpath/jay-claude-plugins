@@ -45,17 +45,7 @@ Set `RESOLVED_KEY` = `$ARGUMENTS` (uppercased). The arg must match `^[A-Z][A-Z0-
 
 ### 1b: Resolve Stack with resolve-stack
 
-Run:
-```bash
-resolve-stack {RESOLVED_KEY} --fetch
-```
-
-Parse the JSON output. Extract:
-- `CONTAINER_KEY` = `container.key`
-- `FEATURE_BRANCH` = `container.featureBranch`
-- `UNMERGED_BLOCKERS` = `container.unmergedBlockers`
-- `REPO_ROOT` = `container.repoRoot`
-- `STACK_ORDER` = `stack` array (already topologically sorted, with branch names resolved)
+Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={RESOLVED_KEY}` and `FETCH=true`.
 
 If `FEATURE_BRANCH` is null: display "{RESOLVED_KEY} has no Story/Epic container; nothing to promote via feature branch. Use the standard PR workflow." and **stop**.
 
@@ -71,42 +61,20 @@ Filter out tickets from `STACK_ORDER` where `branch` is null — display "Warnin
 
 ### 1b-final: Auto-Cleanup Merged Ancestors
 
-Before selecting the target, sweep `STACK_ORDER` for tickets that have shipped to main but haven't been cleaned up yet. Without `/cleanup`, the stack still bases on stale branches and the feature branch drifts from main — promotion would rebase onto an inconsistent base. Run it now so we promote against a reconciled stack.
+Before selecting the target, sweep `STACK_ORDER` for tickets that have shipped to main but haven't been cleaned up yet. Without `/cleanup`, the stack still bases on stale branches and the feature branch drifts from main — promotion would rebase onto an inconsistent base.
 
-#### 1b-final.i: Detect Uncleaned Merged Tickets
+Detect uncleaned ancestors by walking `STACK_ORDER`: any entry with `mergedIntoMain === true` whose `entry.branch` still exists on origin (probe via `git ls-remote --heads origin {entry.branch}` from `{REPO_ROOT}`) is uncleaned.
 
-For each entry in `STACK_ORDER` where `mergedIntoMain === true`, check whether the branch still exists on origin:
+If any uncleaned ancestor exists, **delegate to `/orchestrate --scope {CONTAINER_KEY}`**. The orchestrator owns the cleanup-cascade auto-runner (`/cleanup` per ancestor, `[cleanup-outcome]` parsing, halt-on-partial semantics) — see `commands/orchestrate.md` "Cleanup merged tickets" branch for the canonical sweep.
 
-```bash
-cd {REPO_ROOT} && git ls-remote --heads origin {entry.branch}
+Display:
+```
+Promote-to-main halted: detected uncleaned merged ancestor(s) in {CONTAINER_KEY}: {LIST}.
+
+Run `/orchestrate --scope {CONTAINER_KEY}` to sweep the cleanup cascade, then re-run `/promote-to-main {RESOLVED_KEY}`.
 ```
 
-If the command outputs a ref line, the remote branch survived — cleanup hasn't run for this ticket. Append the entry to `UNCLEANED`. (`resolve-stack --fetch` already refreshed remote refs in Step 1b; no additional fetch needed.)
-
-If `UNCLEANED` is empty, skip to Step 1c.
-
-#### 1b-final.ii: Run Cleanup on Each, In Stack Order
-
-For each entry in `UNCLEANED`, in stack order (earliest first):
-
-1. Display: "Detected merged-but-uncleaned ancestor {KEY} — running /cleanup {KEY}."
-2. Execute the `/cleanup {KEY}` workflow inline (follow the instructions in `commands/cleanup.md`). Keep cleanup's confirmation prompt — the user must type "confirm" before each ticket's destructive work proceeds.
-3. If the user does not confirm: display "Promote-to-main halted: cleanup of {KEY} was aborted. Re-run /promote-to-main once the stack is reconciled." and **stop**.
-4. **Parse cleanup's `[cleanup-outcome]` line** (printed at the end of cleanup's Step 9 — see `commands/cleanup.md` "Machine-readable outcome line"). Behavior depends on its fields:
-   - `phase=phase-1` → cleanup correctly identified that this ancestor PR'd to its parent Epic's feature branch but hasn't been promoted to main yet. The Story branch is intentionally retained. Promote-to-main cannot advance through it: display "Promote-to-main halted: cleanup of {KEY} reports phase=phase-1 (awaiting main promotion). Run /promote-to-main {KEY} to ship its main PR first, then re-run /cleanup {KEY} (terminal), then re-run /promote-to-main." and **stop**.
-   - `phase=terminal` AND `status=ok` → cleanup completed; the branch is deleted and Jira is Done. Continue to the next entry in `UNCLEANED`.
-   - `phase=terminal` AND `status=partial` → terminal cleanup ran but a sub-step (cascade rebase, feature refresh, etc.) reported partial completion. Display "Promote-to-main halted: cleanup of {KEY} completed terminal-phase but reported status=partial — review the cleanup output and re-run." and **stop**.
-   - Outcome line missing (older /cleanup version or printed-but-not-captured): fall back to the legacy heuristic — if cleanup ended with a cascade-rebase conflict, a feature-branch refresh failure, or any other visible partial-state outcome, halt with the same message as `status=partial`.
-
-#### 1b-final.iii: Re-Resolve Stack
-
-Cleanup just deleted branches, cascade-rebased downstream tickets onto main, and refreshed the feature branch. Re-run resolve-stack so subsequent steps work against the new state:
-
-```bash
-resolve-stack {RESOLVED_KEY} --fetch
-```
-
-Re-extract `CONTAINER_KEY`, `FEATURE_BRANCH`, `UNMERGED_BLOCKERS`, `REPO_ROOT`, and `STACK_ORDER` from the new output, replacing the values from Step 1b. Re-apply the `UNMERGED_BLOCKERS` refusal check from Step 1b against the fresh values. Re-filter out null-branch entries.
+…and **stop**. Promote-to-main is intentionally a single-purpose command — it does not run cleanup itself.
 
 ### 1c: Select Target Ticket
 
@@ -158,10 +126,10 @@ Determine the current state of `CURRENT_TICKET`:
 
 2. Check if a PR to main exists:
    ```bash
-   gh pr list --head {BRANCH_NAME} --base main --json number,state,url
+   pr-state {BRANCH_NAME} --base main --cwd {REPO_ROOT}
    ```
-   - If PR exists and state is "MERGED": display "{KEY} PR is already merged." and **stop**.
-   - If PR exists and state is "OPEN": display "PR already open for {KEY}: {PR_URL}" and **stop**.
+   - If output is non-null and `state` is `"MERGED"`: display "{KEY} PR is already merged." and **stop**.
+   - If output is non-null and `state` is `"OPEN"`: display "PR already open for {KEY}: {url}" and **stop**.
 
 3. Otherwise, proceed to Step 2.
 
@@ -290,55 +258,40 @@ git push --force-with-lease origin {BRANCH_NAME}
 
 ---
 
-## Step 3: Open PR to Main
+## Step 3: Open PR to Main (shared sub-procedure)
 
-### 3a: Generate PR Description
+Run the **Shared sub-procedure: PR Push & Review** (defined in `commands/ticket-work.md`) with these bindings:
 
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Ensure the ticket branch is checked out: `git checkout {BRANCH_NAME}`
-3. Use the Skill tool to run skill `jay-pr-description`
-4. Append a stack context section to `./pr.md`:
-   ```markdown
+- `WORK_DIR` = `REPO_ROOT`
+- `BRANCH` = `BRANCH_NAME`
+- `BASE` = `main`
+- `JIRA_KEY` = `KEY`
+- `STORAGE` = inline (this command does not persist resume state — re-running re-derives it)
+- `MARK_READY` = false (the user marks it ready after reviewing the auto-rebased diff)
+- `LABEL_FLIP` = none (label transitions for this ticket happen via the per-ticket lifecycle, not promotion)
+- `DRAFT` = false (promote-to-main opens the PR ready-for-review since review already happened pre-promotion)
 
-   ## Stack Context
+The mapping is:
+- 3a ↔ P1 (PR description) — additionally append a "Stack Context" section to `./pr.md` after the skill runs:
+  ```markdown
 
-   Promoted from feature branch `{FEATURE_BRANCH}` to main.
-   Part of {CONTAINER_KEY}.
-   ```
+  ## Stack Context
 
-### 3b: Create or Update PR
+  Promoted from feature branch `{FEATURE_BRANCH}` to main.
+  Part of {CONTAINER_KEY}.
+  ```
+- 3b ↔ P2 (push, then `ensure-pr` — base is `main`, **non-draft** since `DRAFT=false`). Store `pr.number` as `PR_NUMBER` and `pr.url` as `PR_URL`. If `action` is `"exists"`, skip ahead to 3d.
+- 3c ↔ P5 (Copilot review loop)
+- 3d ↔ P6 (post review summary)
 
-Run:
-```bash
-ensure-pr {BRANCH_NAME} --base main --body-file ./pr.md
-```
-
-Parse the JSON output. Store `pr.number` as `PR_NUMBER` and `pr.url` as `PR_URL`.
-If `action` is `"exists"`, the PR was already open — skip to 3d.
-
-### 3c: Copilot Review Comments
-
-After creating the PR, run a single pass to address Copilot review comments:
-
-1. Make sure we are in the repo root: `cd {REPO_ROOT}`
-2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
-3. If pr-watch made changes and pushed, note the updated state.
-
-### 3d: Post PR Review Summary Comment
-
-Run:
-```bash
-post-review-summary {BRANCH_NAME} --plans-dir .claude/plans --ticket-key {KEY}
-```
-
-If output shows `posted: false` with reason `no_plan_file`, skip (nothing to post).
+Promote-to-main does **not** run P3 / P4 / P7 — review work is owned by the per-ticket lifecycle (S4.5/S4.6) before promotion; P7 (mark-ready) is Mode-C-only.
 
 ### 3e: Update Jira
 
-1. Append to the activity log:
-   ```bash
-   append-activity {KEY} --heading "PR to main opened" --body "{PR_URL}. Promoting from feature branch \`{FEATURE_BRANCH}\`."
-   ```
+After the shared sub-procedure completes, append to the activity log:
+```bash
+append-activity {KEY} --heading "PR to main opened" --body "{PR_URL}. Promoting from feature branch \`{FEATURE_BRANCH}\`."
+```
 
 ---
 

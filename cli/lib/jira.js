@@ -1,4 +1,5 @@
 import { getJiraAuth } from "./config.js";
+import { PROGRESS_LABELS } from "./labels.js";
 
 function auth() {
   const creds = getJiraAuth();
@@ -90,6 +91,56 @@ export async function removeLabel(key, label) {
 
 export async function swapLabel(key, remove, add) {
   await editIssue(key, { labels: [{ remove }, { add }] });
+}
+
+// Build a labels patch that clears all PROGRESS_LABELS currently on the ticket
+// and applies the given additions/removals. Returns null when there is nothing
+// to change, so callers can skip the API call entirely.
+export function buildSetStatePatch(currentLabels, { add = [], remove = [] }) {
+  const current = Array.isArray(currentLabels) ? currentLabels : [];
+  const removeSet = new Set();
+
+  for (const label of PROGRESS_LABELS) {
+    if (current.includes(label)) removeSet.add(label);
+  }
+  for (const label of remove) {
+    if (current.includes(label)) removeSet.add(label);
+  }
+
+  const ops = [];
+  for (const label of removeSet) {
+    if (!add.includes(label)) ops.push({ remove: label });
+  }
+  for (const label of add) {
+    if (!current.includes(label)) ops.push({ add: label });
+  }
+
+  return ops.length === 0 ? null : { labels: ops };
+}
+
+// Idempotent state transition: clears every PROGRESS_LABEL currently set,
+// then applies add/remove. `to` is sugar for "add this single state label and
+// clear the rest". Returns the operations that were applied (or null on no-op).
+export async function setTicketState(
+  key,
+  { to = null, add = [], remove = [] } = {},
+) {
+  if (to && !PROGRESS_LABELS.includes(to)) {
+    throw new Error(
+      `--to must be one of: ${PROGRESS_LABELS.join(", ")}. Got: ${to}`,
+    );
+  }
+
+  const issue = await getIssue(key);
+  const currentLabels = issue?.fields?.labels || [];
+
+  const additions = [...add];
+  if (to && !additions.includes(to)) additions.push(to);
+
+  const patch = buildSetStatePatch(currentLabels, { add: additions, remove });
+  if (!patch) return null;
+  await editIssue(key, patch);
+  return patch.labels;
 }
 
 export async function getPrFromDevStatus(key) {
