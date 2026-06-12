@@ -178,3 +178,90 @@ describe("ensureFeatureBranch", () => {
     ).toThrow(/Blocker container has no branch/);
   });
 });
+
+describe("ensureWorkDir validation", () => {
+  it("throws when ticketKey is missing", () => {
+    expect(() => ensureWorkDir({ repoRoot: "/tmp" })).toThrow(/ticketKey/);
+  });
+
+  it("throws when repoRoot is missing", () => {
+    expect(() => ensureWorkDir({ ticketKey: "TIK-1" })).toThrow(/repoRoot/);
+  });
+
+  it("throws when repoRoot does not exist", () => {
+    expect(() =>
+      ensureWorkDir({ ticketKey: "TIK-1", repoRoot: "/no/such/path" }),
+    ).toThrow(/repoRoot does not exist/);
+  });
+
+  it("throws when serial-mode branch creation has no base to derive from", () => {
+    const { repoRoot } = makeRepo("nobase");
+    expect(() =>
+      ensureWorkDir({ ticketKey: "TIK-N", repoRoot, serial: true }),
+    ).toThrow(/baseBranch is required/);
+  });
+
+  it("attaches an existing branch as a worktree when worktree mode runs against a pre-existing branch", () => {
+    const { repoRoot } = makeRepo("existing-branch");
+    // Pre-create a branch (without a worktree).
+    execSync("git branch TIK-E main", {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+
+    const result = ensureWorkDir({
+      ticketKey: "TIK-E",
+      repoRoot,
+      baseBranch: "main",
+    });
+    expect(result.created).toBe(true);
+    expect(result.workDir).toContain("TIK-E");
+  });
+
+  it("throws when worktree mode has no baseBranch and the branch doesn't exist", () => {
+    const { repoRoot } = makeRepo("wt-nobase");
+    expect(() =>
+      ensureWorkDir({ ticketKey: "TIK-NB", repoRoot }),
+    ).toThrow(/baseBranch is required/);
+  });
+
+  it("throws when the work-dir path exists but is not a git worktree", () => {
+    const { repoRoot } = makeRepo("wt-stale");
+    // Pre-create the would-be worktree path as a plain dir (not a worktree).
+    const stalePath = join(repoRoot, "..", "TIK-STALE");
+    mkdirSync(stalePath, { recursive: true });
+    expect(() =>
+      ensureWorkDir({ ticketKey: "TIK-STALE", repoRoot, baseBranch: "main" }),
+    ).toThrow(/not a git worktree/);
+    rmSync(stalePath, { recursive: true, force: true });
+  });
+
+  it("creates a worktree from a non-main base when the base ref exists on origin", () => {
+    const { repoRoot } = makeRepo("non-main-base");
+    // Bootstrap a non-main base branch on origin.
+    execSync("git checkout -b BASE-1 main", { cwd: repoRoot, stdio: "pipe" });
+    execSync("git push -u origin BASE-1", { cwd: repoRoot, stdio: "pipe" });
+    execSync("git checkout main", { cwd: repoRoot, stdio: "pipe" });
+    execSync("git branch -D BASE-1", { cwd: repoRoot, stdio: "pipe" });
+
+    const result = ensureWorkDir({
+      ticketKey: "TIK-NB",
+      repoRoot,
+      baseBranch: "BASE-1",
+    });
+    expect(result.created).toBe(true);
+    expect(result.workDir).toContain("TIK-NB");
+  });
+
+  it("respects --no-fetch (passes fetch:false)", () => {
+    const { repoRoot } = makeRepo("nofetch");
+    const result = ensureWorkDir({
+      ticketKey: "TIK-NF",
+      repoRoot,
+      baseBranch: "main",
+      serial: true,
+      fetch: false,
+    });
+    expect(result.fetched).toBe(false);
+  });
+});

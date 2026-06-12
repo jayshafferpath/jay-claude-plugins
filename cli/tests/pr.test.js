@@ -93,6 +93,35 @@ describe("prState", () => {
     expect(prState("", { cwd: "/r" })).toBeNull();
     expect(prState("feat", {})).toBeNull();
   });
+
+  it("returns null when JSON parse fails", () => {
+    execSync.mockReturnValue("not-json");
+    expect(prState("feat", { cwd: "/r" })).toBeNull();
+  });
+
+  it("handles a string mergeCommit value (not an object)", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([{ number: 1, mergeCommit: "abc" }]),
+    );
+    const result = prState("feat", { cwd: "/r" });
+    expect(result.mergeCommit).toBe("abc");
+  });
+
+  it("supports custom field overrides", () => {
+    execSync.mockReturnValue('[{"number":3}]');
+    prState("feat", { cwd: "/r", fields: ["number"] });
+    expect(execSync).toHaveBeenCalledWith(
+      expect.stringContaining("--json number"),
+      expect.anything(),
+    );
+  });
+
+  it("omits the --base flag when no base is provided", () => {
+    execSync.mockReturnValue("[]");
+    prState("feat", { cwd: "/r" });
+    const cmd = execSync.mock.calls[0][0];
+    expect(cmd).not.toContain("--base");
+  });
 });
 
 describe("pushBranch", () => {

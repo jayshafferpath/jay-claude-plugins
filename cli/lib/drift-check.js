@@ -111,9 +111,8 @@ export function diffCitation(citation, repoRoot, fallbackBaseline) {
     };
   }
 
-  const fileExists = run(`git cat-file -e HEAD:${citation.path}`, repoRoot);
-  // git cat-file -e is silent on success; runs return null when it fails.
-  // To make the success/failure distinction reliable, probe with `ls-tree`:
+  // git cat-file -e is silent on success; the more useful probe is ls-tree
+  // (returns the entry on hit, empty string on miss → null).
   const lsTree = run(`git ls-tree HEAD -- ${citation.path}`, repoRoot);
   if (!lsTree) {
     // Try --follow to see if the file moved.

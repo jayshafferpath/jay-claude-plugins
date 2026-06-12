@@ -98,4 +98,65 @@ describe("stageSquash", () => {
     const expected = git("merge-base HEAD origin/main", cwd);
     expect(sha).toBe(expected);
   });
+
+  it("throws when ticketKey, label, or cwd is missing", () => {
+    expect(() => stageSquash({ label: "x", cwd: "/r" })).toThrow(/ticketKey/);
+    expect(() => stageSquash({ ticketKey: "T", cwd: "/r" })).toThrow(/label/);
+    expect(() => stageSquash({ ticketKey: "T", label: "x" })).toThrow(/cwd/);
+  });
+
+  it("pushes via force-with-lease when push is enabled", () => {
+    const cwd = makeRepo("repo-push");
+    writeFileSync(join(cwd, "f"), "1\n");
+    git("commit -am one", cwd);
+
+    const result = stageSquash({
+      ticketKey: "TIK-P",
+      label: "plan: generated",
+      baseBranch: "main",
+      branch: "TIK-1",
+      cwd,
+      push: true,
+    });
+    expect(result.action).toBe("squashed");
+    expect(result.pushed).toBe(true);
+    expect(result.branch).toBe("TIK-1");
+  });
+
+  it("returns 'push-failed' when the push to origin fails", () => {
+    const cwd = makeRepo("repo-push-fail");
+    writeFileSync(join(cwd, "f"), "1\n");
+    git("commit -am one", cwd);
+    // Point origin at a path that doesn't exist so push fails.
+    git("remote set-url origin /tmp/no-such-remote-here.git", cwd);
+
+    const result = stageSquash({
+      ticketKey: "TIK-PF",
+      label: "plan: generated",
+      baseBranch: "main",
+      branch: "TIK-1",
+      cwd,
+      push: true,
+    });
+    expect(result.action).toBe("push-failed");
+    expect(result.pushed).toBe(false);
+  });
+
+  it("throws when stage-start-sha cannot be derived", () => {
+    const cwd = makeRepo("repo-no-base");
+    // Detach so origin/<base> can't be resolved and there are no [KEY] commits.
+    git("checkout --detach HEAD", cwd);
+    git("branch -D main", cwd);
+    git("remote remove origin", cwd);
+
+    expect(() =>
+      stageSquash({
+        ticketKey: "TIK-X",
+        label: "plan: generated",
+        baseBranch: "ghost",
+        cwd,
+        push: false,
+      }),
+    ).toThrow(/Cannot derive STAGE_START_SHA/);
+  });
 });
