@@ -27,8 +27,8 @@ describe("labelState", () => {
 });
 
 describe("actionHint", () => {
-  it("returns hint for plan needing approval", () => {
-    expect(actionHint("ClaudePlanNeedsApproval")).toBe("approve plan?");
+  it("returns hint for stack ready", () => {
+    expect(actionHint("ClaudeStackReady")).toBe("ready for PR?");
   });
 
   it("returns null for states without a hint", () => {

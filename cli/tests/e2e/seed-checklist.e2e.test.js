@@ -110,7 +110,7 @@ beforeAll(async () => {
       if (issueMatch) {
         const key = issueMatch[1];
         let labels = [];
-        if (key === "PLAN-1") labels = ["ClaudePlanApproved"];
+        if (key === "PLAN-1") labels = ["ClaudeExecuting"];
         if (key === "EXEC-1") labels = ["ClaudeStackReady"];
 
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -141,45 +141,44 @@ describe("seed-checklist e2e", () => {
       `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary New`,
     );
 
-    expect(result.steps).toHaveLength(13);
+    expect(result.steps).toHaveLength(12);
     expect(result.steps[0].done).toBe(false);
-    expect(result.steps[12].done).toBe(false);
+    expect(result.steps[11].done).toBe(false);
     expect(result.markdown).toContain("# FRESH-1 - Work Checklist");
     expect(result.markdown).toContain("- [ ] 1. Plan generated");
   });
 
-  it("seeds with steps 1-2 done when ClaudePlanApproved label present", async () => {
+  it("seeds with step 1 done when ClaudeExecuting label present", async () => {
     const result = await runAsync(
-      `PLAN-1 --work-dir ${WORK_DIR} --branch PLAN-1 --base-branch main --pr-target main --summary Approved`,
+      `PLAN-1 --work-dir ${WORK_DIR} --branch PLAN-1 --base-branch main --pr-target main --summary Executing`,
     );
 
     expect(result.steps[0].done).toBe(true);
-    expect(result.steps[1].done).toBe(true);
-    expect(result.steps[2].done).toBe(false);
+    expect(result.steps[1].done).toBe(false);
   });
 
-  it("seeds with steps 1-8 done when ClaudeStackReady label present", async () => {
+  it("seeds with steps 1-7 done when ClaudeStackReady label present", async () => {
     const result = await runAsync(
       `EXEC-1 --work-dir ${WORK_DIR} --branch EXEC-1 --base-branch main --pr-target main --summary Done`,
     );
 
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 7; i++) {
       expect(result.steps[i].done).toBe(true);
     }
-    expect(result.steps[8].done).toBe(false);
+    expect(result.steps[7].done).toBe(false);
   });
 
-  it("seeds with steps 1-11 done when PR exists", async () => {
+  it("seeds with steps 1-10 done when PR exists", async () => {
     const result = await runAsync(
       `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary HasPR`,
       { prExists: true },
     );
 
-    for (let i = 0; i < 11; i++) {
+    for (let i = 0; i < 10; i++) {
       expect(result.steps[i].done).toBe(true);
     }
+    expect(result.steps[10].done).toBe(false);
     expect(result.steps[11].done).toBe(false);
-    expect(result.steps[12].done).toBe(false);
   });
 
   it("uses base_branch and pr_target frontmatter for stacked tickets", async () => {

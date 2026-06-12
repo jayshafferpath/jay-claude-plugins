@@ -242,8 +242,6 @@ Use `mcp__atlassian__editJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TI
     "labels": [
       {"remove": "ClaudeReady"},
       {"remove": "ClaudePlanning"},
-      {"remove": "ClaudePlanNeedsApproval"},
-      {"remove": "ClaudePlanApproved"},
       {"remove": "ClaudeExecuting"},
       {"remove": "ClaudeStackReady"},
       {"remove": "ClaudePRApproved"},

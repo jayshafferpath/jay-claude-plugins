@@ -6,6 +6,8 @@ allowed-tools:
   - mcp__atlassian__editJiraIssue
   - mcp__atlassian__addCommentToJiraIssue
   - mcp__atlassian__searchJiraIssuesUsingJql
+  - mcp__atlassian__getTransitionsForJiraIssue
+  - mcp__atlassian__transitionJiraIssue
   - Bash(git *)
   - Bash(cd *)
   - Bash(ls *)
@@ -66,6 +68,41 @@ Promote and merge those containers first, then re-run.
 and **stop**.
 
 Filter out tickets from `STACK_ORDER` where `branch` is null — display "Warning: no branch found for {KEY}, skipping" for each.
+
+### 1b-final: Auto-Cleanup Merged Ancestors
+
+Before selecting the target, sweep `STACK_ORDER` for tickets that have shipped to main but haven't been cleaned up yet. Without `/cleanup`, the stack still bases on stale branches and the feature branch drifts from main — promotion would rebase onto an inconsistent base. Run it now so we promote against a reconciled stack.
+
+#### 1b-final.i: Detect Uncleaned Merged Tickets
+
+For each entry in `STACK_ORDER` where `mergedIntoMain === true`, check whether the branch still exists on origin:
+
+```bash
+cd {REPO_ROOT} && git ls-remote --heads origin {entry.branch}
+```
+
+If the command outputs a ref line, the remote branch survived — cleanup hasn't run for this ticket. Append the entry to `UNCLEANED`. (`resolve-stack --fetch` already refreshed remote refs in Step 1b; no additional fetch needed.)
+
+If `UNCLEANED` is empty, skip to Step 1c.
+
+#### 1b-final.ii: Run Cleanup on Each, In Stack Order
+
+For each entry in `UNCLEANED`, in stack order (earliest first):
+
+1. Display: "Detected merged-but-uncleaned ancestor {KEY} — running /cleanup {KEY}."
+2. Execute the `/cleanup {KEY}` workflow inline (follow the instructions in `commands/cleanup.md`). Keep cleanup's confirmation prompt — the user must type "confirm" before each ticket's destructive work proceeds.
+3. If the user does not confirm: display "Promote-to-main halted: cleanup of {KEY} was aborted. Re-run /promote-to-main once the stack is reconciled." and **stop**.
+4. If cleanup ends with a cascade-rebase conflict, a feature-branch refresh failure, or any other partial-state outcome: display "Promote-to-main halted: cleanup of {KEY} did not complete cleanly (see output above). Resolve the issue and re-run." and **stop**.
+
+#### 1b-final.iii: Re-Resolve Stack
+
+Cleanup just deleted branches, cascade-rebased downstream tickets onto main, and refreshed the feature branch. Re-run resolve-stack so subsequent steps work against the new state:
+
+```bash
+resolve-stack {RESOLVED_KEY} --fetch
+```
+
+Re-extract `CONTAINER_KEY`, `FEATURE_BRANCH`, `UNMERGED_BLOCKERS`, `REPO_ROOT`, and `STACK_ORDER` from the new output, replacing the values from Step 1b. Re-apply the `UNMERGED_BLOCKERS` refusal check from Step 1b against the fresh values. Re-filter out null-branch entries.
 
 ### 1c: Select Target Ticket
 

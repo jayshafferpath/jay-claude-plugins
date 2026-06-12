@@ -8,8 +8,6 @@ const STATE_COLORS = {
   "PR approved": chalk.cyan,
   "stack ready": chalk.yellow,
   "executing...": chalk.blue,
-  "plan approved": chalk.cyan,
-  "plan ready": chalk.yellow,
   "planning...": chalk.blue,
   ready: chalk.gray,
   unknown: chalk.dim,
@@ -64,9 +62,6 @@ export function renderSummary(stacks) {
   const allTickets = stacks.flatMap((s) => s.tickets);
   const total = allTickets.length;
   const stackCount = stacks.length;
-  const planPending = allTickets
-    .filter((t) => t.labels.includes("ClaudePlanNeedsApproval"))
-    .map((t) => t.key);
   const prPending = allTickets
     .filter((t) => t.labels.includes("ClaudeStackReady"))
     .map((t) => t.key);
@@ -80,18 +75,13 @@ export function renderSummary(stacks) {
     `${total} tickets across ${stackCount} stacks`,
   ];
 
-  if (planPending.length) {
-    lines.push(
-      chalk.yellow(`Plan approvals pending: ${planPending.join(", ")}`),
-    );
-  }
   if (prPending.length) {
     lines.push(chalk.yellow(`PR approvals pending: ${prPending.join(", ")}`));
   }
   if (failed.length) {
     lines.push(chalk.red(`Failed: ${failed.join(", ")}`));
   }
-  if (!planPending.length && !prPending.length && !failed.length) {
+  if (!prPending.length && !failed.length) {
     lines.push(chalk.green("No actions pending."));
   }
 
@@ -138,20 +128,20 @@ export function renderVerbose(ticket) {
 
   if (checklist) {
     lines.push("Checklist:");
-    const gateSteps = [2, 6, 7];
+    const gateSteps = [5, 6, 8];
     let firstUnchecked = null;
     for (const step of checklist.steps) {
       if (!step.done && firstUnchecked === null) firstUnchecked = step.num;
       const check = step.done ? chalk.green("[x]") : chalk.dim("[ ]");
       let extra = "";
 
-      if (step.num === 3 && execPlan) {
+      if (step.num === 2 && execPlan) {
         extra = chalk.dim(` (${execPlan.completed}/${execPlan.total} tasks)`);
       }
-      if (step.num === 4 && reviewPlan) {
+      if (step.num === 3 && reviewPlan) {
         extra = chalk.dim(` (${reviewPlan.total} issues found)`);
       }
-      if (step.num === 5 && reviewPlan) {
+      if (step.num === 4 && reviewPlan) {
         extra = chalk.dim(
           ` (${reviewPlan.resolved} resolved, ${reviewPlan.open} open)`,
         );

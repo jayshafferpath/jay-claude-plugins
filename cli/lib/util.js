@@ -17,8 +17,6 @@ export function labelState(labels) {
     ["ClaudePRApproved", "PR approved"],
     ["ClaudeStackReady", "stack ready"],
     ["ClaudeExecuting", "executing..."],
-    ["ClaudePlanApproved", "plan approved"],
-    ["ClaudePlanNeedsApproval", "plan ready"],
     ["ClaudePlanning", "planning..."],
     ["ClaudeReady", "ready"],
   ];
@@ -30,7 +28,6 @@ export function labelState(labels) {
 }
 
 export function actionHint(stateLabel) {
-  if (stateLabel === "ClaudePlanNeedsApproval") return "approve plan?";
   if (stateLabel === "ClaudeStackReady") return "ready for PR?";
   if (stateLabel === "ClaudeFailed") return "investigate";
   return null;

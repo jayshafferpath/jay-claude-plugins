@@ -40,8 +40,6 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 - **ClaudeDriftChecked**: drift check (S3.5) ran and Implementation Notes are current. Cleared automatically when upstream `BASE_BRANCH` advances; otherwise idempotent within a session.
 - **ClaudeReady**: ticket is ready for planning (user-applied or added by promote step)
 - **ClaudePlanning**: /jira-start running
-- **ClaudePlanNeedsApproval**: plan ready, user: review plan and apply ClaudePlanApproved
-- **ClaudePlanApproved**: user approved plan, eligible for execution (user-applied)
 - **ClaudeExecuting**: /plan-execute running
 - **ClaudeStackReady**: code review complete, stack unblocked. For feature branches: awaiting merge. For standard: awaiting user consent to open PR.
 - **ClaudePRApproved**: user approved PR creation, eligible for PR push (user-applied, standard workflow only)
@@ -50,7 +48,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 - **ClaudeStackComplete**: all tickets in stack finished (added to stack container). If feature branch set, triggers Mode C (feature branch PR to main).
 - **ClaudeMainPR**: used by `/promote-to-main` — not part of the ticket-work lifecycle
 
-Feature branches are derived automatically: every Story/Epic container is a feature branch named after its Jira key (e.g. `EPIC-123`). The tooling creates the branch on first use, basing it on `main` (or on a blocker container's branch — see `resolve-stack` output `container.baseBranch`). Tickets in the stack base off this branch and merge locally into it after review passes.
+Feature branches are derived automatically: every Story/Epic container is a feature branch named after its Jira key (e.g. `EPIC-123`), or after the value of a `branch:<name>` label on the container if set. The tooling creates the branch on first use, basing it on `main` (or on a blocker container's branch — see `resolve-stack` output `container.baseBranch`, which resolves to the blocker's actual branch name from its `branch:` label or key). Tickets in the stack base off this branch and merge locally into it after review passes.
 
 Note: never remove the `ClaudeWork` label — it is a durable tag indicating Claude owns the ticket.
 
@@ -78,8 +76,6 @@ After this sync, subtasks carry their own labels and assignment. Progress labels
 ```
 ClaudeReady                 -> eligible for planning
 ClaudePlanning              -> /jira-start running
-ClaudePlanNeedsApproval     -> plan ready, user: review plan and apply ClaudePlanApproved
-ClaudePlanApproved          -> user approved, eligible for execution
 ClaudeExecuting             -> /plan-execute running
 ClaudeStackReady            -> code review done, stack unblocked, awaiting PR consent
 ClaudePRApproved            -> user approved PR creation, eligible for PR push
@@ -118,7 +114,7 @@ If the issue is a **stack container** (Story/Task with subtasks, or Epic) AND ha
 
 ### Standard ticket resolution
 
-If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, or `ClaudeFailed`). If not a parent, use the ticket directly.
+If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, or `ClaudeFailed`). If not a parent, use the ticket directly.
 
 ### Inherit from Parent (subtasks only)
 
@@ -147,15 +143,32 @@ Proceed to **Queue Pipeline** below.
 
 # Mode C: Feature Branch PR (completed stack)
 
-Triggered when a stack container key is passed that has `ClaudeStackComplete`. This opens a PR from the feature branch (named after the container key) to main, runs code review, and resolves Copilot comments.
+Triggered when a stack container key is passed that has `ClaudeStackComplete`. This opens a PR from the feature branch (named after the container key) to its parent's feature branch (when the container is a Story nested under an Epic-with-feature-branch) or to `main` (top-level Epics, standalone Stories). Runs code review and resolves Copilot comments.
 
 ## C1: Initialize
 
 1. `CONTAINER_KEY` = the provided issue key
-2. `FEATURE_BRANCH` = `{CONTAINER_KEY}` (the feature branch is always named after the container)
-3. Detect `REPO_ROOT`:
-   - Look for `repo:` label on the container issue
-   - `REPO_ROOT` = `{DEV_ROOT}/{repo_name}` (where `DEV_ROOT` comes from env)
+2. Run:
+   ```bash
+   resolve-stack {CONTAINER_KEY} --fetch
+   ```
+   Parse the JSON output. Decide which "container" perspective applies:
+
+   - **Resolver returned `container.key === CONTAINER_KEY`** (top-level Epic/Story whose own stack we resolved): use the `container` block directly.
+     - `FEATURE_BRANCH` = `container.featureBranch`
+     - `REPO_ROOT` = `container.repoRoot`
+     - `PARENT_FEATURE_BRANCH` = `container.parentFeatureBranch`
+     - `PARENT_CONTAINER_KEY` = `container.parentContainerKey`
+
+   - **Resolver returned a different `container.key`** (the input key is itself a Story member of a larger Epic stack — common when a Story-with-subtasks lives under an Epic): use the input ticket's entry within `stack[]`.
+     - Find `entry = stack.find(s => s.key === CONTAINER_KEY)`.
+     - `FEATURE_BRANCH` = `entry.branch` (will equal `CONTAINER_KEY` for a Story-container)
+     - `REPO_ROOT` = `container.repoRoot`
+     - `PARENT_FEATURE_BRANCH` = `container.featureBranch` (the enclosing Epic's branch — this is what the Story PRs into)
+     - `PARENT_CONTAINER_KEY` = `container.key`
+3. Compute the PR target:
+   - `PR_BASE` = `PARENT_FEATURE_BRANCH` if non-null, else `main`
+   - When `PR_BASE` is the parent's feature branch, this Story's PR will target the Epic's branch and merge into it. The Epic's own Mode C run will eventually PR the accumulated work to `main`.
 4. Fetch latest:
    ```bash
    cd {REPO_ROOT} && git fetch origin
@@ -164,6 +177,11 @@ Triggered when a stack container key is passed that has `ClaudeStackComplete`. T
    ```bash
    cd {REPO_ROOT} && git checkout {FEATURE_BRANCH} && git pull origin {FEATURE_BRANCH}
    ```
+6. If `PR_BASE` is not `main`, ensure the parent feature branch exists locally and is up to date:
+   ```bash
+   cd {REPO_ROOT} && git fetch origin {PR_BASE}:{PR_BASE} 2>/dev/null || git fetch origin {PR_BASE}
+   ```
+   If that fails (parent branch not on origin), display: "Parent container {PARENT_CONTAINER_KEY} has no branch on origin. Run /ticket-work against {PARENT_CONTAINER_KEY}'s first ticket to bootstrap it." and **stop**.
 
 ## C2: Load or Create Feature Branch Checklist
 
@@ -186,7 +204,7 @@ mkdir -p {REPO_ROOT}/.claude/plans
 ticket: {CONTAINER_KEY}
 branch: {FEATURE_BRANCH}
 summary: {CONTAINER_SUMMARY}
-pr_target: main
+pr_target: {PR_BASE}
 work_dir: {REPO_ROOT}
 created: {ISO_TIMESTAMP}
 ---
@@ -226,12 +244,12 @@ Work through each unchecked step in order. After completing each step, immediate
 1. Make sure we are in the repo root: `cd {REPO_ROOT}`
 2. Run:
    ```bash
-   ensure-pr {FEATURE_BRANCH} --base main --body-file ./pr.md --draft
+   ensure-pr {FEATURE_BRANCH} --base {PR_BASE} --body-file ./pr.md --draft
    ```
 3. Parse the JSON output. Store `pr.url` as `PR_URL`.
 4. Append to the activity log on `{CONTAINER_KEY}`:
    ```bash
-   append-activity {CONTAINER_KEY} --heading "Draft PR opened" --body "Feature branch \`{FEATURE_BRANCH}\` → main: {PR_URL}"
+   append-activity {CONTAINER_KEY} --heading "Draft PR opened" --body "Feature branch \`{FEATURE_BRANCH}\` → \`{PR_BASE}\`: {PR_URL}"
    ```
 5. Mark step 2 as `[x]`
 
@@ -309,7 +327,7 @@ Display:
 Feature Branch PR - Complete
 
 Container: {CONTAINER_KEY} - {CONTAINER_SUMMARY}
-Branch: {FEATURE_BRANCH} → main
+Branch: {FEATURE_BRANCH} → {PR_BASE}
 PR: {PR_URL}
 
 All review steps completed. PR is ready for human review.
@@ -341,7 +359,7 @@ Search three JQL queries and combine:
 ### Q2a: Tickets ready for planning
 
 ```
-labels = "ClaudeReady" AND labels NOT IN ("ClaudePlanNeedsApproval", "ClaudePlanApproved", "ClaudeExecuting", "ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()
+labels = "ClaudeReady" AND labels NOT IN ("ClaudeExecuting", "ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()
 ```
 
 ### Q2b: Subtasks via parent
@@ -352,12 +370,12 @@ Find parent Stories/Tasks labeled `ClaudeReady`:
 labels = "ClaudeReady" AND issueType IN (Story, Task) AND assignee = currentUser()
 ```
 
-For each parent, fetch subtasks: `parent = {PARENT_KEY}`. Include subtasks that do NOT already have any of: `ClaudePlanning`, `ClaudePlanNeedsApproval`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`.
+For each parent, fetch subtasks: `parent = {PARENT_KEY}`. Include subtasks that do NOT already have any of: `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`.
 
 ### Q2c: Tickets ready for execution or PR work
 
 ```
-labels IN ("ClaudePlanApproved", "ClaudeExecuting", "ClaudePRApproved") AND labels NOT IN ("ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()
+labels IN ("ClaudeExecuting", "ClaudePRApproved") AND labels NOT IN ("ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()
 ```
 
 ### Q2d: Deduplicate
@@ -473,7 +491,7 @@ For each eligible ticket, **in order**:
 3. Use the Skill tool to run skill `ticket-work` with args `{KEY} --serial`
 4. After the ticket reaches a gate (approval needed) or completes, stash or commit any work and continue to the next ticket.
 
-If a ticket stops at a gate (plan approval, PR approval), continue to the next ticket. The stopped ticket will resume on next run.
+If a ticket stops at a gate (PR approval), continue to the next ticket. The stopped ticket will resume on next run.
 
 ## Q7: Promote Downstream Tickets
 
@@ -496,7 +514,7 @@ For each done ticket:
 1. Use `mcp__atlassian__getJiraIssue` to get outward "blocks" links
 2. Determine the **stack container** (subtask → parent Story key, otherwise → Epic key)
 3. For each blocked ticket sharing the same stack container, run `resolve-stack {BLOCKED_KEY} --repo-root {REPO_ROOT}` and check the blocked ticket's entry:
-   - If `eligible` is `true` AND the ticket does NOT already have any progress labels (`ClaudePlanning`, `ClaudePlanNeedsApproval`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`):
+   - If `eligible` is `true` AND the ticket does NOT already have any progress labels (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`):
      - Verify blocked ticket is assigned to current user
      - If not assigned: skip and display "Skipping promotion of {BLOCKED_KEY}: not assigned to me"
      - Add `ClaudeReady` label: `update`: `{"labels": [{"add": "ClaudeReady"}]}`
@@ -510,7 +528,7 @@ For each done ticket:
 2. Search for all items in that stack container:
    - Story: `parent = {STORY_KEY}`
    - Epic: `"Epic Link" = {EPIC_KEY} OR parent = {EPIC_KEY}`
-3. Check if EVERY item has status category "done"
+3. Check if EVERY item is **finished** per the resolver's definition — i.e., for each item: status category is `done` OR labels include any of `ClaudeStackReady`, `ClaudeNeedsReview`, `ClaudeStackComplete`. (Same rule as `isFinished()` in `cli/lib/stack-resolver.js`. Subtasks that have completed code review and merged into the feature branch carry `ClaudeNeedsReview` but won't reach status `Done` until `/cleanup` runs after the parent's PR merges to main — so don't gate the rollup on Jira status alone.)
 4. If yes, and the stack container does NOT already have `ClaudeStackComplete`:
    - Add `ClaudeStackComplete`: `update`: `{"labels": [{"add": "ClaudeStackComplete"}]}`
    - Append to the activity log on the container:
@@ -540,9 +558,6 @@ Stacks Completed:
 
 Skipped (dependency not ready):
   - {KEY}: waiting on {BLOCKER_KEY}
-
-Awaiting Plan Approval:
-  - {KEY}: plan ready, add ClaudePlanApproved to proceed
 
 Awaiting PR Approval:
   - {KEY}: stack ready, add ClaudePRApproved to open PR
@@ -629,26 +644,28 @@ If the ticket's `eligible` is `false` and `unblockedBlockers` is non-empty:
 
 Before any per-ticket branch/worktree creation, make sure the feature branch (and any of its container blocker branches) exist locally and on origin. Skip this step entirely for standalone tickets (`FEATURE_BRANCH` null).
 
-1. Read `CONTAINER_BASE` = `container.baseBranch` from the `resolve-stack` output (S1c). This is `main` or another container key.
+1. Read `CONTAINER_BASE` = `container.baseBranch` from the `resolve-stack` output (S1c). This is `main` or, when an unmerged blocker container exists, the blocker's actual branch name (resolved from its `branch:` label or its key).
 2. Read `UNMERGED_BLOCKERS` = `container.unmergedBlockers`. If it has more than one entry, **stop** with: "Container {CONTAINER_KEY} has multiple unmerged blocker containers: {LIST}. Resolve by merging one or chaining them via blocker links."
-3. If `CONTAINER_BASE` is another container key (not `main`), recurse: ensure that base container's branch exists locally first. (Single level — `resolve-stack` already collapses the chain to the immediate blocker.)
-   ```bash
-   cd {REPO_ROOT} && git ls-remote --heads origin {CONTAINER_BASE}
-   ```
-   If the base branch doesn't exist on origin, **stop** with: "Blocker container {CONTAINER_BASE} has no branch yet. Run /ticket-work against {CONTAINER_BASE}'s first ticket to bootstrap it."
-4. Ensure the feature branch exists. Check origin first:
+3. Check whether the feature branch already exists on origin:
    ```bash
    cd {REPO_ROOT} && git ls-remote --heads origin {FEATURE_BRANCH}
    ```
-   - **If exists on origin**: fetch it.
+   - **If exists on origin**: fetch it and proceed to step 5. The blocker's branch presence is only a precondition for *creating* the feature branch — once created, the chain is established and we don't re-validate it here.
      ```bash
      cd {REPO_ROOT} && git fetch origin {FEATURE_BRANCH}:{FEATURE_BRANCH} 2>/dev/null || git fetch origin {FEATURE_BRANCH}
      ```
-   - **If does not exist on origin**: create from `origin/{CONTAINER_BASE}` and push.
-     ```bash
-     cd {REPO_ROOT} && git branch {FEATURE_BRANCH} origin/{CONTAINER_BASE}
-     cd {REPO_ROOT} && git push -u origin {FEATURE_BRANCH}
-     ```
+   - **If does not exist on origin**: continue to step 4 to create it.
+4. (Only when creating the feature branch.) If `CONTAINER_BASE` is not `main`, ensure the blocker's branch exists on origin:
+   ```bash
+   cd {REPO_ROOT} && git ls-remote --heads origin {CONTAINER_BASE}
+   ```
+   If the base branch doesn't exist on origin, **stop** with: "Blocker container has no branch yet. Run /ticket-work against the blocker's first ticket to bootstrap it."
+
+   Then create the feature branch from `origin/{CONTAINER_BASE}` and push:
+   ```bash
+   cd {REPO_ROOT} && git branch {FEATURE_BRANCH} origin/{CONTAINER_BASE}
+   cd {REPO_ROOT} && git push -u origin {FEATURE_BRANCH}
+   ```
 5. Proceed to S2a or S2b.
 
 ### S2a: Serial Mode (`SERIAL_MODE = true`)
@@ -684,7 +701,7 @@ cd {REPO_ROOT}
 ```
 
 Set `WORK_DIR` = `{REPO_ROOT}`
-Set `PLANS_DIR` = `{REPO_ROOT}/.claude/plans` (used only for PR review plans in S4.6/S4.7)
+Set `PLANS_DIR` = `{REPO_ROOT}/.claude/plans` (used only for PR review plans in S4.5/S4.6)
 
 ### S2b: Worktree Mode (not `SERIAL_MODE`)
 
@@ -718,7 +735,7 @@ After this step, all subsequent work happens inside `WORK_DIR`:
 cd {WORK_DIR}
 ```
 
-Set `PLANS_DIR` = `{WORK_DIR}/.claude/plans` (used only for PR review plans in S4.6/S4.7)
+Set `PLANS_DIR` = `{WORK_DIR}/.claude/plans` (used only for PR review plans in S4.5/S4.6)
 
 ## S3: Load or Resume Checklist
 
@@ -737,7 +754,7 @@ Store the `steps` array in memory for step tracking throughout S4.
 
 ## Stage Squash Protocol
 
-Each lifecycle stage (S4.1 through S4.7) produces exactly one squash commit on the ticket branch when it completes.
+Each lifecycle stage (S4.1 through S4.6) produces exactly one squash commit on the ticket branch when it completes.
 
 **Before beginning each stage:**
 1. Record current HEAD:
@@ -762,10 +779,10 @@ Each lifecycle stage (S4.1 through S4.7) produces exactly one squash commit on t
 
 **Stage commit messages:**
 - S4.1: `[{TICKET_KEY}] plan: generated`
-- S4.3: `[{TICKET_KEY}] execute: TDD implementation`
-- S4.4: `[{TICKET_KEY}] verify: acceptance criteria`
-- S4.5: `[{TICKET_KEY}] refactor: code cleanup`
-- S4.6+S4.7: `[{TICKET_KEY}] review: PR fixes applied`
+- S4.2: `[{TICKET_KEY}] execute: TDD implementation`
+- S4.3: `[{TICKET_KEY}] verify: acceptance criteria`
+- S4.4: `[{TICKET_KEY}] refactor: code cleanup`
+- S4.5+S4.6: `[{TICKET_KEY}] review: PR fixes applied`
 
 **On resume (deriving STAGE_START_SHA):**
 
@@ -786,7 +803,7 @@ Before executing the checklist, verify that the ticket's `Implementation Notes` 
 
 **Skip entirely if:**
 - The ticket has no `h2. Implementation Notes` block (e.g., older tickets created before this protocol). Continue to S4.
-- The checklist already shows step 3 (S4.3 execute) as `[x]`. Drift detection is moot once implementation has started.
+- The checklist already shows step 2 (S4.2 execute) as `[x]`. Drift detection is moot once implementation has started.
 - The Jira label `ClaudeDriftChecked` is present AND was added after the most recent push to `BASE_BRANCH`. (This makes drift checks idempotent within a session but re-runs if upstream has moved.)
 
 ### S3.5a: Parse Existing Implementation Notes
@@ -844,7 +861,7 @@ If the file moved (renamed), `git log --follow -- {path}` will show the rename �
 
   Implementation Notes block updated above. Re-review before approving the plan.
   ```
-- If the ticket is past `ClaudePlanApproved` (plan was approved against stale notes), warn in the comment: `Plan was approved against the prior baseline. Consider re-reviewing the plan against the new Implementation Notes; if the plan needs to change, run /rework.`
+- If the ticket already has `ClaudeExecuting` or later (plan was generated against stale notes), warn in the comment: `Plan was generated against the prior baseline. Consider re-reviewing the plan against the new Implementation Notes; if the plan needs to change, run /rework.`
 - Add `ClaudeDriftChecked` label.
 
 If the agent cannot confidently produce a replacement citation for a drifted entry (e.g., the pattern was removed and there's no obvious successor), include it as `*Citations dropped (no clear replacement):*` and surface a question to the user in the activity log so they can decide whether to proceed.
@@ -888,44 +905,19 @@ Additionally, apply the Stage Squash Protocol at each stage boundary (record HEA
    sync-plan {TICKET_KEY} --file {PLANS_DIR}/jira-{TICKET_KEY}.md
    ```
    (jira-start writes a local file — this syncs it to Jira. The local file is now disposable.)
-5. Update Jira labels:
-   - `update`: `{"labels": [{"remove": "ClaudePlanning"}, {"add": "ClaudePlanNeedsApproval"}]}`
-6. Append a plan summary to the activity log:
+5. Append a plan summary to the activity log:
    ```bash
    append-activity {TICKET_KEY} --heading "Plan generated" --body-file <tmp-summary.md>
    ```
-   The body should contain: approach overview (1-2 sentences), key implementation steps as bullets, and if stacked: "Stacked on {BASE_BRANCH}". Footer line: "Awaiting approval. Add label `ClaudePlanApproved` to proceed."
-7. Mark step 1 as done in the steps array and sync checklist to Jira.
-8. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] plan: generated`.
+   The body should contain: approach overview (1-2 sentences), key implementation steps as bullets, and if stacked: "Stacked on {BASE_BRANCH}".
+6. Mark step 1 as done in the steps array and sync checklist to Jira.
+7. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] plan: generated`.
 
 ---
 
-### Step S4.2: Plan approved
+### Step S4.2: Plan executed with TDD (Red-Green-Refactor)
 
 **Skip if**: step 2 is already checked `[x]`.
-
-Check the ticket's current labels:
-- If `ClaudePlanApproved` is present: mark step 2 as done, sync checklist to Jira, and continue.
-- If `ClaudePlanNeedsApproval` is present (or no approval label):
-  - Read the plan from Jira (`sync-plan {TICKET_KEY} --read`) and display a summary so the user can review it
-  - Tell the user:
-    ```
-    Plan is ready for review.
-
-    To approve: add the `ClaudePlanApproved` label in Jira, then re-run `/ticket-work {TICKET_KEY}`.
-
-    Or type "approve" to approve now and continue.
-    ```
-  - If the user types "approve" or similar affirmative:
-    - Use `mcp__atlassian__editJiraIssue` to add `ClaudePlanApproved` and remove `ClaudePlanNeedsApproval`
-    - Mark step 2 as done and sync checklist to Jira.
-  - Otherwise: **stop here**. The command will resume from this step on next run.
-
----
-
-### Step S4.3: Plan executed with TDD (Red-Green-Refactor)
-
-**Skip if**: step 3 is already checked `[x]`.
 
 Execution follows test-driven development: for each plan task, write a failing test derived from the Gherkin acceptance criteria first (Red), then implement to make it pass (Green), then refactor. Tests are written in the project's native test framework.
 
@@ -934,7 +926,7 @@ Execution follows test-driven development: for each plan task, write a failing t
 1. Update Jira labels:
    - Remove all other `Claude*` workflow labels (except `ClaudeWork`)
    - Add `ClaudeExecuting`
-   - `update`: `{"labels": [{"remove": "ClaudePlanApproved"}, {"remove": "ClaudePlanNeedsApproval"}, {"add": "ClaudeExecuting"}]}`
+   - `update`: `{"labels": [{"remove": "ClaudePlanning"}, {"add": "ClaudeExecuting"}]}`
 2. Append to the activity log:
    ```bash
    append-activity {TICKET_KEY} --heading "TDD execution started" --body "Beginning Red-Green-Refactor cycle for plan tasks."
@@ -1034,26 +1026,26 @@ Execution follows test-driven development: for each plan task, write a failing t
    append-activity {TICKET_KEY} --heading "TDD execution finished" --body-file <tmp-summary.md>
    ```
 10. If all tasks complete:
-    - Mark step 3 as done and sync checklist to Jira.
+    - Mark step 2 as done and sync checklist to Jira.
     - Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] execute: TDD implementation`.
-    - (Keep `ClaudeExecuting` label — it will be replaced by `ClaudeStackReady` in step 8)
+    - (Keep `ClaudeExecuting` label — it will be replaced by `ClaudeStackReady` in step 7)
 11. If tasks are incomplete:
     - Update Jira labels: `{"labels": [{"remove": "ClaudeExecuting"}, {"add": "ClaudeFailed"}]}`
     - **Stop here** (user must investigate)
 
 ---
 
-### Step S4.4: Acceptance criteria verified (TDD final check)
+### Step S4.3: Acceptance criteria verified (TDD final check)
 
-**Skip if**: step 4 is already checked `[x]`.
+**Skip if**: step 3 is already checked `[x]`.
 
-TDD execution (S4.3) should have produced tests for every Gherkin scenario. This step confirms full coverage — no scenarios were missed and all tests pass.
+TDD execution (S4.2) should have produced tests for every Gherkin scenario. This step confirms full coverage — no scenarios were missed and all tests pass.
 
 0. Record `STAGE_START_SHA` (Stage Squash Protocol).
 
 1. Fetch the ticket description using `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`
 2. Extract all Gherkin scenarios from the description (look for `Given`/`When`/`Then` blocks, or fenced code blocks tagged `gherkin` or `feature`)
-   - If the ticket has no Gherkin scenarios: mark step 4 as `[x]` and continue (nothing to verify)
+   - If the ticket has no Gherkin scenarios: mark step 3 as `[x]` and continue (nothing to verify)
 3. Run the full test suite and confirm it passes:
    ```bash
    {TEST_COMMAND}
@@ -1074,7 +1066,7 @@ TDD execution (S4.3) should have produced tests for every Gherkin scenario. This
      {N}/{M} scenarios fully covered by tests.
      ```
 5. If ALL scenarios have corresponding tests and all tests pass:
-   - Mark step 4 as done and sync checklist to Jira.
+   - Mark step 3 as done and sync checklist to Jira.
    - Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] verify: acceptance criteria`.
    - Append to the activity log:
      ```bash
@@ -1093,9 +1085,9 @@ TDD execution (S4.3) should have produced tests for every Gherkin scenario. This
 
 ---
 
-### Step S4.5: Refactoring pass with @refactor agent
+### Step S4.4: Refactoring pass with @refactor agent
 
-**Skip if**: step 5 is already checked `[x]`.
+**Skip if**: step 4 is already checked `[x]`.
 
 After TDD execution and acceptance verification, run a targeted refactoring pass on the code changed by this ticket. The refactor agent identifies CRAP score hotspots, DRY violations, and structural smells — then implements approved fixes.
 
@@ -1116,39 +1108,39 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
      ```
    - If tests fail: revert the refactoring commits (`git revert --no-commit HEAD~N..HEAD` where N = number of refactor commits), commit, and note in Jira that refactoring was skipped due to test failures.
    - If tests pass: proceed.
-5. Mark step 5 as done and sync checklist to Jira.
+5. Mark step 4 as done and sync checklist to Jira.
 6. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] refactor: code cleanup`.
 
 ---
 
-### Step S4.6: PR review plan generated with /pr-review
+### Step S4.5: PR review plan generated with /pr-review
 
-**Skip if**: step 6 is already checked `[x]`.
+**Skip if**: step 5 is already checked `[x]`.
 
-0. Record `STAGE_START_SHA` (Stage Squash Protocol — shared with S4.7, squash happens after S4.7).
+0. Record `STAGE_START_SHA` (Stage Squash Protocol — shared with S4.6, squash happens after S4.6).
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Ensure plans directory exists: `mkdir -p {PLANS_DIR}`
 3. Use the Skill tool to run skill `pr-review`
-4. Mark step 6 as done and sync checklist to Jira.
+4. Mark step 5 as done and sync checklist to Jira.
 
 ---
 
-### Step S4.7: PR review plan executed with /pr-execute-plan
+### Step S4.6: PR review plan executed with /pr-execute-plan
 
-**Skip if**: step 7 is already checked `[x]`.
+**Skip if**: step 6 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `pr-execute-plan`
 3. After execution: stage and commit any changes if present
-4. Mark step 7 as done and sync checklist to Jira.
-5. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] review: PR fixes applied` (covers S4.6+S4.7).
+4. Mark step 6 as done and sync checklist to Jira.
+5. Apply Stage Squash Protocol: squash into `[{TICKET_KEY}] review: PR fixes applied` (covers S4.5+S4.6).
 
 ---
 
-### Step S4.8: Stack ready
+### Step S4.7: Stack ready
 
-**Skip if**: step 8 is already checked `[x]`.
+**Skip if**: step 7 is already checked `[x]`.
 
 This step marks the ticket as stack-ready, which unblocks downstream tickets without requiring a PR to be opened.
 
@@ -1158,7 +1150,7 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    ```bash
    append-activity {TICKET_KEY} --heading "Stack ready" --body "Code review complete. Stack unblocked — downstream tickets may begin."
    ```
-3. Mark step 8 as done and sync checklist to Jira.
+3. Mark step 7 as done and sync checklist to Jira.
 
 **If `FEATURE_BRANCH` is set**: verify all review issues are resolved, then merge into the local feature branch.
 
@@ -1185,7 +1177,7 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
    6. Return to the ticket's working directory:
       - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
       - If worktree mode: `cd {WORK_DIR}`
-   7. Mark steps 9-13 as done and sync checklist to Jira (not applicable for feature branch workflow).
+   7. Mark steps 8-12 as done and sync checklist to Jira (not applicable for feature branch workflow).
    8. Append to the activity log:
       ```bash
       append-activity {TICKET_KEY} --heading "Merged to feature branch" --body "Merged into feature branch \`{FEATURE_BRANCH}\`."
@@ -1213,12 +1205,12 @@ This step marks the ticket as stack-ready, which unblocks downstream tickets wit
 
 ---
 
-### Step S4.9: PR approved
+### Step S4.8: PR approved
 
-**Skip if**: step 9 is already checked `[x]`.
+**Skip if**: step 8 is already checked `[x]`.
 
 Check the ticket's current labels:
-- If `ClaudePRApproved` is present: mark step 9 as done, sync checklist to Jira, and continue.
+- If `ClaudePRApproved` is present: mark step 8 as done, sync checklist to Jira, and continue.
 - If `ClaudeStackReady` is present (or no PR approval label):
   - Tell the user:
     ```
@@ -1230,24 +1222,24 @@ Check the ticket's current labels:
     ```
   - If the user types "approve pr" or similar affirmative:
     - Use `mcp__atlassian__editJiraIssue` to add `ClaudePRApproved` and remove `ClaudeStackReady`
-    - Mark step 9 as done and sync checklist to Jira.
+    - Mark step 8 as done and sync checklist to Jira.
   - Otherwise: **stop here**. The command will resume from this step on next run.
 
 ---
 
-### Step S4.10: PR description and title generated with /jay-pr-description
+### Step S4.9: PR description and title generated with /jay-pr-description
 
-**Skip if**: step 10 is already checked `[x]`.
+**Skip if**: step 9 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `jay-pr-description`
-3. Mark step 10 as done and sync checklist to Jira.
+3. Mark step 9 as done and sync checklist to Jira.
 
 ---
 
-### Step S4.11: PR pushed as draft
+### Step S4.10: PR pushed as draft
 
-**Skip if**: step 11 is already checked `[x]`.
+**Skip if**: step 10 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Run:
@@ -1257,34 +1249,34 @@ Check the ticket's current labels:
 3. Parse the JSON output. Store `pr.url` as `PR_URL`.
 4. Update Jira labels:
    - `update`: `{"labels": [{"remove": "ClaudePRApproved"}, {"add": "ClaudeNeedsReview"}]}`
-5. Mark step 11 as done and sync checklist to Jira.
+5. Mark step 10 as done and sync checklist to Jira.
 
 ---
 
-### Step S4.12: Copilot review comments resolved
+### Step S4.11: Copilot review comments resolved
 
-**Skip if**: step 12 is already checked `[x]`.
+**Skip if**: step 11 is already checked `[x]`.
 
 After pushing the PR, Copilot may leave review comments. This step runs a single automated pass to address and resolve them.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`
 3. If pr-watch made changes and pushed, update `HEAD_SHA`
-4. Mark step 12 as done and sync checklist to Jira.
+4. Mark step 11 as done and sync checklist to Jira.
 
 ---
 
-### Step S4.13: Post PR review summary comment
+### Step S4.12: Post PR review summary comment
 
-**Skip if**: step 13 is already checked `[x]`.
+**Skip if**: step 12 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Run:
    ```bash
    post-review-summary {BRANCH_NAME} --plans-dir .claude/plans --ticket-key {TICKET_KEY}
    ```
-3. If the output shows `posted: true`, mark step 13 as done and sync checklist to Jira.
-4. If `posted: false` with reason `no_plan_file`, mark step 13 as `[x]` anyway (nothing to post).
+3. If the output shows `posted: true`, mark step 12 as done and sync checklist to Jira.
+4. If `posted: false` with reason `no_plan_file`, mark step 12 as `[x]` anyway (nothing to post).
 
 ---
 
@@ -1306,7 +1298,7 @@ All steps completed. PR is ready for human review.
 
 ## S6: Continue to Next Ticket in Stack
 
-After reaching stack-ready (step 8) or completing all steps, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
+After reaching stack-ready (step 7) or completing all steps, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
 
 ### S6a: Find Eligible Downstream Tickets
 
@@ -1316,7 +1308,7 @@ From the `stack` array, find tickets that come after the current ticket and have
 
 Filter out:
 - Tickets not assigned to the current user
-- Tickets that already have any progress label (`ClaudePlanning`, `ClaudePlanApproved`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`)
+- Tickets that already have any progress label (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`)
 
 ### S6c: Promote and Run Next Ticket
 
@@ -1345,6 +1337,6 @@ If **no** eligible downstream tickets are found:
 - Branch already exists: check it out in the worktree.
 - PR already exists: push updates to it rather than creating a new one.
 - Plan already exists in Jira: skip /jira-start (don't overwrite existing plan).
-- On failure at step S4.3 (execution): Jira label is set to `ClaudeFailed`. User must investigate, fix, remove `ClaudeFailed` label, then re-run.
+- On failure at step S4.2 (execution): Jira label is set to `ClaudeFailed`. User must investigate, fix, remove `ClaudeFailed` label, then re-run.
 - In queue mode: never stop due to a single ticket failure. Each agent handles its own error state.
 - If interrupted mid-stage (squash not yet applied): on resume, Claude detects uncommitted stage work (commits since the last stage marker) and continues the stage, then squashes when done. The STAGE_START_SHA is derived from git log per the Stage Squash Protocol.
