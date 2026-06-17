@@ -81,11 +81,25 @@ Run:
 drift-check {TICKET_KEY} --repo-root {WORK_DIR}
 ```
 
-Parse the JSON output (see `commands/ticket-work.md` S3.5a/b for the field semantics).
+Parse the JSON output (see `commands/ticket-work.md` S3.5a/b for the field semantics). The CLI now runs the **full** check battery by default — line-range citations *plus* symbol presence, path existence for files-likely-to-change and tests-likely-to-extend, TDD Reference resolution, and per-repo sidecar presence. The same JSON also passes through `constraintsRaw` for the manual constraints pass below.
 
 - **`status === "no-notes"`**: stop and display "{TICKET_KEY} has no Implementation Notes block — nothing to refresh." (Already handled in Step 2.)
-- **`status === "current"`** (no drift): append an activity-log entry `Drift check passed (manual) — research baseline still current.` and display a confirmation to the user. Do **not** add the `ClaudeDriftChecked` label — that label belongs to the ticket-work session lifecycle and applying it here would suppress the automatic check on the next `/ticket-work` run.
-- **`status === "drifted"`**: re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, and post the diff comment per `commands/ticket-work.md` S3.5c "Drift detected" branch.
+- **`status === "current"`** (no drift): proceed to **Step 3.5** (Constraints pass). If that pass also returns no drift, append an activity-log entry `Drift check passed (manual) — research baseline still current.` and display a confirmation to the user. Do **not** add the `ClaudeDriftChecked` label — that label belongs to the ticket-work session lifecycle and applying it here would suppress the automatic check on the next `/ticket-work` run.
+- **`status === "drifted"`**: re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, and post the diff comment per `commands/ticket-work.md` S3.5c "Drift detected" branch. The diff comment must call out **every** drifted check type — citations whose symbols moved/were removed, files-likely-to-change that no longer exist, TDD anchor mismatches, and missing sidecars — not just line-range diffs.
+
+### Step 3.5: Constraints pass (LLM verification)
+
+The CLI cannot tell whether a listed constraint (anti-pattern, in-flight migration, "avoid X" rule) is still applicable — the prose names a condition that needs to be re-evaluated against current code, not a structural fact. After the structural pass:
+
+1. If `constraintsRaw` is null or only contains "none surfaced", skip this step.
+2. Otherwise, for each constraint bullet:
+   - Identify the cited region or repo-area the constraint refers to (often implicit from prose like "avoid sync DB calls in `src/api/*`").
+   - Read the relevant code at HEAD via `Read` / `Grep`.
+   - Decide: **still applicable**, **already resolved** (the migration landed, the anti-pattern is gone), or **scope changed** (the constraint still holds but the surface area has shifted).
+3. If **any** constraint is `already resolved` or `scope changed`, treat the ticket as drifted even if the structural pass returned `current`:
+   - Compose an updated `*Constraints:*` subsection (drop resolved items; rewrite scope-changed items with the new boundary).
+   - Replace just the `*Constraints:*` subsection in Jira via `mcp__atlassian__editJiraIssue`.
+   - Post a Jira comment summarizing what changed and why (use the same `mcp__atlassian__addCommentToJiraIssue` shape as S3.5c).
 
 ---
 

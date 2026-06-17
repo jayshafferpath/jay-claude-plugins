@@ -7,6 +7,7 @@ import {
   IN_FLIGHT_LABELS,
   isInFlight,
   LABEL_DISPLAY_ORDER,
+  LABEL_TO_STATUS_TRANSITIONS,
   PROGRESS_LABELS,
   progressLabelsOn,
   SUBTASK_EXCLUSION_LABELS,
@@ -67,6 +68,19 @@ describe("labels.js label sets", () => {
       "ClaudeNeedsReview",
       "ClaudeFailed",
     ]);
+  });
+
+  it("LABEL_TO_STATUS_TRANSITIONS maps ClaudeNeedsReview to review-style transitions", () => {
+    expect(Object.isFrozen(LABEL_TO_STATUS_TRANSITIONS)).toBe(true);
+    expect(LABEL_TO_STATUS_TRANSITIONS.ClaudeNeedsReview).toEqual([
+      "In Review",
+      "Code Review",
+      "Review",
+    ]);
+    // Every key must be a known progress label.
+    for (const key of Object.keys(LABEL_TO_STATUS_TRANSITIONS)) {
+      expect(PROGRESS_LABELS).toContain(key);
+    }
   });
 
   it("LABEL_DISPLAY_ORDER lists most-advanced state first", () => {

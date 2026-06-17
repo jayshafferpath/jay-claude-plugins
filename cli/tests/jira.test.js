@@ -19,6 +19,9 @@ const {
   getPrFromDevStatus,
   buildSetStatePatch,
   setTicketState,
+  getTransitions,
+  transitionIssue,
+  pickTransition,
 } = await import("../lib/jira.js");
 
 function mockFetch(body, ok = true, status = 200) {
@@ -235,6 +238,236 @@ describe("jira module", () => {
       const ops = await setTicketState("X-1", { to: "ClaudeExecuting" });
       expect(ops).toBeNull();
       expect(global.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("transitions Jira status to In Review when moving to ClaudeNeedsReview", async () => {
+      global.fetch = vi
+        .fn()
+        // getIssue (current labels)
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              fields: { labels: ["ClaudeWork", "ClaudeStackReady"] },
+            }),
+        })
+        // editIssue (label patch)
+        .mockResolvedValueOnce({ ok: true, status: 204 })
+        // getTransitions
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [
+                { id: "11", name: "In Progress" },
+                { id: "21", name: "In Review" },
+                { id: "31", name: "Done" },
+              ],
+            }),
+        })
+        // transitionIssue
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      const ops = await setTicketState("X-1", { to: "ClaudeNeedsReview" });
+      expect(ops).toEqual([
+        { remove: "ClaudeStackReady" },
+        { add: "ClaudeNeedsReview" },
+      ]);
+      // Last fetch must be the POST to /transitions with id 21.
+      const lastCall =
+        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
+      );
+      expect(lastCall[1].method).toBe("POST");
+      expect(JSON.parse(lastCall[1].body)).toEqual({
+        transition: { id: "21" },
+      });
+    });
+
+    it("matches review-style transitions case-insensitively (e.g. 'Code Review')", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              fields: { labels: ["ClaudeWork"] },
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [
+                { id: "11", name: "Open" },
+                { id: "41", name: "code review" },
+              ],
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      await setTicketState("X-1", { to: "ClaudeNeedsReview" });
+      const lastCall =
+        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
+      expect(JSON.parse(lastCall[1].body)).toEqual({
+        transition: { id: "41" },
+      });
+    });
+
+    it("warns and continues when no review-style transition is available", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              fields: { labels: ["ClaudeWork"] },
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [
+                { id: "11", name: "Open" },
+                { id: "31", name: "Done" },
+              ],
+            }),
+        });
+
+      const ops = await setTicketState("X-1", { to: "ClaudeNeedsReview" });
+      expect(ops).toEqual([{ add: "ClaudeNeedsReview" }]);
+      expect(warn).toHaveBeenCalled();
+      // Only 3 fetches: getIssue, editIssue, getTransitions. No POST to /transitions.
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+      warn.mockRestore();
+    });
+
+    it("does not transition when the target label has no transition mapping", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () => Promise.resolve({ fields: { labels: ["ClaudeWork"] } }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      await setTicketState("X-1", { to: "ClaudeExecuting" });
+      // Only 2 fetches: getIssue + editIssue. No /transitions traffic.
+      expect(global.fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("still transitions status when only the status needs to change (label already present)", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              fields: { labels: ["ClaudeWork", "ClaudeNeedsReview"] },
+            }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [{ id: "21", name: "In Review" }],
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      const ops = await setTicketState("X-1", { to: "ClaudeNeedsReview" });
+      // Label patch was a no-op so ops is null, but the transition still ran.
+      expect(ops).toBeNull();
+      expect(global.fetch).toHaveBeenCalledTimes(3);
+      const lastCall =
+        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
+      );
+      expect(JSON.parse(lastCall[1].body)).toEqual({
+        transition: { id: "21" },
+      });
+    });
+  });
+
+  describe("getTransitions", () => {
+    it("returns transitions array", async () => {
+      mockFetch({ transitions: [{ id: "1", name: "Done" }] });
+      const result = await getTransitions("X-1");
+      expect(result).toEqual([{ id: "1", name: "Done" }]);
+      expect(global.fetch).toHaveBeenCalledWith(
+        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
+        expect.objectContaining({
+          headers: expect.objectContaining({ Accept: "application/json" }),
+        }),
+      );
+    });
+
+    it("returns empty array when transitions is missing", async () => {
+      mockFetch({});
+      expect(await getTransitions("X-1")).toEqual([]);
+    });
+
+    it("throws on failure", async () => {
+      mockFetch("err", false, 500);
+      await expect(getTransitions("X-1")).rejects.toThrow(
+        "Jira getTransitions failed (500)",
+      );
+    });
+  });
+
+  describe("transitionIssue", () => {
+    it("posts the transition id", async () => {
+      mockFetch(null, true, 204);
+      await transitionIssue("X-1", "21");
+      expect(global.fetch).toHaveBeenCalledWith(
+        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
+        expect.objectContaining({ method: "POST" }),
+      );
+      const body = JSON.parse(global.fetch.mock.calls[0][1].body);
+      expect(body).toEqual({ transition: { id: "21" } });
+    });
+
+    it("throws on failure", async () => {
+      mockFetch("err", false, 400);
+      await expect(transitionIssue("X-1", "21")).rejects.toThrow(
+        "Jira transitionIssue failed (400)",
+      );
+    });
+  });
+
+  describe("pickTransition", () => {
+    const transitions = [
+      { id: "1", name: "Open" },
+      { id: "2", name: "In Review" },
+      { id: "3", name: "Done" },
+    ];
+
+    it("returns the first matching candidate by name (case-insensitive)", () => {
+      expect(pickTransition(transitions, ["in review"])).toEqual({
+        id: "2",
+        name: "In Review",
+      });
+    });
+
+    it("respects candidate order (earlier names win over later)", () => {
+      expect(pickTransition(transitions, ["Code Review", "In Review"])).toEqual(
+        { id: "2", name: "In Review" },
+      );
+    });
+
+    it("returns null when nothing matches", () => {
+      expect(pickTransition(transitions, ["Backlog"])).toBeNull();
+    });
+
+    it("handles missing transitions input gracefully", () => {
+      expect(pickTransition(null, ["In Review"])).toBeNull();
+      expect(pickTransition(undefined, ["In Review"])).toBeNull();
     });
   });
 
