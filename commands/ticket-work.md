@@ -38,6 +38,17 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`, `TERMINAL_LABELS`). Progress flow is roughly: `ClaudeReady` → `ClaudeDriftChecked` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → `ClaudePRApproved` → `ClaudeNeedsReview` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every transition — it consults `PROGRESS_LABELS` to clear the previous state automatically, and `LABEL_TO_STATUS_TRANSITIONS` to move the Jira workflow status when applicable (currently: `ClaudeNeedsReview` → "In Review"). When no matching workflow transition exists the label change still applies and the CLI emits a warning.
 
+### Complexity Tiers
+
+Tickets carry an optional `complexity:trivial` or `complexity:standard` label (see `COMPLEXITY_LABELS` in `cli/lib/labels.js`; `getComplexity(labels)` resolves it, defaulting to `standard`). The tier drives which steps in S4 actually run:
+
+- **`standard`** (default — no label or `complexity:standard`): runs the full lifecycle — plan → execute → AC verify → refactor → pr-review → pr-execute → stack-ready → PR.
+- **`complexity:trivial`**: drops S4.1 (`/jira-start` plan), S4.4 (`@refactor` agent), S4.5 (`/pr-review` plan), S4.6 (`/pr-execute-plan`). The remaining lifecycle is execute (TDD) → AC verify → stack-ready → PR push → CI + judged Copilot loop. Suitable for ≤1-file mechanical changes with no behavior changes to verified paths.
+
+Step numbering stays stable across tiers. `seed-checklist` pre-marks the trivial-skipped steps as done with a ` (skipped: trivial)` label suffix at seed time, so the existing checklist-driven loop in S4 naturally walks past them. Each tier-skipped step in S4 also documents `**Skip if** complexity == trivial` for clarity.
+
+The label is set either by the human at intake or, if absent, by the new **S3.4 Classify Complexity** step below — `/ticket-work` reads the AC and Implementation Notes and writes the appropriate label back to Jira before drift check runs.
+
 Feature branches are derived automatically: every Story/Epic container is a feature branch named after its Jira key (e.g. `EPIC-123`), or after the value of a `branch:<name>` label on the container if set. The tooling creates the branch on first use, basing it on `main` (or on a blocker container's branch — see `resolve-stack` output `container.baseBranch`).
 
 ### Activity Log Comment
@@ -652,9 +663,25 @@ seed-checklist {TICKET_KEY} --work-dir {WORK_DIR} --branch {BRANCH_NAME} --base-
 
 Parse the JSON output:
 - If `source` is `"jira"`: the checklist was read from an existing Jira comment. Resume from the first unchecked step.
-- If `source` is `"seeded"`: the checklist was freshly created (seeded from Jira labels and git stage commits) and written to Jira. Start from the first unchecked step.
+- If `source` is `"seeded"`: the checklist was freshly created (seeded from Jira labels and git stage commits) and written to Jira. Start from the first unchecked step. The output also includes `complexity: "trivial" | "standard"` derived from the ticket's labels — same value `getComplexity()` would have returned. When the checklist was seeded for a trivial ticket, steps 1, 4, 5, and 6 are pre-marked done with a ` (skipped: trivial)` label suffix.
 
 Store the `steps` array in memory for step tracking throughout S4.
+
+## S3.4: Classify Complexity
+
+Tickets carry an optional `complexity:trivial` or `complexity:standard` label that drives which steps in S4 actually run (see "Complexity Tiers" in the Label Reference section). This step ensures every ticket has a tier label before S4 begins. **Skip entirely if** the ticket already has either label.
+
+1. Re-read the ticket's current labels (the labels read at S1c are stale if the human just added one). Use `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`.
+2. If `labels` contains `complexity:trivial` or `complexity:standard`, skip the rest of S3.4 and continue to S3.5.
+3. Otherwise classify. Read the ticket's description (specifically the `Acceptance Criteria` / Gherkin scenarios and the `Implementation Notes` block, when present). Decide tier using this rubric:
+   - **trivial**: ≤1 file changed; no behavior change to verified paths; mechanical edit (rename, typo, doc tweak, copy change, dependency bump that doesn't touch interfaces); zero or one Gherkin scenario; Implementation Notes — if present — list at most one file under "Files likely to change". When in doubt between trivial and standard, choose **standard**. Misclassifying as trivial loses real review surface; misclassifying as standard only costs ceremony.
+   - **standard**: anything else.
+4. Apply the chosen label via `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "complexity:trivial"}]}` (or `complexity:standard`).
+5. Append to the activity log:
+   ```bash
+   append-activity {TICKET_KEY} --heading "Complexity classified: {tier}" --body "Auto-classified as `complexity:{tier}` based on AC and Implementation Notes. Override by editing the label on the ticket and re-running."
+   ```
+6. **If the tier was just set to `trivial` AND the checklist was loaded from Jira (`source: "jira"`) without trivial-skip suffixes**: the checklist was seeded against the wrong tier. Re-run `seed-checklist {TICKET_KEY} ... --jira-source` after first deleting the existing checklist comment via `clearChecklistFromJira` (or via direct `mcp__atlassian__addCommentToJiraIssue` flow if the helper isn't exposed) so the new tier-aware seed takes effect. In practice this is an edge case — most tickets get classified before the first checklist exists. If the checklist already has progress on it (any step done that's not 1/4/5/6), do **not** re-seed; instead, fall through and let the per-step skip conditions handle it.
 
 ## Stage Squash Protocol
 
@@ -799,7 +826,7 @@ Additionally, apply the Stage Squash Protocol at each stage boundary (record HEA
 
 ### Step S4.1: Plan generated with /jira-start
 
-**Skip if**: step 1 is already checked `[x]`, OR a plan already exists in Jira (check via `sync-plan {TICKET_KEY} --read` returning data), OR git log contains `[{TICKET_KEY}] plan:` stage commit.
+**Skip if**: `complexity == trivial` (`seed-checklist` pre-marks step 1 done with the ` (skipped: trivial)` suffix — never call `/jira-start` for trivial tickets), OR step 1 is already checked `[x]`, OR a plan already exists in Jira (check via `sync-plan {TICKET_KEY} --read` returning data), OR git log contains `[{TICKET_KEY}] plan:` stage commit.
 
 1. Move the ticket to `ClaudePlanning`:
    ```bash
@@ -996,7 +1023,7 @@ TDD execution (S4.2) should have produced tests for every Gherkin scenario. This
 
 ### Step S4.4: Refactoring pass with @refactor agent
 
-**Skip if**: step 4 is already checked `[x]`.
+**Skip if**: `complexity == trivial` (pre-marked done — small surface, low ROI), OR step 4 is already checked `[x]`.
 
 After TDD execution and acceptance verification, run a targeted refactoring pass on the code changed by this ticket. The refactor agent identifies CRAP score hotspots, DRY violations, and structural smells — then implements approved fixes.
 
@@ -1024,7 +1051,7 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
 
 ### Step S4.5: PR review plan generated with /pr-review
 
-**Skip if**: step 5 is already checked `[x]`.
+**Skip if**: `complexity == trivial` (pre-marked done — `/cop-fight` at P5 is the load-bearing review for trivial tickets), OR step 5 is already checked `[x]`.
 
 0. Record `STAGE_START_SHA` (Stage Squash Protocol — shared with S4.6, squash happens after S4.6).
 
@@ -1041,7 +1068,7 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
 
 ### Step S4.6: PR review plan executed with /pr-execute-plan
 
-**Skip if**: step 6 is already checked `[x]`.
+**Skip if**: `complexity == trivial` (pre-marked done — no S4.5 plan exists to execute), OR step 6 is already checked `[x]`.
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Use the Skill tool to run skill `pr-execute-plan`
