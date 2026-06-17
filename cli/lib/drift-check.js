@@ -305,7 +305,7 @@ export function diffCitation(citation, repoRoot, fallbackBaseline) {
 // Verify the citation parses to a coherent range and the baseline SHA is
 // reachable. Cheap structural pass that runs before the line-range diff.
 export function verifyCitationWellFormed(citation, repoRoot) {
-  if (!citation || !citation.path) {
+  if (!citation?.path) {
     return { status: "drifted", reason: "missing path" };
   }
   if (
@@ -358,19 +358,18 @@ export function verifyCitationWellFormed(citation, repoRoot) {
 // location. Quietly skips when no symbol is captured (some pattern bullets
 // don't carry one).
 export function verifySymbolPresent(pattern, repoRoot, citationDiff) {
-  if (!pattern || !pattern.symbol) {
+  if (!pattern?.symbol) {
     return { status: "current", reason: "no symbol to check" };
   }
   if (!repoRoot || !existsSync(repoRoot)) {
     return { status: "unknown", reason: `repo not found: ${repoRoot}` };
   }
   const symbol = pattern.symbol;
-  const targetPath =
-    citationDiff && citationDiff.newPath
-      ? citationDiff.newPath
-      : pattern.citation
-        ? pattern.citation.path
-        : null;
+  const targetPath = citationDiff?.newPath
+    ? citationDiff.newPath
+    : pattern.citation
+      ? pattern.citation.path
+      : null;
 
   if (targetPath) {
     const lsTree = run(
@@ -406,7 +405,7 @@ export function verifySymbolPresent(pattern, repoRoot, citationDiff) {
 // Verify a path still exists at HEAD. Rename-follows when the file is gone, so
 // "Files likely to change" entries that have been moved get a usable hint.
 export function verifyPathExists(entry, repoRoot, fallbackBaseline) {
-  if (!entry || !entry.path) {
+  if (!entry?.path) {
     return { status: "drifted", reason: "missing path" };
   }
   if (!repoRoot || !existsSync(repoRoot)) {
@@ -416,8 +415,7 @@ export function verifyPathExists(entry, repoRoot, fallbackBaseline) {
   if (lsTree) {
     return { status: "current", path: entry.path };
   }
-  const baseline =
-    (entry.citation && entry.citation.baselineSha) || fallbackBaseline;
+  const baseline = entry.citation?.baselineSha || fallbackBaseline;
   if (baseline) {
     const followLog = run(
       `git log --follow --name-status --pretty=format:%H ${shellQuote(baseline)}..HEAD -- ${shellQuote(entry.path)}`,
@@ -493,7 +491,7 @@ export function verifyTddRef(tddRef, repoRoot) {
 // exists in the TDD's docs folder. Sidecar location is derived from the TDD
 // path: {tddDir}/{tddSlug}/{repoName}.research.md.
 export function verifySidecars(tddRef, baseline, repoRoot) {
-  if (!tddRef || !tddRef.path) return [];
+  if (!tddRef?.path) return [];
   if (!repoRoot || !existsSync(repoRoot)) return [];
   const tddDir = dirname(tddRef.path);
   const tddSlug = tddRef.path.split("/").pop().replace(/\.md$/, "");

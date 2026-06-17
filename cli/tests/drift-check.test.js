@@ -568,10 +568,7 @@ describe("verifier guard clauses", () => {
   it("verifySymbolPresent: prefers citationDiff.newPath when provided", () => {
     const repo = makeRepo("symbol-uses-newpath");
     writeFileSync(join(repo, "old.ts"), "// no symbol\n");
-    writeFileSync(
-      join(repo, "moved.ts"),
-      "export function relocated() {}\n",
-    );
+    writeFileSync(join(repo, "moved.ts"), "export function relocated() {}\n");
     git("add .", repo);
     git('commit -m "init"', repo);
     const result = verifySymbolPresent(
