@@ -112,6 +112,9 @@ beforeAll(async () => {
         let labels = [];
         if (key === "PLAN-1") labels = ["ClaudeExecuting"];
         if (key === "EXEC-1") labels = ["ClaudeStackReady"];
+        if (key === "TRIV-1") labels = ["complexity:trivial"];
+        if (key === "TRIV-2")
+          labels = ["complexity:trivial", "ClaudeExecuting"];
 
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(createIssueResponse(key, labels)));
@@ -189,6 +192,60 @@ describe("seed-checklist e2e", () => {
     expect(result.markdown).toContain("base_branch: STORY-1");
     expect(result.markdown).toContain("pr_target: STORY-1");
     expect(result.markdown).not.toContain("feature_branch:");
+  });
+
+  it("pre-marks trivial-skipped steps (1, 4, 5, 6) as done with skip suffix", async () => {
+    const result = await runAsync(
+      `TRIV-1 --work-dir ${WORK_DIR} --branch TRIV-1 --base-branch main --pr-target main --summary Trivial`,
+    );
+
+    expect(result.complexity).toBe("trivial");
+    // Skipped steps are pre-checked and labeled.
+    for (const num of [1, 4, 5, 6]) {
+      const step = result.steps[num - 1];
+      expect(step.done).toBe(true);
+      expect(step.label).toContain("(skipped: trivial)");
+    }
+    // Non-skipped steps remain unchecked + unlabeled.
+    expect(result.steps[1].done).toBe(false); // step 2: execute
+    expect(result.steps[2].done).toBe(false); // step 3: AC verify
+    expect(result.steps[6].done).toBe(false); // step 7: stack ready
+    expect(result.steps[1].label).not.toContain("(skipped");
+    expect(result.markdown).toContain("complexity: trivial");
+    expect(result.markdown).toContain(
+      "- [x] 1. Plan generated with /jira-start (skipped: trivial)",
+    );
+    expect(result.markdown).toContain(
+      "- [x] 4. Refactoring pass with @refactor agent (skipped: trivial)",
+    );
+  });
+
+  it("standard tier (no complexity label) keeps the original step labels", async () => {
+    const result = await runAsync(
+      `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary Std`,
+    );
+
+    expect(result.complexity).toBe("standard");
+    for (const step of result.steps) {
+      expect(step.label).not.toContain("(skipped");
+    }
+    expect(result.markdown).toContain("complexity: standard");
+  });
+
+  it("trivial tier preserves stage progress signals (does not flip done→false)", async () => {
+    // TRIV-2 has both complexity:trivial and ClaudeExecuting.
+    // ClaudeExecuting normally implies step 1 done; trivial pre-marks 1,4,5,6.
+    // Result: 1, 4, 5, 6 all done; everything else still false.
+    const result = await runAsync(
+      `TRIV-2 --work-dir ${WORK_DIR} --branch TRIV-2 --base-branch main --pr-target main --summary Mixed`,
+    );
+
+    expect(result.complexity).toBe("trivial");
+    expect(result.steps[0].done).toBe(true); // step 1 (skipped + ClaudeExecuting both want it true)
+    expect(result.steps[3].done).toBe(true); // step 4 skipped
+    expect(result.steps[4].done).toBe(true); // step 5 skipped
+    expect(result.steps[5].done).toBe(true); // step 6 skipped
+    expect(result.steps[1].done).toBe(false); // step 2 execute, not skipped
   });
 
   it("includes serial flag in frontmatter when specified", async () => {
