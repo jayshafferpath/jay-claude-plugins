@@ -83,6 +83,23 @@ For each key in `$ARGUMENTS`, use `mcp__atlassian__getJiraIssue` to fetch it.
 
 If the issue is a **stack container** (Story/Task with subtasks, or Epic) AND has `ClaudeStackComplete` label: this is a completed feature branch ready for PR to main. Proceed to **Mode C: Feature Branch PR** below.
 
+### Epic — pick the next unblocked ticket and run it serially
+
+If the issue type is `Epic` (and Mode C did not trigger above), do **not** expand to all descendants and fan out in parallel. Epics always advance one ticket at a time.
+
+1. Run the **Stack Context Resolution** sub-procedure with `KEY={EPIC_KEY}` and `FETCH=true`. This produces `STACK_ORDER` (topologically sorted) and the container fields.
+2. Walk `STACK_ORDER` in order and pick the **first** entry where:
+   - `entry.eligible === true`, AND
+   - the entry does not already carry any progress label from `PROGRESS_LABELS` (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`).
+   Call this `NEXT_KEY`.
+3. If no entry qualifies:
+   - If every entry is finished (per `isFinished()` — i.e. `mergedIntoFeature` or `mergedIntoMain` for each), the Epic is effectively complete. Display "Epic {EPIC_KEY} has no unblocked work — all tickets finished. Run `/ticket-work {EPIC_KEY}` again once `ClaudeStackComplete` is set, or apply the label manually to trigger Mode C." and **stop**.
+   - Otherwise, display "Epic {EPIC_KEY} has no eligible tickets — every remaining ticket is blocked or already in flight. First blocker: {first non-eligible entry's key} (waiting on {its `unblockedBlockers[0]`})." and **stop**.
+4. Inherit labels/assignee from the Epic onto `NEXT_KEY` if it's a subtask whose parent is the Epic (or the Epic-descended Story) — same rules as the "Inherit from Parent" block below; reuse `buildParentInheritancePatch` semantics from `cli/lib/queue.js`.
+5. Force `SERIAL_MODE = true` and set `EPIC_SINGLE_MODE = true` for the rest of this invocation, regardless of whether `--serial` was passed. `EPIC_SINGLE_MODE` tells S6 to stop instead of auto-advancing — Epic entry runs exactly one ticket per invocation; re-run `/ticket-work {EPIC_KEY}` to pick the next.
+6. Display: "Epic {EPIC_KEY}: working next unblocked ticket {NEXT_KEY} - {NEXT_SUMMARY} (serial mode, single-ticket-per-invocation)."
+7. Proceed to **Single Ticket Lifecycle** below using `{NEXT_KEY}` as `TICKET_KEY`. Do **not** fall through to the "parent with subtasks" expansion path — Epics never run the Queue Pipeline from Mode A.
+
 ### Standard ticket resolution
 
 If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, or `ClaudeFailed`). If not a parent, use the ticket directly.
@@ -1094,6 +1111,8 @@ All steps completed. PR is ready for human review.
 ## S6: Continue to Next Ticket in Stack
 
 After reaching stack-ready (step 7) or completing all steps, check if there are downstream tickets in the same stack that are now unblocked and eligible for work.
+
+**Skip S6 entirely if `EPIC_SINGLE_MODE` is true.** When `/ticket-work` was entered with an Epic key, this invocation runs exactly one ticket; the user re-runs `/ticket-work {EPIC_KEY}` to advance to the next. Display: "Epic single-ticket invocation complete. Re-run `/ticket-work {EPIC_KEY}` to pick up the next unblocked ticket." and **stop** before S6a.
 
 ### S6a: Find Eligible Downstream Tickets
 
