@@ -464,9 +464,11 @@ export function verifyTddRef(tddRef, repoRoot) {
     `git cat-file -p ${shellQuote(`HEAD:${tddRef.path}`)}`,
     repoRoot,
   );
+  /* c8 ignore start -- defensive: lsTree already confirmed presence */
   if (blob === null) {
     return { status: "drifted", reason: "TDD body unreadable" };
   }
+  /* c8 ignore stop */
   const slugify = (s) =>
     s
       .toLowerCase()
@@ -574,12 +576,15 @@ export async function driftCheck(ticketKey, { repoRoot, lite = false } = {}) {
         check: "well-formed",
       };
     }
+    /* c8 ignore start -- verifyCitationWellFormed cannot return 'unknown' here:
+       both repoRoot and baseline are always set in this code path */
     if (
       wellFormed.status === "unknown" &&
       lineRangeResults[idx].status === "current"
     ) {
       return { ...lineRangeResults[idx], check: "line-range" };
     }
+    /* c8 ignore stop */
     return { ...lineRangeResults[idx], check: "line-range" };
   });
 

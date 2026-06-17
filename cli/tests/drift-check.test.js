@@ -428,6 +428,187 @@ Repo path: docs/tdds/auth.md#session-management`;
   });
 });
 
+describe("verifier guard clauses", () => {
+  // The guard clauses across verifyCitationWellFormed / verifySymbolPresent /
+  // verifyPathExists / verifyTddRef are all early returns for missing/invalid
+  // inputs. Coverage of these is what pushes the branches threshold past 90%.
+  beforeEach(() => mkdirSync(ROOT, { recursive: true }));
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("verifyCitationWellFormed: missing path → drifted", () => {
+    expect(verifyCitationWellFormed(null, "/tmp")).toMatchObject({
+      status: "drifted",
+      reason: "missing path",
+    });
+    expect(verifyCitationWellFormed({}, "/tmp")).toMatchObject({
+      status: "drifted",
+      reason: "missing path",
+    });
+  });
+
+  it("verifyCitationWellFormed: missing repoRoot → unknown", () => {
+    expect(
+      verifyCitationWellFormed(
+        { path: "x", start: 1, end: 1, baselineSha: "abc" },
+        "/no/such/dir",
+      ),
+    ).toMatchObject({ status: "unknown" });
+  });
+
+  it("verifyCitationWellFormed: missing baseline SHA → unknown", () => {
+    const repo = makeRepo("citation-no-baseline");
+    writeFileSync(join(repo, "f"), "a\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    expect(
+      verifyCitationWellFormed({ path: "f", start: 1, end: 1 }, repo),
+    ).toMatchObject({ status: "unknown", reason: "no baseline SHA" });
+  });
+
+  it("verifyCitationWellFormed: file did not exist at baseline → drifted", () => {
+    const repo = makeRepo("citation-blob-missing");
+    writeFileSync(join(repo, "first"), "a\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+    writeFileSync(join(repo, "later"), "x\n");
+    git("add .", repo);
+    git('commit -m "added later"', repo);
+    expect(
+      verifyCitationWellFormed(
+        { path: "later", start: 1, end: 1, baselineSha: baseline },
+        repo,
+      ),
+    ).toMatchObject({
+      status: "drifted",
+      reason: "file did not exist at baseline",
+    });
+  });
+
+  it("verifySymbolPresent: missing repoRoot → unknown", () => {
+    expect(
+      verifySymbolPresent(
+        { symbol: "x", citation: { path: "a" } },
+        "/no/such/dir",
+      ),
+    ).toMatchObject({ status: "unknown" });
+  });
+
+  it("verifyPathExists: missing path → drifted", () => {
+    expect(verifyPathExists(null, "/tmp")).toMatchObject({
+      status: "drifted",
+      reason: "missing path",
+    });
+    expect(verifyPathExists({}, "/tmp")).toMatchObject({
+      status: "drifted",
+      reason: "missing path",
+    });
+  });
+
+  it("verifyPathExists: missing repoRoot → unknown", () => {
+    expect(verifyPathExists({ path: "x" }, "/no/such/dir")).toMatchObject({
+      status: "unknown",
+    });
+  });
+
+  it("verifyPathExists: exercises the rename-follow branch with a baseline SHA", () => {
+    // Same shape as the diffCitation rename test. Git's --follow rename
+    // detection is heuristic — both "file moved" and "file removed" are
+    // acceptable outcomes; what matters for coverage is that the baseline
+    // branch (where verifyPathExists calls git log --follow) is hit.
+    const repo = makeRepo("path-renamed");
+    execSync("git config diff.renames true", { cwd: repo, stdio: "pipe" });
+    execSync("git config diff.renameLimit 999", { cwd: repo, stdio: "pipe" });
+    const content = Array.from({ length: 50 }, (_, i) => `line ${i}\n`).join(
+      "",
+    );
+    writeFileSync(join(repo, "old.ts"), content);
+    git("add old.ts", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+    git("mv old.ts new.ts", repo);
+    git('commit -m "rename"', repo);
+    const result = verifyPathExists(
+      { path: "old.ts", citation: { baselineSha: baseline } },
+      repo,
+    );
+    expect(result.status).toBe("drifted");
+    expect(["file moved", "file removed"]).toContain(result.reason);
+  });
+
+  it("verifyTddRef: null tddRef → unknown", () => {
+    expect(verifyTddRef(null, "/tmp")).toMatchObject({ status: "unknown" });
+  });
+
+  it("verifyTddRef: missing path → drifted", () => {
+    expect(verifyTddRef({ anchor: "x" }, "/tmp")).toMatchObject({
+      status: "drifted",
+      reason: "TDD Reference block missing path",
+    });
+  });
+
+  it("verifyTddRef: missing repoRoot → unknown", () => {
+    expect(verifyTddRef({ path: "x" }, "/no/such/dir")).toMatchObject({
+      status: "unknown",
+    });
+  });
+
+  it("verifyTddRef: path present without anchor → current", () => {
+    const repo = makeRepo("tdd-no-anchor");
+    mkdirSync(join(repo, "docs"), { recursive: true });
+    writeFileSync(join(repo, "docs/x.md"), "# x\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    expect(verifyTddRef({ path: "docs/x.md" }, repo)).toMatchObject({
+      status: "current",
+      reason: "no anchor to verify",
+    });
+  });
+
+  it("verifySymbolPresent: prefers citationDiff.newPath when provided", () => {
+    const repo = makeRepo("symbol-uses-newpath");
+    writeFileSync(join(repo, "old.ts"), "// no symbol\n");
+    writeFileSync(
+      join(repo, "moved.ts"),
+      "export function relocated() {}\n",
+    );
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const result = verifySymbolPresent(
+      {
+        symbol: "relocated",
+        citation: { path: "old.ts", start: 1, end: 1 },
+      },
+      repo,
+      { newPath: "moved.ts" },
+    );
+    expect(result.status).toBe("current");
+    expect(result.path).toBe("moved.ts");
+  });
+
+  it("verifySymbolPresent: skips path-scoped grep when targetPath is missing", () => {
+    const repo = makeRepo("symbol-no-citation");
+    writeFileSync(join(repo, "anywhere.ts"), "export function findMe() {}\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    // Pattern with no citation → falls through to repo-wide grep, finds it.
+    const result = verifySymbolPresent({ symbol: "findMe" }, repo);
+    expect(result.status).toBe("drifted");
+    expect(result.reason).toBe("symbol moved");
+    expect(result.newPaths).toContain("anywhere.ts");
+  });
+
+  it("verifySidecars: returns [] when tddRef is null", () => {
+    expect(verifySidecars(null, { repo: "abc" }, "/tmp")).toEqual([]);
+  });
+
+  it("verifySidecars: returns [] when repoRoot does not exist", () => {
+    expect(
+      verifySidecars({ path: "x.md" }, { repo: "abc" }, "/no/such/dir"),
+    ).toEqual([]);
+  });
+});
+
 describe("verifyCitationWellFormed", () => {
   beforeEach(() => mkdirSync(ROOT, { recursive: true }));
   afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
@@ -728,6 +909,26 @@ Research baseline: my-repo@${baseline}
     expect(result.status).toBe("drifted");
     expect(result.patterns[0].symbolStatus).toBe("drifted");
     expect(result.patterns[0].symbolReason).toBe("symbol removed");
+  });
+
+  it("surfaces well-formedness drift on a citation (skipping the line-range diff)", async () => {
+    const repo = makeRepo("wf-drift");
+    writeFileSync(join(repo, "f.txt"), "a\nb\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    // Cited end line 99 is past the 2-line baseline file → well-formed = drifted.
+    const description = `h2. Implementation Notes
+Research baseline: my-repo@${baseline}
+- [f.txt#L1-L99|https://github.com/o/my-repo/blob/${baseline}/f.txt#L1-L99]`;
+    getIssue.mockResolvedValueOnce({ fields: { description } });
+
+    const result = await driftCheck("X-WF", { repoRoot: repo });
+    expect(result.status).toBe("drifted");
+    expect(result.citations[0].status).toBe("drifted");
+    expect(result.citations[0].check).toBe("well-formed");
+    expect(result.citations[0].reason).toMatch(/exceeds baseline/);
   });
 
   it("--lite mode preserves the legacy report shape", async () => {
