@@ -7,7 +7,10 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | Command | Description |
 |---|---|
 | `/ticket-work [KEY...]` | Run Jira tickets end-to-end: drift-check, plan, execute, PR, review, push. With args: single ticket (or expand a Story to subtasks). Without args: discover and process the full queue. |
+| `/prework KEY` | Pre-`/ticket-work` setup: resolve stack, ensure feature branch + working directory, seed checklist, run drift check. Stops before planning so a human can review notes |
 | `/orchestrate` | Project-level coordinator: surveys all active stacks, auto-runs safe lifecycle steps (cleanup merged tickets, promote PR-approved tickets), and surfaces decisions that need a human (failed tickets, drift, plan/PR approvals) |
+| `/ticket-status KEY` | Show the lifecycle status of a single ticket — stack position, branch, PR, Jira labels, checklist, blocks/blocked-by |
+| `/pr-chat KEY` | Load full PR context (Jira ticket + comments + linked TDD + PR metadata + diff + every changed file) into the conversation, then hand control back for free-form discussion |
 | `/refresh-research KEY` | Manually re-run the research drift check on a ticket: diff cited code against the research baseline SHA and refresh the Implementation Notes if drift is detected |
 | `/fix-drift KEY` | Detect drift between a ticket's acceptance criteria and the current branch implementation, then fix the code to match |
 | `/finalize` | Final pre-merge pass: update PR description and post finalization context for downstream stacked ticket agents |
@@ -39,11 +42,9 @@ S4.4. Refactor pass on the diff
 S4.5. PR review plan generated with `/pr-review`
 S4.6. PR review plan executed with `/pr-execute-plan`
 S4.7. **Stack-ready** — for tickets in a Story/Epic stack: merge the ticket branch into the container's feature branch and set `ClaudeNeedsReview`. For standalone tickets: set `ClaudeStackReady` and stop until the user adds `ClaudePRApproved`.
-S4.8. **PR-approved gate** — for non-feature-branch tickets, wait for `ClaudePRApproved` before pushing a PR.
-S4.9. PR description generated with `/jay-pr-description`
-S4.10. Draft PR pushed
-S4.11. Copilot review loop via `/pr-watch`
-S4.12. PR review summary posted as a Jira comment
+S4.8. **PR-approved gate** — for non-feature-branch tickets, wait for `ClaudePRApproved` before entering the PR push & review sub-procedure.
+
+The PR push & review sub-procedure (P1–P6) generates the description with `/jay-pr-description`, pushes a draft PR, runs `/pr-review` + `/pr-execute-plan`, runs the Copilot loop via `/pr-watch`, and posts a review summary as a Jira comment. The same sub-procedure is reused by Mode C against the feature branch (with P7 flipping the PR from draft to ready for review).
 
 #### Mode C: feature branch PR to main
 
@@ -58,7 +59,7 @@ ClaudeReady                   -- eligible for planning
 ClaudePlanning                -- /jira-start in progress
 ClaudeExecuting               -- /plan-execute in progress
 ClaudeStackReady              -- code review done, stack unblocked. Feature branch: awaiting merge. Standalone: awaiting ClaudePRApproved
-ClaudePRApproved              -- user-applied: approves PR creation for a standalone ticket; gate for /ticket-work S4.10
+ClaudePRApproved              -- user-applied: approves PR creation for a standalone ticket; gate for the PR push & review sub-procedure
 ClaudeNeedsReview             -- merged to feature branch or PR pushed, user: review PR. Post-merge: run /cleanup KEY
 ClaudePendingMainPromotion    -- Story-container shipped to its parent Epic's feature branch via Phase-1 cleanup; awaiting /promote-to-main and a follow-up terminal /cleanup
 ClaudeMainPR                  -- /promote-to-main opened a main-targeting PR; cleared by terminal /cleanup
@@ -301,9 +302,16 @@ These are called by the commands/agents during ticket execution:
 | `sync-plan` | Sync plan content to Jira ticket description |
 | `resolve-stack` | Resolve stack ordering from Jira issue links |
 | `ensure-pr` | Create or update a draft PR for the current branch |
+| `ensure-work-dir` | Resolve a ticket's working directory and ensure its branch (or container feature branch) exists, based off the right parent |
 | `post-review-summary` | Post a PR review summary as a Jira comment |
 | `seed-checklist` | Initialize a checklist on a Jira ticket from a plan |
-| `backfill-jira` | One-off helper to backfill Jira fields/links across a project |
+| `discover-queue` | Run the Q2 JQL queries (ready / parent / in-flight), expand parent Stories/Tasks into eligible subtasks, optionally apply parent label/assignee inheritance |
+| `set-ticket-state` | Move a ticket to a progress label (auto-clears the others), or add/remove arbitrary labels |
+| `cascade-rebase` | Cascade-rebase a chain of stacked branches after their base merged or moved; can retarget the head PR's base and post activity-log notes |
+| `promote-downstream` | After a ticket lands as Done, mark its now-unblocked downstream dependents `ClaudeReady` and report containers that just hit stack completion |
+| `drift-check` | Parse a ticket's `Implementation Notes`, diff each cited line range against the baseline SHA, and emit a structured drift report |
+| `stage-squash` | Squash every commit since the last stage marker into a single `[{KEY}] {label}` commit and force-with-lease push |
+| `pr-state` | Probe `gh pr list` for the most recent PR matching a branch/base/state filter and emit a normalized JSON object |
 
 ### Web Dashboard
 
