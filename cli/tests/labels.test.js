@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   ALL_LIFECYCLE_LABELS,
+  COMPLEXITY_LABELS,
+  COMPLEXITY_STANDARD,
+  COMPLEXITY_TRIVIAL,
   CONTAINER_LABELS,
   clearProgressLabelsPatch,
   DURABLE_LABELS,
+  getComplexity,
   IN_FLIGHT_LABELS,
   isInFlight,
   LABEL_DISPLAY_ORDER,
@@ -121,6 +125,41 @@ describe("clearProgressLabelsPatch", () => {
 
   it("returns [] when no progress labels are set", () => {
     expect(clearProgressLabelsPatch(["ClaudeWork"])).toEqual([]);
+  });
+});
+
+describe("getComplexity / COMPLEXITY_LABELS", () => {
+  it("exports COMPLEXITY_LABELS as a frozen list of the two tiers", () => {
+    expect(Object.isFrozen(COMPLEXITY_LABELS)).toBe(true);
+    expect(COMPLEXITY_LABELS).toEqual([
+      "complexity:trivial",
+      "complexity:standard",
+    ]);
+  });
+
+  it("returns 'trivial' when complexity:trivial is present", () => {
+    expect(getComplexity(["ClaudeWork", "complexity:trivial"])).toBe(
+      COMPLEXITY_TRIVIAL,
+    );
+  });
+
+  it("returns 'standard' when complexity:standard is present", () => {
+    expect(getComplexity(["complexity:standard"])).toBe(COMPLEXITY_STANDARD);
+  });
+
+  it("defaults to 'standard' when no complexity label is present", () => {
+    expect(getComplexity(["ClaudeWork", "repo:foo"])).toBe(COMPLEXITY_STANDARD);
+  });
+
+  it("prefers 'trivial' when both labels are set (defensive)", () => {
+    expect(getComplexity(["complexity:trivial", "complexity:standard"])).toBe(
+      COMPLEXITY_TRIVIAL,
+    );
+  });
+
+  it("returns 'standard' for non-array input", () => {
+    expect(getComplexity(null)).toBe(COMPLEXITY_STANDARD);
+    expect(getComplexity(undefined)).toBe(COMPLEXITY_STANDARD);
   });
 });
 

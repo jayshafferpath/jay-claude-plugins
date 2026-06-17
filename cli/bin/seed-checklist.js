@@ -12,6 +12,7 @@ import {
 } from "../lib/checklist.js";
 import { getPrInfo, hasStageCommit } from "../lib/git.js";
 import { getIssue } from "../lib/jira.js";
+import { COMPLEXITY_TRIVIAL, getComplexity } from "../lib/labels.js";
 import { readExecutionPlan, readReviewPlan } from "../lib/plan-reader.js";
 
 const args = process.argv.slice(2);
@@ -55,11 +56,23 @@ const STEP_LABELS = [
   "PR review summary posted",
 ];
 
+// 1-indexed step numbers that are skipped on the trivial complexity tier.
+// Step numbering stays stable across tiers — these steps are pre-marked
+// done with a `(skipped: trivial)` suffix at seed time so render.js, gate
+// logic, and the S4 loop in commands/ticket-work.md keep working unchanged.
+//   1 → /jira-start (no plan needed for trivial)
+//   4 → @refactor agent (small surface, low ROI)
+//   5 → /pr-review plan
+//   6 → /pr-execute-plan
+const TRIVIAL_SKIPPED_STEPS = new Set([1, 4, 5, 6]);
+const TRIVIAL_SKIP_SUFFIX = " (skipped: trivial)";
+
 async function seedSteps() {
   const steps = Array(STEP_LABELS.length).fill(false);
 
   const issue = await getIssue(ticketKey);
   const labels = issue.fields.labels || [];
+  const complexity = getComplexity(labels);
 
   const planPath = join(plansDir, `jira-${ticketKey}.md`);
   const planExists = existsSync(planPath);
@@ -113,7 +126,23 @@ async function seedSteps() {
     }
   }
 
-  return steps;
+  // Pre-mark trivial-skipped steps as done so the S4 loop never opens them.
+  // This runs after every other signal so a triggered step (e.g. existing
+  // /jira-start plan) doesn't lose its done state — it can only flip false→true.
+  if (complexity === COMPLEXITY_TRIVIAL) {
+    for (const num of TRIVIAL_SKIPPED_STEPS) {
+      steps[num - 1] = true;
+    }
+  }
+
+  return { steps, complexity };
+}
+
+function labelFor(num, complexity) {
+  if (complexity === COMPLEXITY_TRIVIAL && TRIVIAL_SKIPPED_STEPS.has(num)) {
+    return STEP_LABELS[num - 1] + TRIVIAL_SKIP_SUFFIX;
+  }
+  return STEP_LABELS[num - 1];
 }
 
 try {
@@ -122,34 +151,39 @@ try {
     if (existing?.steps?.length) {
       console.log(JSON.stringify({ steps: existing.steps, source: "jira" }));
     } else {
-      const stepsDone = await seedSteps();
+      const { steps: stepsDone, complexity } = await seedSteps();
       const stepsOutput = stepsDone.map((done, i) => ({
         num: i + 1,
-        label: STEP_LABELS[i],
+        label: labelFor(i + 1, complexity),
         done,
       }));
       await syncChecklistToJira(ticketKey, stepsOutput);
-      console.log(JSON.stringify({ steps: stepsOutput, source: "seeded" }));
+      console.log(
+        JSON.stringify({ steps: stepsOutput, source: "seeded", complexity }),
+      );
     }
   } else {
-    const steps = await seedSteps();
+    const { steps, complexity } = await seedSteps();
     const timestamp = new Date().toISOString();
 
     const stepLines = steps.map(
-      (done, i) => `- [${done ? "x" : " "}] ${i + 1}. ${STEP_LABELS[i]}`,
+      (done, i) =>
+        `- [${done ? "x" : " "}] ${i + 1}. ${labelFor(i + 1, complexity)}`,
     );
 
-    const frontmatter = `---\nticket: ${ticketKey}\nbranch: ${branchName}\nsummary: ${summary}\nbase_branch: ${baseBranch}\npr_target: ${prTarget}\nwork_dir: ${workDir}\nserial: ${serial}\ncreated: ${timestamp}\n---`;
+    const frontmatter = `---\nticket: ${ticketKey}\nbranch: ${branchName}\nsummary: ${summary}\nbase_branch: ${baseBranch}\npr_target: ${prTarget}\nwork_dir: ${workDir}\nserial: ${serial}\ncomplexity: ${complexity}\ncreated: ${timestamp}\n---`;
 
     const markdown = `${frontmatter}\n\n# ${ticketKey} - Work Checklist\n\n${stepLines.join("\n")}\n`;
 
     const stepsOutput = steps.map((done, i) => ({
       num: i + 1,
-      label: STEP_LABELS[i],
+      label: labelFor(i + 1, complexity),
       done,
     }));
 
-    console.log(JSON.stringify({ steps: stepsOutput, markdown }, null, 2));
+    console.log(
+      JSON.stringify({ steps: stepsOutput, markdown, complexity }, null, 2),
+    );
   }
 } catch (err) {
   console.error(`Error: ${err.message}`);
