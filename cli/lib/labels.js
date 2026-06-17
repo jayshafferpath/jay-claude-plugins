@@ -58,6 +58,16 @@ export const SUBTASK_EXCLUSION_LABELS = Object.freeze([
   "ClaudeFailed",
 ]);
 
+// Optional Jira workflow status transitions triggered when a progress label
+// is set. Keys are PROGRESS_LABELS; values are candidate transition names
+// matched case-insensitively (first match wins). Used by setTicketState to
+// keep Jira status in sync with the lifecycle label. Tickets stuck in a
+// workflow without any matching transition fall through with a warning —
+// the label change still applies.
+export const LABEL_TO_STATUS_TRANSITIONS = Object.freeze({
+  ClaudeNeedsReview: Object.freeze(["In Review", "Code Review", "Review"]),
+});
+
 // Display ordering for label-state classifiers. First match wins, so the
 // most-advanced state appears first.
 export const LABEL_DISPLAY_ORDER = Object.freeze([

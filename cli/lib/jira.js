@@ -1,5 +1,5 @@
 import { getJiraAuth } from "./config.js";
-import { PROGRESS_LABELS } from "./labels.js";
+import { LABEL_TO_STATUS_TRANSITIONS, PROGRESS_LABELS } from "./labels.js";
 
 function auth() {
   const creds = getJiraAuth();
@@ -118,9 +118,53 @@ export function buildSetStatePatch(currentLabels, { add = [], remove = [] }) {
   return ops.length === 0 ? null : { labels: ops };
 }
 
+export async function getTransitions(key) {
+  const creds = auth();
+  const res = await fetch(`${baseUrl(creds)}/issue/${key}/transitions`, {
+    headers: headers(creds),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira getTransitions failed (${res.status}): ${body}`);
+  }
+  const data = await res.json();
+  return data.transitions || [];
+}
+
+export async function transitionIssue(key, transitionId) {
+  const creds = auth();
+  const res = await fetch(`${baseUrl(creds)}/issue/${key}/transitions`, {
+    method: "POST",
+    headers: headers(creds),
+    body: JSON.stringify({ transition: { id: transitionId } }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira transitionIssue failed (${res.status}): ${body}`);
+  }
+}
+
+// Picks the first transition from `transitions` whose name matches (case-
+// insensitively) one of `candidateNames`. Returns the matched transition or
+// null when nothing matches.
+export function pickTransition(transitions, candidateNames) {
+  const lookup = new Map(
+    (transitions || []).map((t) => [t.name?.toLowerCase(), t]),
+  );
+  for (const name of candidateNames) {
+    const hit = lookup.get(name.toLowerCase());
+    if (hit) return hit;
+  }
+  return null;
+}
+
 // Idempotent state transition: clears every PROGRESS_LABEL currently set,
 // then applies add/remove. `to` is sugar for "add this single state label and
-// clear the rest". Returns the operations that were applied (or null on no-op).
+// clear the rest". When `to` is set and `LABEL_TO_STATUS_TRANSITIONS` defines
+// candidate workflow transitions for it, the matching Jira workflow status is
+// transitioned too (best-effort: missing transitions log a warning and the
+// label change still proceeds). Returns the operations that were applied (or
+// null when neither labels nor status would change).
 export async function setTicketState(
   key,
   { to = null, add = [], remove = [] } = {},
@@ -138,9 +182,29 @@ export async function setTicketState(
   if (to && !additions.includes(to)) additions.push(to);
 
   const patch = buildSetStatePatch(currentLabels, { add: additions, remove });
-  if (!patch) return null;
-  await editIssue(key, patch);
-  return patch.labels;
+  if (patch) await editIssue(key, patch);
+
+  if (to && LABEL_TO_STATUS_TRANSITIONS[to]) {
+    const candidates = LABEL_TO_STATUS_TRANSITIONS[to];
+    try {
+      const transitions = await getTransitions(key);
+      const match = pickTransition(transitions, candidates);
+      if (match) {
+        await transitionIssue(key, match.id);
+      } else {
+        const available = transitions.map((t) => t.name).join(", ") || "(none)";
+        console.warn(
+          `setTicketState: no workflow transition matching [${candidates.join(", ")}] for ${key}. Available: ${available}. Label updated; status unchanged.`,
+        );
+      }
+    } catch (err) {
+      console.warn(
+        `setTicketState: status transition for ${key} failed: ${err.message}. Label updated; status unchanged.`,
+      );
+    }
+  }
+
+  return patch ? patch.labels : null;
 }
 
 export async function getPrFromDevStatus(key) {

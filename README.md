@@ -21,6 +21,7 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | `/rework KEY` | Reset the branch to its base and restart the lifecycle from scratch. |
 | `/cleanup KEY` | Post-merge teardown: delete branch, transition Jira to Done, cascade-rebase downstream, refresh feature branch. Flags: `--no-rebase`, `--no-refresh-feature`. |
 | `/ears-requirements [topic]` | Ideate and write EARS requirements interactively. |
+| `/cop-fight` | Drive CI to green and judge each Copilot review comment on viability — implement the sound ones, dismiss the rest with an explanatory reply. Replaces blind auto-fix loops. |
 
 ### `/ticket-work` lifecycle
 
@@ -30,7 +31,7 @@ Idempotent — resumes from checklist state.
 - **Queue mode** (`/ticket-work`): discovers eligible tickets via JQL, gates on stack deps, launches parallel agents.
 - **Parent expansion**: a Story/Task with subtasks expands to its eligible subtasks; labels and assignee are inherited.
 
-Steps: drift check → plan (`/jira-start`) → execute (`/plan-execute`) → verify AC → refactor → review (`/pr-review` + `/pr-execute-plan`) → stack-ready (merge into feature branch, or wait for `ClaudePRApproved`) → PR push & review sub-procedure (description, draft PR, Copilot loop via `/pr-watch`, post review summary).
+Steps: drift check → plan (`/jira-start`) → execute (`/plan-execute`) → verify AC → refactor → review (`/pr-review` + `/pr-execute-plan`) → stack-ready (merge into feature branch, or wait for `ClaudePRApproved`) → PR push & review sub-procedure (description, draft PR, CI + judged Copilot loop via `/cop-fight`, post review summary).
 
 **Mode C** ships a completed stack's feature branch as a single PR (to main, or to the parent Epic's branch for nested Stories), reusing the same PR push & review sub-procedure with a final draft → ready flip.
 

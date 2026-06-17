@@ -14,7 +14,17 @@ const {
   driftCheck,
   extractImplementationNotes,
   parseCitations,
+  parseConstraints,
+  parseFilesLikelyToChange,
+  parsePatterns,
   parseResearchBaseline,
+  parseTddRef,
+  parseTestsLikelyToExtend,
+  verifyCitationWellFormed,
+  verifyPathExists,
+  verifySidecars,
+  verifySymbolPresent,
+  verifyTddRef,
 } = await import("../lib/drift-check.js");
 
 const ROOT = join(tmpdir(), `drift-check-test-${process.pid}-${Date.now()}`);
@@ -307,5 +317,434 @@ Research baseline: my-repo@${baseline}
     const result = await driftCheck("X-3", { repoRoot: repo });
     expect(result.status).toBe("current");
     expect(result.drifted).toBe(0);
+  });
+});
+
+describe("parsePatterns", () => {
+  it("extracts name, symbol, and citation from a planner-shaped bullet", () => {
+    const block = `*Existing patterns to extend:*
+* *Auth middleware* — \`requireSession\` in [src/auth.ts#L10-L40|https://github.com/o/r/blob/abc123/src/auth.ts#L10-L40] — follows existing pattern
+* *Token validator* — \`validateJWT\` in [src/jwt.ts#L1-L20|https://github.com/o/r/blob/abc123/src/jwt.ts#L1-L20] — reuse this
+
+*Files likely to change:*
+* \`src/foo.ts\``;
+    const patterns = parsePatterns(block);
+    expect(patterns).toHaveLength(2);
+    expect(patterns[0]).toMatchObject({
+      name: "Auth middleware",
+      symbol: "requireSession",
+    });
+    expect(patterns[0].citation).toMatchObject({
+      path: "src/auth.ts",
+      start: 10,
+      end: 40,
+    });
+    expect(patterns[1].symbol).toBe("validateJWT");
+  });
+
+  it("returns an empty list when the section is absent", () => {
+    expect(parsePatterns("Research baseline: r@abc")).toEqual([]);
+  });
+});
+
+describe("parseFilesLikelyToChange", () => {
+  it("extracts paths from backtick-quoted bullets", () => {
+    const block = `*Files likely to change:*
+* \`src/foo.ts\` — adds the new endpoint
+* \`src/bar.ts\` — wires it up
+
+*Tests likely to extend:*
+* \`tests/foo.test.ts\``;
+    const files = parseFilesLikelyToChange(block);
+    expect(files.map((f) => f.path)).toEqual(["src/foo.ts", "src/bar.ts"]);
+  });
+
+  it("falls back to citation path when no backticks are present", () => {
+    const block = `*Files likely to change:*
+* [src/baz.ts#L1-L1|https://github.com/o/r/blob/abc/src/baz.ts#L1-L1]`;
+    const files = parseFilesLikelyToChange(block);
+    expect(files[0].path).toBe("src/baz.ts");
+  });
+});
+
+describe("parseTestsLikelyToExtend", () => {
+  it("captures both path and citation", () => {
+    const block = `*Tests likely to extend:*
+* \`tests/auth.test.ts\` — extend the [tests/auth.test.ts#L50-L80|https://github.com/o/r/blob/abc/tests/auth.test.ts#L50-L80] suite`;
+    const tests = parseTestsLikelyToExtend(block);
+    expect(tests[0].path).toBe("tests/auth.test.ts");
+    expect(tests[0].citation).toMatchObject({ start: 50, end: 80 });
+  });
+});
+
+describe("parseConstraints", () => {
+  it("returns the trimmed body of the constraints subsection", () => {
+    const block = `*Files likely to change:*
+* \`x\`
+
+*Constraints:*
+* in-flight migration to async handlers
+* avoid sync DB calls`;
+    const c = parseConstraints(block);
+    expect(c).toContain("in-flight migration");
+    expect(c).toContain("avoid sync DB calls");
+    expect(c).not.toContain("Files likely to change");
+  });
+
+  it("returns null when constraints subsection is missing", () => {
+    expect(parseConstraints("Research baseline: r@abc")).toBeNull();
+  });
+});
+
+describe("parseTddRef", () => {
+  it("extracts title, repo, path, and anchor from the TDD Reference block", () => {
+    const text = `h2. TDD Reference
+[Auth TDD - Session Management|https://github.com/o/platform/blob/abc1234/docs/tdds/auth.md#session-management]
+Repo path: docs/tdds/auth.md#session-management
+
+h2. Acceptance Criteria
+- something`;
+    const ref = parseTddRef(text);
+    expect(ref).toMatchObject({
+      title: "Auth TDD - Session Management",
+      repo: "platform",
+      path: "docs/tdds/auth.md",
+      anchor: "session-management",
+    });
+  });
+
+  it("returns null when no TDD Reference block exists", () => {
+    expect(parseTddRef("h2. Background\nsomething")).toBeNull();
+  });
+
+  it("falls back to Repo path when the link URL is malformed", () => {
+    const text = `h2. TDD Reference
+Repo path: docs/tdds/auth.md#session-management`;
+    const ref = parseTddRef(text);
+    expect(ref).toMatchObject({
+      path: "docs/tdds/auth.md",
+      anchor: "session-management",
+    });
+  });
+});
+
+describe("verifyCitationWellFormed", () => {
+  beforeEach(() => mkdirSync(ROOT, { recursive: true }));
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("flags invalid line ranges", () => {
+    expect(
+      verifyCitationWellFormed(
+        { path: "x", start: 5, end: 2, baselineSha: "abc" },
+        "/tmp",
+      ),
+    ).toMatchObject({ status: "drifted", reason: "invalid line range" });
+  });
+
+  it("flags an unreachable baseline SHA", () => {
+    const repo = makeRepo("unreachable-sha");
+    writeFileSync(join(repo, "f.txt"), "a\n");
+    git("add f.txt", repo);
+    git('commit -m "initial"', repo);
+    const result = verifyCitationWellFormed(
+      { path: "f.txt", start: 1, end: 1, baselineSha: "deadbeefdead" },
+      repo,
+    );
+    expect(result.status).toBe("drifted");
+    expect(result.reason).toMatch(/unreachable/);
+  });
+
+  it("flags an end line past the baseline file length", () => {
+    const repo = makeRepo("oob-line");
+    writeFileSync(join(repo, "f.txt"), "a\nb\n");
+    git("add f.txt", repo);
+    git('commit -m "initial"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+    const result = verifyCitationWellFormed(
+      { path: "f.txt", start: 1, end: 99, baselineSha: baseline },
+      repo,
+    );
+    expect(result.status).toBe("drifted");
+    expect(result.reason).toMatch(/exceeds baseline/);
+  });
+
+  it("returns 'current' when the citation is well-formed and reachable", () => {
+    const repo = makeRepo("well-formed");
+    writeFileSync(join(repo, "f.txt"), "a\nb\nc\n");
+    git("add f.txt", repo);
+    git('commit -m "initial"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+    const result = verifyCitationWellFormed(
+      { path: "f.txt", start: 1, end: 3, baselineSha: baseline },
+      repo,
+    );
+    expect(result.status).toBe("current");
+  });
+});
+
+describe("verifySymbolPresent", () => {
+  beforeEach(() => mkdirSync(ROOT, { recursive: true }));
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("returns 'current' when the symbol is still at the cited path", () => {
+    const repo = makeRepo("symbol-here");
+    writeFileSync(
+      join(repo, "auth.ts"),
+      "export function requireSession() {}\n",
+    );
+    git("add auth.ts", repo);
+    git('commit -m "initial"', repo);
+    const result = verifySymbolPresent(
+      {
+        symbol: "requireSession",
+        citation: { path: "auth.ts", start: 1, end: 1 },
+      },
+      repo,
+    );
+    expect(result.status).toBe("current");
+  });
+
+  it("returns 'drifted (symbol moved)' with newPaths when symbol grep finds it elsewhere", () => {
+    const repo = makeRepo("symbol-moved");
+    writeFileSync(join(repo, "old.ts"), "filler\n");
+    writeFileSync(join(repo, "new.ts"), "export function moved() {}\n");
+    git("add .", repo);
+    git('commit -m "initial"', repo);
+    const result = verifySymbolPresent(
+      {
+        symbol: "moved",
+        citation: { path: "old.ts", start: 1, end: 1 },
+      },
+      repo,
+    );
+    expect(result.status).toBe("drifted");
+    expect(result.reason).toBe("symbol moved");
+    expect(result.newPaths).toContain("new.ts");
+  });
+
+  it("returns 'drifted (symbol removed)' when the symbol is gone repo-wide", () => {
+    const repo = makeRepo("symbol-removed");
+    writeFileSync(join(repo, "auth.ts"), "// no symbol here\n");
+    git("add .", repo);
+    git('commit -m "initial"', repo);
+    const result = verifySymbolPresent(
+      {
+        symbol: "totallyGoneSymbol",
+        citation: { path: "auth.ts", start: 1, end: 1 },
+      },
+      repo,
+    );
+    expect(result.status).toBe("drifted");
+    expect(result.reason).toBe("symbol removed");
+  });
+
+  it("skips the check when no symbol is captured", () => {
+    expect(verifySymbolPresent({ symbol: null }, "/tmp")).toMatchObject({
+      status: "current",
+    });
+  });
+});
+
+describe("verifyPathExists", () => {
+  beforeEach(() => mkdirSync(ROOT, { recursive: true }));
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("returns 'current' when the path is at HEAD", () => {
+    const repo = makeRepo("path-here");
+    writeFileSync(join(repo, "src.ts"), "x\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    expect(verifyPathExists({ path: "src.ts" }, repo)).toMatchObject({
+      status: "current",
+    });
+  });
+
+  it("returns 'drifted (file removed)' when the path is gone with no rename", () => {
+    const repo = makeRepo("path-removed");
+    writeFileSync(join(repo, "src.ts"), "x\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    git("rm src.ts", repo);
+    git('commit -m "rm"', repo);
+    expect(verifyPathExists({ path: "src.ts" }, repo)).toMatchObject({
+      status: "drifted",
+      reason: "file removed",
+    });
+  });
+});
+
+describe("verifyTddRef", () => {
+  beforeEach(() => mkdirSync(ROOT, { recursive: true }));
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("returns 'current' when path and anchor still resolve at HEAD", () => {
+    const repo = makeRepo("tdd-ok");
+    mkdirSync(join(repo, "docs/tdds"), { recursive: true });
+    writeFileSync(
+      join(repo, "docs/tdds/auth.md"),
+      "# Auth TDD\n\n## Session Management\n\nDetails.\n",
+    );
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const result = verifyTddRef(
+      { path: "docs/tdds/auth.md", anchor: "session-management" },
+      repo,
+    );
+    expect(result.status).toBe("current");
+  });
+
+  it("returns 'drifted' when the anchor no longer matches a heading", () => {
+    const repo = makeRepo("tdd-anchor-gone");
+    mkdirSync(join(repo, "docs/tdds"), { recursive: true });
+    writeFileSync(
+      join(repo, "docs/tdds/auth.md"),
+      "# Auth TDD\n\n## Sessions\n\nDetails.\n",
+    );
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const result = verifyTddRef(
+      { path: "docs/tdds/auth.md", anchor: "session-management" },
+      repo,
+    );
+    expect(result.status).toBe("drifted");
+    expect(result.reason).toMatch(/anchor/);
+  });
+
+  it("returns 'unknown' when the TDD path lives outside this repo", () => {
+    const repo = makeRepo("tdd-elsewhere");
+    writeFileSync(join(repo, "x"), "x");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const result = verifyTddRef(
+      { path: "docs/tdds/auth.md", anchor: "x" },
+      repo,
+    );
+    expect(result.status).toBe("unknown");
+  });
+});
+
+describe("verifySidecars", () => {
+  beforeEach(() => mkdirSync(ROOT, { recursive: true }));
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("reports each per-repo sidecar's presence at HEAD", () => {
+    const repo = makeRepo("sidecars");
+    mkdirSync(join(repo, "docs/tdds/auth"), { recursive: true });
+    writeFileSync(join(repo, "docs/tdds/auth.md"), "# Auth\n");
+    writeFileSync(
+      join(repo, "docs/tdds/auth/platform.research.md"),
+      "# platform\n",
+    );
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const sidecars = verifySidecars(
+      { path: "docs/tdds/auth.md" },
+      { platform: "abc1234", "missing-repo": "def5678" },
+      repo,
+    );
+    const platform = sidecars.find((s) => s.repo === "platform");
+    const missing = sidecars.find((s) => s.repo === "missing-repo");
+    expect(platform.status).toBe("current");
+    expect(missing.status).toBe("unknown");
+  });
+});
+
+describe("driftCheck (full mode)", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mkdirSync(ROOT, { recursive: true });
+  });
+  afterEach(() => rmSync(ROOT, { recursive: true, force: true }));
+
+  it("emits expanded report with patterns/files/tests/tddRef/sidecars", async () => {
+    const repo = makeRepo("full-mode");
+    mkdirSync(join(repo, "docs/tdds/auth"), { recursive: true });
+    writeFileSync(
+      join(repo, "docs/tdds/auth.md"),
+      "# Auth TDD\n\n## Session Management\n\nDetails.\n",
+    );
+    writeFileSync(
+      join(repo, "docs/tdds/auth/my-repo.research.md"),
+      "# my-repo\n",
+    );
+    writeFileSync(
+      join(repo, "auth.ts"),
+      "export function requireSession() {}\nexport function helper() {}\n",
+    );
+    writeFileSync(join(repo, "src.ts"), "x\n");
+    mkdirSync(join(repo, "tests"), { recursive: true });
+    writeFileSync(join(repo, "tests/auth.test.ts"), "test()\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    const description = `h2. TDD Reference
+[Auth TDD|https://github.com/o/my-repo/blob/${baseline}/docs/tdds/auth.md#session-management]
+Repo path: docs/tdds/auth.md#session-management
+
+h2. Implementation Notes
+Research baseline: my-repo@${baseline}
+
+*Existing patterns to extend:*
+* *Auth middleware* — \`requireSession\` in [auth.ts#L1-L1|https://github.com/o/my-repo/blob/${baseline}/auth.ts#L1-L1]
+
+*Files likely to change:*
+* \`src.ts\`
+
+*Tests likely to extend:*
+* \`tests/auth.test.ts\`
+
+*Constraints:*
+* none surfaced`;
+    getIssue.mockResolvedValueOnce({ fields: { description } });
+
+    const result = await driftCheck("X-FULL", { repoRoot: repo });
+    expect(result.mode).toBe("full");
+    expect(result.status).toBe("current");
+    expect(result.patterns).toHaveLength(1);
+    expect(result.patterns[0].symbolStatus).toBe("current");
+    expect(result.filesLikelyToChange[0].pathStatus).toBe("current");
+    expect(result.testsLikelyToExtend[0].pathStatus).toBe("current");
+    expect(result.tddRef.status).toBe("current");
+    expect(result.sidecars[0].status).toBe("current");
+    expect(result.constraintsRaw).toContain("none surfaced");
+  });
+
+  it("flags drift when a pattern's symbol has been removed", async () => {
+    const repo = makeRepo("symbol-drift");
+    writeFileSync(join(repo, "auth.ts"), "// empty\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    const description = `h2. Implementation Notes
+Research baseline: my-repo@${baseline}
+
+*Existing patterns to extend:*
+* *Auth* — \`gone\` in [auth.ts#L1-L1|https://github.com/o/my-repo/blob/${baseline}/auth.ts#L1-L1]`;
+    getIssue.mockResolvedValueOnce({ fields: { description } });
+
+    const result = await driftCheck("X-SYM", { repoRoot: repo });
+    expect(result.status).toBe("drifted");
+    expect(result.patterns[0].symbolStatus).toBe("drifted");
+    expect(result.patterns[0].symbolReason).toBe("symbol removed");
+  });
+
+  it("--lite mode preserves the legacy report shape", async () => {
+    const repo = makeRepo("lite-mode");
+    writeFileSync(join(repo, "f.txt"), "a\nb\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    const description = `h2. Implementation Notes
+Research baseline: my-repo@${baseline}
+- [f.txt#L1-L2|https://github.com/o/my-repo/blob/${baseline}/f.txt#L1-L2]`;
+    getIssue.mockResolvedValueOnce({ fields: { description } });
+
+    const result = await driftCheck("X-LITE", { repoRoot: repo, lite: true });
+    expect(result.mode).toBe("lite");
+    expect(result.patterns).toBeUndefined();
+    expect(result.filesLikelyToChange).toBeUndefined();
   });
 });

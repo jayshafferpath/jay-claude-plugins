@@ -36,7 +36,7 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 
 ## Label Reference
 
-The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`, `TERMINAL_LABELS`). Progress flow is roughly: `ClaudeReady` → `ClaudeDriftChecked` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → `ClaudePRApproved` → `ClaudeNeedsReview` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every transition — it consults `PROGRESS_LABELS` to clear the previous state automatically.
+The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`, `TERMINAL_LABELS`). Progress flow is roughly: `ClaudeReady` → `ClaudeDriftChecked` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → `ClaudePRApproved` → `ClaudeNeedsReview` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every transition — it consults `PROGRESS_LABELS` to clear the previous state automatically, and `LABEL_TO_STATUS_TRANSITIONS` to move the Jira workflow status when applicable (currently: `ClaudeNeedsReview` → "In Review"). When no matching workflow transition exists the label change still applies and the CLI emits a warning.
 
 Feature branches are derived automatically: every Story/Epic container is a feature branch named after its Jira key (e.g. `EPIC-123`), or after the value of a `branch:<name>` label on the container if set. The tooling creates the branch on first use, basing it on `main` (or on a blocker container's branch — see `resolve-stack` output `container.baseBranch`).
 
@@ -211,13 +211,16 @@ This sub-procedure is parameterized and called from both **S4.9–S4.12** (per-t
 3. After execution: if there are uncommitted changes, stage and commit, then push: `git push origin {BRANCH}`.
 4. Mark step P4 done in `STORAGE`.
 
-### Step P5: Copilot review comments resolved
+### Step P5: CI green and Copilot review comments resolved with judgement
 **Skip if**: step is already marked done in `STORAGE`.
 
+This step replaces the prior blind `pr-watch` auto-fix loop. `/cop-fight` drives CI to green, then evaluates each Copilot comment for soundness — implementing the comments that hold up to scrutiny and dismissing the rest with an explanatory reply.
+
 1. `cd {WORK_DIR}`
-2. Use the Skill tool to run skill `pr-watch` with args `--rounds 1 --auto --interval 30`.
-3. If pr-watch made changes and pushed, update `HEAD_SHA`.
-4. Mark step P5 done in `STORAGE`.
+2. Run the `/cop-fight` command with default args (`--rounds 5 --interval 30`). If you want to bound the loop more aggressively for ticket-work resume safety, pass `--rounds 3` instead.
+3. If `/cop-fight` stops with red CI or pending Copilot comments after max rounds, **stop and surface the failure to the user** — do not mark P5 done. The next `/ticket-work` invocation will resume here.
+4. If `/cop-fight` made changes and pushed, update `HEAD_SHA`.
+5. Mark step P5 done in `STORAGE`.
 
 ### Step P6: PR review summary posted
 **Skip if**: step is already marked done in `STORAGE`.
@@ -602,6 +605,42 @@ Parse the JSON: `{ workDir, branch, mode, created, fetched }`. Set `WORK_DIR = w
 
 In serial mode the branch is checked out in `{REPO_ROOT}`; in worktree mode the worktree is created at `{REPO_ROOT}/../{TICKET_KEY}`.
 
+### S2.5: Rebase onto origin/{BASE_BRANCH}
+
+Every `/ticket-work` invocation (initial pickup or resume) rebases the ticket branch onto the latest `origin/{BASE_BRANCH}` before loading the checklist. This keeps the ticket synced with whatever it's stacked on — `main` for top-of-stack tickets, the container's feature branch for mid-stack work, or a sibling ticket's branch for chained tickets.
+
+**Skip if** `ensure-work-dir` reported `created: true` for this branch in S2 (a freshly created branch is already at base — no rebase needed).
+
+1. `cd {WORK_DIR}`
+2. Fetch the base:
+   ```bash
+   git fetch origin {BASE_BRANCH}
+   ```
+3. Check whether a rebase is needed (the branch tip is already a descendant of `origin/{BASE_BRANCH}`):
+   ```bash
+   git merge-base --is-ancestor origin/{BASE_BRANCH} HEAD
+   ```
+   If exit 0, skip the rebase — already up to date.
+4. Otherwise rebase:
+   ```bash
+   git rebase origin/{BASE_BRANCH}
+   ```
+5. **On conflict**: abort and surface to the user.
+   ```bash
+   git rebase --abort
+   ```
+   Move the ticket to `ClaudeFailed`:
+   ```bash
+   set-ticket-state {TICKET_KEY} --to ClaudeFailed
+   append-activity {TICKET_KEY} --heading "Rebase conflict" --body "Conflict rebasing \`{BRANCH_NAME}\` onto \`origin/{BASE_BRANCH}\`. Resolve manually and remove \`ClaudeFailed\` to retry."
+   ```
+   **Stop** — the user must resolve the conflict and re-run.
+6. **On success with new commits applied**: force-with-lease push so origin reflects the rebased branch:
+   ```bash
+   git push --force-with-lease origin {BRANCH_NAME}
+   ```
+   Skip the push if the rebase was a no-op (no commits replayed).
+
 ## S3: Load or Resume Checklist
 
 The checklist lives as a managed Jira comment (tagged with `[claude-checklist-sync]` marker). No local checklist file is created.
@@ -649,7 +688,7 @@ Before executing the checklist, verify that the ticket's `Implementation Notes` 
 - The checklist already shows step 2 (S4.2 execute) as `[x]`. Drift detection is moot once implementation has started.
 - The Jira label `ClaudeDriftChecked` is present AND was added after the most recent push to `BASE_BRANCH`. (This makes drift checks idempotent within a session but re-runs if upstream has moved.)
 
-### S3.5a/b: Parse + Diff Cited Ranges
+### S3.5a/b: Parse + Verify Implementation Notes
 
 Run:
 
@@ -657,21 +696,49 @@ Run:
 drift-check {TICKET_KEY} --repo-root {WORK_DIR}
 ```
 
-Parse the JSON output: `{ ticket, status, baseline, citations[], drifted, unknown, total }`. The CLI handles the parse/diff loop (S3.5a + S3.5b) — it extracts the `h2. Implementation Notes` block, parses `Research baseline: {repo}@{sha}` plus each `[{path}#L{start}-L{end}|{permalink}]` citation, and runs `git log -L` against each cited range. It also detects file removal and rename (via `git log --follow`).
+Parse the JSON output. The CLI runs the **full** check battery by default and emits:
+
+```
+{ ticket, status, baseline,
+  citations[],            // line-range diff per citation (existing behavior)
+  patterns[],             // each pattern's symbolStatus + symbolNewPaths
+  filesLikelyToChange[],  // each path's existence/rename status at HEAD
+  testsLikelyToExtend[],  // same, scoped to test paths
+  tddRef,                 // TDD path/anchor still resolves at HEAD
+  sidecars[],             // per-repo sidecar presence
+  constraintsRaw,         // raw text for the LLM constraints pass below
+  drifted, unknown, total, mode: "full" }
+```
+
+The CLI extracts the `h2. Implementation Notes` block, parses each subsection (`Research baseline`, `*Existing patterns to extend:*`, `*Files likely to change:*`, `*Tests likely to extend:*`, `*Constraints:*`) plus the upstream `h2. TDD Reference`, and runs all structural verifiers in one pass. Top-level `status` is `"drifted"` if **any** sub-check drifted.
 
 If `status` is `no-notes`, this protocol is moot — set `ClaudeDriftChecked` and continue to S4.
 
+### S3.5b.i: Constraints pass (LLM verification)
+
+The CLI cannot tell whether listed constraints are still applicable. After parsing the JSON:
+
+1. If `constraintsRaw` is null or only contains "none surfaced", skip this step.
+2. Otherwise, for each constraint bullet, read the cited region at HEAD via `Read` / `Grep` and decide: **still applicable**, **already resolved**, or **scope changed**.
+3. If any constraint is `already resolved` or `scope changed`, treat the ticket as drifted even if the structural pass returned `current` — fold those changes into the refresh in S3.5c.
+
 ### S3.5c: Decide
 
-**No drift** (`status === "current"`):
+**No drift** (`status === "current"` AND constraints pass found nothing):
 - Add `ClaudeDriftChecked`: `set-ticket-state {TICKET_KEY} --add ClaudeDriftChecked`.
 - Append a brief activity log entry: `Drift check passed — research baseline {sha} still current.` Continue to S4.
 
 **Drift detected**:
 - Re-run per-ticket research using the same protocol as `planner` Phase 5.0a–5.0c, scoped to this ticket. Use the current `git rev-parse HEAD` per repo as the new baseline.
-- Compose a new Implementation Notes block.
-- Update the ticket description via `mcp__atlassian__editJiraIssue`: replace the existing `h2. Implementation Notes` block with the new one. Preserve every other section.
-- Post a Jira comment (use `mcp__atlassian__addCommentToJiraIssue`, not `append-activity` — this is a substantive change worth a dedicated comment) showing:
+- Compose a new Implementation Notes block, taking into account every drifted check type:
+  - For each `patterns[].symbolStatus === "drifted"` with `symbolNewPaths`, re-pin the citation to the new path. If `reason === "symbol removed"` and there's no obvious replacement, drop the bullet and call it out below.
+  - For each `filesLikelyToChange[].pathStatus === "drifted"`, update the path (use `newPath` if present) or drop the entry if the surface no longer exists.
+  - Same for `testsLikelyToExtend[]`.
+  - If `tddRef.status === "drifted"`, refresh the `h2. TDD Reference` block with the current anchor / path. If the TDD has been substantially restructured, surface a question to the user before regenerating notes — the planner may need a re-run.
+  - For sidecars with `status === "unknown"` whose reason mentions removal, flag in the comment but don't block (sidecars in the owner repo are expected to be `unknown` here).
+  - Apply any constraints adjustments from S3.5b.i.
+- Update the ticket description via `mcp__atlassian__editJiraIssue`: replace the existing `h2. Implementation Notes` block (and `h2. TDD Reference` if drifted) with the new content. Preserve every other section.
+- Post a Jira comment (use `mcp__atlassian__addCommentToJiraIssue`, not `append-activity`) showing:
   ```
   h3. Drift detected — Implementation Notes refreshed
 
@@ -679,14 +746,27 @@ If `status` is `no-notes`, this protocol is moot — set `ClaudeDriftChecked` an
   New baseline: {new_repo}@{new_sha}{, ...}
 
   *Citations that drifted:*
-  * `{path}#L{start}-L{end}` — {summary of change, e.g. "lines moved", "file renamed to {new_path}", "function signature changed"}
-  * ...
+  * `{path}#L{start}-L{end}` — {summary, e.g. "lines moved", "file renamed to {new_path}"}
+
+  *Patterns with missing/moved symbols:*
+  * `{symbol}` — {moved to {newPaths[0]} | removed (no replacement found)}
+
+  *Cited files removed or renamed:*
+  * `{path}` (Files likely to change | Tests likely to extend) — {reason, with newPath if known}
+
+  *TDD/sidecar issues:*
+  * TDD anchor {anchor} no longer resolves — refreshed to {new_anchor}
+  * Sidecar {repo}.research.md missing in this repo
+
+  *Constraints updated:*
+  * {constraint} — {already resolved | scope changed to {new scope}}
 
   *New citations replacing them:*
   * `{new_path}#L{new_start}-L{new_end}` — `{symbol}` — {why this is the right replacement}
 
   Implementation Notes block updated above. Re-review before approving the plan.
   ```
+  Omit any subsection whose list is empty.
 - If the ticket already has `ClaudeExecuting` or later (plan was generated against stale notes), warn in the comment: `Plan was generated against the prior baseline. Consider re-reviewing the plan against the new Implementation Notes; if the plan needs to change, run /rework.`
 - Add `ClaudeDriftChecked`: `set-ticket-state {TICKET_KEY} --add ClaudeDriftChecked`.
 
@@ -950,8 +1030,12 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
 
 1. Make sure we are in the working directory: `cd {WORK_DIR}`
 2. Ensure plans directory exists: `mkdir -p {PLANS_DIR}`
-3. Use the Skill tool to run skill `pr-review`
-4. Mark step 5 as done and sync checklist to Jira.
+3. Pin the review base so `pr-review` diffs against the ticket's actual stacked base, not `main`. At this point in the lifecycle no PR exists yet (it's created later at S4.10), so the skill's `pr-context.sh` would otherwise fall back through `PR base → origin/HEAD` and pick `main`. Writing `branch.<BRANCH_NAME>.base` is the highest-priority hook in that resolver. Use the `origin/{BASE_BRANCH}` form so the value resolves even when the local branch ref doesn't exist (worktree mode, branches that have only been fetched):
+   ```bash
+   git config branch.{BRANCH_NAME}.base origin/{BASE_BRANCH}
+   ```
+4. Use the Skill tool to run skill `pr-review`
+5. Mark step 5 as done and sync checklist to Jira.
 
 ---
 
