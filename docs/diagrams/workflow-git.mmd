@@ -1,0 +1,44 @@
+---
+title: Ticket-Work Lifecycle in Git
+config:
+  theme: base
+  themeVariables:
+    git0: '#1f6feb'
+    git1: '#8957e5'
+    git2: '#2da44e'
+    git3: '#bf8700'
+    gitBranchLabel0: '#ffffff'
+    gitBranchLabel1: '#ffffff'
+    gitBranchLabel2: '#ffffff'
+    gitBranchLabel3: '#ffffff'
+    commitLabelFontSize: '13px'
+    tagLabelFontSize: '12px'
+  gitGraph:
+    showCommitLabel: true
+    mainBranchName: main
+---
+gitGraph
+  commit id: "M0"
+  commit id: "M1"
+  branch feature/EPIC
+  commit id: "branch off main" tag: "prework"
+  branch STORY-1
+  commit id: "S1 red+green" type: HIGHLIGHT
+  commit id: "S1 refactor"
+  commit id: "S1 review" tag: "ticket-work"
+  checkout feature/EPIC
+  merge STORY-1 id: "S1-squash" tag: "merged/STORY-1"
+  branch STORY-2
+  commit id: "S2 red+green" type: HIGHLIGHT
+  commit id: "S2 review" tag: "ticket-work"
+  checkout feature/EPIC
+  merge STORY-2 id: "S2-squash" tag: "merged/STORY-2"
+  checkout main
+  commit id: "M2"
+  cherry-pick id: "S1-squash" parent: "S1 review" tag: "promote-to-main"
+  checkout feature/EPIC
+  commit id: "reset + remerge" type: REVERSE tag: "cleanup"
+  checkout STORY-2
+  commit id: "rebase onto main" type: REVERSE tag: "stack-rebase"
+  checkout main
+  cherry-pick id: "S2-squash" parent: "S2 review" tag: "promote-to-main"

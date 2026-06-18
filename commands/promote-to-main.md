@@ -61,35 +61,30 @@ and **stop**.
 
 Filter out tickets from `STACK_ORDER` where `branch` is null — display "Warning: no branch found for {KEY}, skipping" for each.
 
-### 1b-final: Auto-Cleanup Merged Ancestors
+### 1b-final: Ensure Cleanup Prerequisites
 
-Before selecting the target, sweep `STACK_ORDER` for tickets that have shipped to main but haven't been cleaned up yet. Without `/cleanup`, the stack still bases on stale branches and the feature branch drifts from main — promotion would rebase onto an inconsistent base.
+Run the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`) with `STACK_ORDER`, `REPO_ROOT`, and `RESOLVED_KEY` from Step 1b. The sub-procedure verifies every ticket merged into the feature branch has its `merged/{KEY}` tag on origin; if any are missing, it inline-runs `/cleanup --yes --no-rebase --no-refresh-feature` to backfill the tag, halting only when `/cleanup` itself cannot produce one.
 
-Detect uncleaned ancestors by walking `STACK_ORDER`: any entry with `mergedIntoMain === true` whose `entry.branch` still exists on origin (probe via `git ls-remote --heads origin {entry.branch}` from `{REPO_ROOT}`) is uncleaned.
-
-If any uncleaned ancestor exists, **delegate to `/orchestrate --scope {CONTAINER_KEY}`**. The orchestrator owns the cleanup-cascade auto-runner (`/cleanup` per ancestor, `[cleanup-outcome]` parsing, halt-on-partial semantics) — see `commands/orchestrate.md` "Cleanup merged tickets" branch for the canonical sweep.
-
-Display:
-```
-Promote-to-main halted: detected uncleaned merged ancestor(s) in {CONTAINER_KEY}: {LIST}.
-
-Run `/orchestrate --scope {CONTAINER_KEY}` to sweep the cleanup cascade, then re-run `/promote-to-main {RESOLVED_KEY}`.
-```
-
-…and **stop**. Promote-to-main is intentionally a single-purpose command — it does not run cleanup itself.
+After the sub-procedure returns, `STACK_ORDER` has been refreshed to reflect any state shifts cleanup may have caused. Continue to Step 1c with the refreshed view.
 
 ### 1c: Select Target Ticket
 
 If `{RESOLVED_KEY}` matches a ticket key in `STACK_ORDER` (i.e. a leaf, not the container): that ticket is `CURRENT_TICKET`. Skip to Step 1d.
 
-Otherwise, `{RESOLVED_KEY}` is the container key. **Git history on the feature branch is the authority** for which ticket promotes next:
+Otherwise, `{RESOLVED_KEY}` is the container key. **Git history on the feature branch is the authority** for which ticket promotes next, with `merged/{KEY}` tags as the marker (created by `/cleanup` Step 2d):
 
-1. Read the merge order from the feature branch:
+1. Read the merge order from the feature branch by walking commits and resolving tags:
    ```bash
    cd {REPO_ROOT}
-   git log --oneline --first-parent origin/{FEATURE_BRANCH} --grep="^Merge "
+   git log --first-parent origin/{FEATURE_BRANCH} --format=%H
    ```
-   Parse each line `^\w+ Merge ([A-Z]+-\d+)` to extract a ticket key. The git command lists newest-first; reverse to get chronological merge order. Call this list `GIT_MERGE_ORDER`.
+   For each SHA in the output, run:
+   ```bash
+   git tag --points-at {SHA} 'merged/*'
+   ```
+   Each matching tag has the form `merged/{KEY}`; strip the prefix to extract the ticket key. Skip SHAs with no `merged/*` tag (commits unrelated to ticket merges, e.g. integration commits). The `git log` command lists newest-first; reverse the resulting key sequence to get chronological merge order. Call this list `GIT_MERGE_ORDER`.
+
+   The Step 1b-final prerequisite gate guarantees every `mergedIntoFeature` ticket has its tag on origin, so `GIT_MERGE_ORDER` should match `STACK_ORDER`'s feature-merged subset modulo ordering.
 
 2. Validate against Jira's topological order: take `STACK_ORDER` and keep only entries whose key appears in `GIT_MERGE_ORDER`, preserving their original order. Call this `JIRA_MERGED_ORDER`. Compare it element-by-element to `GIT_MERGE_ORDER`. On mismatch, display:
 
@@ -136,18 +131,36 @@ Determine the current state of `CURRENT_TICKET`:
 
 ---
 
-## Step 2: Rebase onto Main
+## Step 2: Replay onto Main
 
-The goal is to isolate just this ticket's changes on top of main, even though the branch currently contains ancestor tickets' changes from the stacking.
+The goal is to isolate just this ticket's changes on top of main. The ticket's own dev branch carries ancestor tickets' commits from the stacking; we don't want those on the main-targeting PR.
 
-### 2a: Determine Rebase Strategy
+Two strategies, in preference order:
 
-- `ONTO` = `origin/main`
-- `UPSTREAM_BRANCH` = the point where this ticket's branch diverged from its base:
+1. **Tag-based replay** (preferred): cherry-pick the squash commit on the feature branch (tagged `merged/{CURRENT_TICKET.key}` by `/cleanup` Step 2d). The squash commit is exactly what was reviewed-and-approved into the feature branch — byte-for-byte the diff we want on main. Doesn't depend on the predecessor's dev branch still existing.
+2. **Rebase fallback** (legacy): `git rebase --onto origin/main {UPSTREAM_BRANCH} {BRANCH_NAME}`. Used only when the `merged/{KEY}` tag is unavailable — i.e. tickets that shipped before the tag was introduced, or repos where Step 1b-final's backfill couldn't produce one.
+
+### 2a: Determine Strategy
+
+Probe for the merge tag:
+
+```bash
+cd {REPO_ROOT} && git rev-parse --verify refs/tags/merged/{CURRENT_TICKET.key}
+```
+
+- If the command succeeds (tag resolves to a SHA): set `STRATEGY = "tag"` and `MERGE_SHA = <the resolved SHA>`. Skip the `UPSTREAM_BRANCH` derivation.
+- If the command fails (tag absent): set `STRATEGY = "rebase"` and derive `UPSTREAM_BRANCH`:
   - If `CURRENT_TICKET` was selected via `GIT_MERGE_ORDER` (container-key path): use the predecessor in `GIT_MERGE_ORDER` — the entry immediately before `CURRENT_TICKET.key`. If `CURRENT_TICKET` is the first entry (no predecessor), no rebase is needed.
   - Otherwise (leaf ticket-key path): if this ticket has a same-stack blocker, `UPSTREAM_BRANCH` = the blocker's branch name (the changes we want to strip). If this is the first ticket in the stack (no blocker), no rebase is needed — it's already based on the feature branch which should be at or near main.
+  - Look up the branch name for `UPSTREAM_BRANCH` from the corresponding entry in `STACK_ORDER`. If the predecessor branch no longer exists (it was deleted by terminal cleanup after the predecessor promoted to main), display:
+    ```
+    Refuse to promote — STRATEGY=rebase requires the predecessor branch {UPSTREAM_BRANCH}, which no longer exists.
+    The merged/{CURRENT_TICKET.key} tag is also missing, so the tag-based replay isn't available either.
 
-Look up the branch name for `UPSTREAM_BRANCH` from the corresponding entry in `STACK_ORDER`.
+    Recovery: re-run /cleanup {CURRENT_TICKET.key} --yes --no-rebase --no-refresh-feature to backfill the tag,
+    then re-run /promote-to-main.
+    ```
+    and **stop**. Step 1b-final's backfill should have caught this; reaching here means cleanup couldn't produce the tag.
 
 ### 2b: Checkout
 
@@ -159,9 +172,20 @@ cd {REPO_ROOT} && git checkout {BRANCH_NAME}
 
 If `git checkout` reports the index is stale and refuses, fall back to a single `git fetch origin` and retry — but do not fetch unconditionally.
 
-### 2c: Rebase
+### 2c: Replay
 
-If this ticket has a same-stack blocker (need to strip ancestor changes):
+**If `STRATEGY == "tag"`** — reset the ticket branch to fresh main and cherry-pick the squash commit:
+
+```bash
+cd {REPO_ROOT} && git reset --hard origin/main
+cd {REPO_ROOT} && git cherry-pick {MERGE_SHA}
+```
+
+The reset throws away the ticket branch's intermediate dev commits — the resulting PR diff is the single squash commit that was already reviewed on the feature branch. Main is going to squash-merge anyway, so individual commit history isn't preserved either way.
+
+If the cherry-pick reports conflicts, drop into Step 2d. (`git cherry-pick` uses the same conflicted-index state as `git rebase`, so the same auto-resolution loop applies — replace `git rebase --continue` with `git cherry-pick --continue` and `git rebase --abort` with `git cherry-pick --abort` when reading 2d.)
+
+**If `STRATEGY == "rebase"`** — legacy path. If this ticket has a same-stack blocker (need to strip ancestor changes):
 
 ```bash
 git rebase --onto origin/main {UPSTREAM_BRANCH} {BRANCH_NAME}
@@ -177,7 +201,13 @@ git rebase origin/main
 
 Initialize `AUTO_RESOLVED = []` (a list of `{file, summary}` records) to be reported at the end of the run.
 
-If the rebase encounters conflicts, attempt **semantic auto-resolution** using the loop below. Do **not** abort on the first conflict — work through them.
+If the rebase or cherry-pick encounters conflicts, attempt **semantic auto-resolution** using the loop below. Do **not** abort on the first conflict — work through them.
+
+> Throughout 2d, "continue" and "abort" map to the active operation:
+> - `STRATEGY == "tag"` → `git cherry-pick --continue` / `git cherry-pick --abort`
+> - `STRATEGY == "rebase"` → `git rebase --continue` / `git rebase --abort`
+>
+> The conflicted-index inspection commands (`git show :1:`, `:2:`, `:3:`, `git diff --name-only --diff-filter=U`, etc.) are identical across both.
 
 #### 2d.i: Resolve the Current Conflict Set
 
@@ -224,11 +254,14 @@ If `AUTO_RESOLVED` is non-empty, validate before pushing:
 
 If semantic resolution fails or post-rebase validation fails:
 
-1. Abort the rebase if still in progress: `git rebase --abort` (safe to run even if not in a rebase — it'll just error harmlessly).
-2. Display:
+1. Abort the in-progress operation:
+   - If `STRATEGY == "tag"`: `git cherry-pick --abort`
+   - If `STRATEGY == "rebase"`: `git rebase --abort`
+   (Both are safe to run even if not in progress — they'll just error harmlessly.)
+2. Display (substitute the strategy-specific recovery commands):
 
 ```
-CONFLICT rebasing {BRANCH_NAME} onto main — auto-resolution failed
+CONFLICT replaying {BRANCH_NAME} onto main — auto-resolution failed
 
 Files Claude attempted to resolve:
 - path/to/file1.ts — {summary}
@@ -237,12 +270,18 @@ Files Claude attempted to resolve:
 Files Claude could not resolve / failing validation:
 - path/to/file3.ts — {reason}
 
-Rebase aborted. Resolve manually:
+Aborted. Resolve manually:
   cd {REPO_ROOT}
   git checkout {BRANCH_NAME}
-  git rebase --onto origin/main {UPSTREAM_BRANCH} {BRANCH_NAME}
+  {if STRATEGY == "tag":
+    "git reset --hard origin/main
+  git cherry-pick " + MERGE_SHA + "
   # resolve conflicts
-  git rebase --continue
+  git cherry-pick --continue"
+  else:
+    "git rebase --onto origin/main " + UPSTREAM_BRANCH + " " + BRANCH_NAME + "
+  # resolve conflicts
+  git rebase --continue"}
 ```
 
 3. **STOP** — do not continue.

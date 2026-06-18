@@ -136,6 +136,21 @@ Otherwise, store `PR_NUMBER` = `prNumber`, `PR_URL` = `prUrl`, `MERGE_SHA` = `me
 
 (This refusal is intentionally stricter than `/prune`'s parallel check at `commands/prune.md:162-168`. `/cleanup` is about to delete the branch and transition Jira to Done — both irreversible — so it requires the merge to be a confirmed ancestor of `origin/{MERGE_TARGET}`. `/prune` is about to *revert* a merge from the feature branch; if the merge isn't reachable there, there's simply nothing to revert and prune can safely skip step 6c and continue with PR close + Jira cancel. The asymmetry reflects what each command is doing, not an oversight.)
 
+### 2d: Tag the Merge Commit on Feature Branch
+
+**Skip if** `MERGE_TARGET == "main"` — terminal cleanup deletes the tag in Step 4d instead.
+
+When the cleaned ticket merged into a feature branch (Phase-1 cleanup), tag the squash commit so downstream commands can locate the merge without parsing commit messages. The tag name encodes the ticket key.
+
+```bash
+cd {REPO_ROOT} && git tag -f merged/{TICKET_KEY} {MERGE_SHA}
+cd {REPO_ROOT} && git push --force origin refs/tags/merged/{TICKET_KEY}
+```
+
+`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`); commands that consume clean stack state (`/promote-to-main`, `/ticket-work` Q5/S2.5, `/stack-rebase`) refuse to run when this tag is missing on a `mergedIntoFeature` ticket.
+
+If the push fails (network, permissions): warn and continue. The local tag is in place; the remote can be re-pushed manually with `git push --force origin refs/tags/merged/{TICKET_KEY}`. The downstream gate will catch the missing remote tag and re-trigger cleanup.
+
 ---
 
 ## Step 3: Confirm with User
@@ -230,6 +245,17 @@ cd {REPO_ROOT} && git push origin --delete {BRANCH_NAME} 2>&1
 If the remote branch is already gone (`remote ref does not exist`), continue silently. For any other error, report it but **continue** — remote branch state is not load-bearing for the rest of cleanup.
 
 Display: "Deleted branch {BRANCH_NAME} (local + remote)."
+
+### 4d: Delete merged/{TICKET_KEY} Tag
+
+Terminal cleanup retires the tag created in Step 2d during Phase-1. Once the ticket is on main, the tag is no longer load-bearing — and leaving stale `merged/*` tags around clutters `git tag --points-at` lookups elsewhere.
+
+```bash
+cd {REPO_ROOT} && git push origin :refs/tags/merged/{TICKET_KEY} 2>/dev/null
+cd {REPO_ROOT} && git tag -d merged/{TICKET_KEY} 2>/dev/null
+```
+
+Both fail silently if the tag is absent (e.g. ticket never went through Phase-1 cleanup, or terminal cleanup is being re-run). Either failure mode is fine — continue.
 
 ---
 
