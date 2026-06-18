@@ -169,6 +169,73 @@ When `container` is `null` (standalone ticket with no Story/Epic container), the
 
 ---
 
+# Shared sub-procedure: Ensure Cleanup Prerequisites
+
+This sub-procedure enforces that every ticket merged into a feature branch has been cleaned up before any downstream command consumes the stack state. Cleanup creates a `merged/{TICKET_KEY}` tag on the merge commit (see `commands/cleanup.md` Step 2d); commands that traverse merged history (`/promote-to-main` Step 1c, `/ticket-work` Q5/S2.5, `/stack-rebase`) refuse to run when the tag is missing.
+
+The gate is self-healing: if a ticket is merged-into-feature but lacks its tag, this sub-procedure inline-runs `/cleanup --yes --no-rebase --no-refresh-feature` to backfill the tag. It only halts when `/cleanup` itself cannot produce the tag (PR not merged, MERGE_SHA unreachable, etc.) — those failures need human investigation.
+
+## Inputs
+
+- `STACK_ORDER` — the topologically sorted stack from the **Stack Context Resolution** sub-procedure.
+- `REPO_ROOT` — passed to `git ls-remote` for tag probes.
+- `RESOLVED_KEY` — the original argument the calling command was invoked with (used in error messages so the user knows what to re-run).
+
+## Procedure
+
+1. **Bulk-fetch existing tags** in one network round trip:
+   ```bash
+   cd {REPO_ROOT} && git ls-remote origin 'refs/tags/merged/*'
+   ```
+   Parse each line `<sha>\trefs/tags/merged/{KEY}` into a set `EXISTING_TAGS = { KEY, ... }`. If the command fails (network), display the error and **stop** — we cannot reason about prerequisites without the tag list.
+
+2. **Build `MISSING_TAGS`** by walking `STACK_ORDER`. An entry needs a tag when:
+   - `entry.mergedIntoFeature === true`, AND
+   - `entry.mergedIntoMain === false` (terminal cleanup deletes the tag — main-merged tickets shouldn't have one), AND
+   - `entry.key ∉ EXISTING_TAGS`.
+
+   If `MISSING_TAGS` is empty, return — prerequisites satisfied.
+
+3. **Inline backfill** for each entry in `MISSING_TAGS`, in stack order:
+   - Display: `Auto-fixing missing cleanup for {entry.key}…`
+   - Use the `Skill` tool to run skill `cleanup` with args `{entry.key} --yes --no-rebase --no-refresh-feature`.
+     - `--yes` skips the confirmation prompt.
+     - `--no-rebase --no-refresh-feature` keep the cleanup focused on tag creation. Cascade work is the calling command's responsibility (or `/orchestrate`'s) — this sub-procedure just unblocks the stack gate.
+   - Re-probe the tag: `cd {REPO_ROOT} && git ls-remote origin refs/tags/merged/{entry.key}`.
+   - If still empty, `/cleanup` refused to create the tag (typically because its own Step 2 verification failed — no merged PR found, or MERGE_SHA not reachable from `origin/{MERGE_TARGET}`). Display:
+
+     ```
+     Prerequisite cleanup failed for {entry.key}: tag merged/{entry.key} was not created.
+
+     /cleanup {entry.key} did not produce the expected tag — this typically means:
+       - the ticket's PR has not actually merged yet, or
+       - the merge commit is not reachable from origin/<merge-target>, or
+       - the ticket has no branch on record.
+
+     Investigate /cleanup {entry.key} manually, then re-run the original command:
+       <calling command> {RESOLVED_KEY}
+     ```
+
+     and **stop** the calling command.
+
+4. **Refresh `STACK_ORDER`** by re-running the **Stack Context Resolution** sub-procedure with the same `KEY` and `FETCH=true`. Cleanup may have shifted `mergedIntoFeature`/`mergedIntoMain` flags or moved branches, so the caller should not reuse the pre-backfill stack view.
+
+5. Return.
+
+## Performance note
+
+`git ls-remote origin 'refs/tags/merged/*'` is a single network call that returns every tag the gate cares about — pre-filter `EXISTING_TAGS` once at step 1 instead of probing per-ticket. For a stack with no `mergedIntoFeature: true` entries, the sub-procedure short-circuits at step 2 with no work.
+
+## Callers
+
+- `/promote-to-main` — Step 1b-final.
+- `/ticket-work` Q5 — before fanning out parallel agents.
+- `/ticket-work` S2.5 — before rebasing the ticket branch.
+- `/stack-rebase` — before cascade rebase.
+- `/orchestrate` — implements its own sweep but should delegate to this sub-procedure as the canonical detection.
+
+---
+
 # Shared sub-procedure: PR Push & Review
 
 This sub-procedure is parameterized and called from both **S4.9–S4.12** (per-ticket PR flow) and **C3.1–C3.7** (Mode C feature-branch PR flow). It captures the common shape — generate description, push as draft, review-plan + execute, Copilot loop, post review summary — so changes to that shape only need to be made once.
@@ -1118,48 +1185,46 @@ After S4.7a:
    - If any issues are marked unresolved or incomplete: run `set-ticket-state {TICKET_KEY} --to ClaudeFailed`, append the unresolved-issues list to the activity log (`append-activity {TICKET_KEY} --heading "Review issues unresolved" --body-file <issues.md>`), and **stop**.
    - Display: "Review has unresolved issues. Fix them and re-run `/ticket-work {TICKET_KEY}`."
    - Only proceed if ALL issues identified by the review have been resolved.
-2. Ensure feature branch is up to date:
-   ```bash
-   cd {WORK_DIR} && git fetch origin && git checkout {FEATURE_BRANCH} && git pull origin {FEATURE_BRANCH}
-   ```
-3. Merge the ticket branch:
-   ```bash
-   git merge {BRANCH_NAME} --no-ff -m "Merge {TICKET_KEY}: {SUMMARY}"
-   ```
-4. If merge conflicts occur:
-   - Attempt automatic resolution for trivial conflicts
-   - If unresolvable: abort the merge (`git merge --abort`), run `set-ticket-state {TICKET_KEY} --to ClaudeFailed`, and **stop**
-   - Display: "Merge conflict merging {BRANCH_NAME} into {FEATURE_BRANCH}. Investigate and re-run."
-5. Push the updated feature branch:
-   ```bash
-   git push origin {FEATURE_BRANCH}
-   ```
-6. Return to the ticket's working directory:
-   - If `SERIAL_MODE`: `git checkout {BRANCH_NAME}`
-   - If worktree mode: `cd {WORK_DIR}`
-7. Mark steps 8-12 as done in this ticket's checklist and sync to Jira. Those steps describe per-ticket PR work that does not apply here — feature-branch tickets do not get their own main-targeting PR; the container's Mode C flow ships them as a single feature-branch PR. Stamping 8-12 as done keeps the resume logic from looping back into per-ticket PR steps that have nothing left to do.
-8. Append to the activity log:
-   ```bash
-   append-activity {TICKET_KEY} --heading "Merged to feature branch" --body "Merged into feature branch \`{FEATURE_BRANCH}\`."
-   ```
-9. Update Jira labels — move the ticket to `ClaudeNeedsReview`:
-   ```bash
-   set-ticket-state {TICKET_KEY} --to ClaudeNeedsReview
-   ```
-10. Display:
-    ```
-    Ticket {TICKET_KEY} - Merged to Feature Branch
 
-    Branch: {BRANCH_NAME} → {FEATURE_BRANCH}
-    All review issues resolved. Merged locally and pushed.
-    ```
-11. Proceed to S6 (promote downstream), then stop.
+2. **Open a PR from `{BRANCH_NAME}` into `{FEATURE_BRANCH}`** by running the **Shared sub-procedure: PR Push & Review** with these bindings:
+   - `WORK_DIR` = `WORK_DIR`
+   - `BRANCH` = `BRANCH_NAME`
+   - `BASE` = `FEATURE_BRANCH`
+   - `JIRA_KEY` = `TICKET_KEY`
+   - `STORAGE` = the Jira checklist on `{TICKET_KEY}` (use `sync-checklist {TICKET_KEY}` to read/write)
+   - `MARK_READY` = true (the integration PR opens ready-for-review — `/cop-fight` at P5 has already driven CI green and judged Copilot comments before the human reviews)
+   - `LABEL_FLIP` = `set-ticket-state {TICKET_KEY} --to ClaudeNeedsReview` applied at P2
+
+   Run sub-procedure steps **P1, P2, P5, P6, P7** (skip P3/P4 — review work was owned by S4.5/S4.6 against this same ticket diff). The mapping reuses the per-ticket checklist's existing PR-related slots; rather than introducing new steps, the existing 9–12 slots are repurposed for the feature-branch PR:
+   - S4.9 (was S4.7b PR description) ↔ P1
+   - S4.10 (was push as draft) ↔ P2
+   - S4.11 (was Copilot loop) ↔ P5
+   - S4.12 (was review summary) ↔ P6
+   - Mark-ready (P7) is a final inline step here, not a separate checklist entry.
+
+3. After the sub-procedure completes, **stop the per-ticket lifecycle**. Do not proceed to S4.8 — that step (and its `ClaudePRApproved` gate plus S4.9–S4.12) is the standalone-ticket flow targeting `main`. Feature-branch tickets terminate here at "PR open and ready for human review against `{FEATURE_BRANCH}`".
+
+4. Display:
+   ```
+   Ticket {TICKET_KEY} - Feature Branch PR Open
+
+   Branch: {BRANCH_NAME} → {FEATURE_BRANCH}
+   PR: {PR_URL}
+
+   All review issues resolved. PR is ready for human review and merge.
+   After merge, `/cleanup` will create the merged/{TICKET_KEY} tag and
+   `/promote-to-main` becomes available for the stack.
+   ```
+
+5. Proceed to S6 (promote downstream), then stop.
+
+> **Migration note (legacy local merges)**: tickets that previously ran S4.7b under the old local-merge flow already have their work on `{FEATURE_BRANCH}` and have no PR to open. The new flow only applies to tickets reaching S4.7b after this rewrite lands. To finish a legacy in-flight stack, run it through the old workflow manually — checkout the ticket branch, merge into the feature branch locally, then `/promote-to-main` it (the Step 1c tag walk in `/promote-to-main` will skip commits with no `merged/*` tag, so legacy local merges are simply not promotable through the new gate without a backfill).
 
 ---
 
 ### Step S4.8: PR approved
 
-**Skip if**: step 8 is already checked `[x]`.
+**Skip if**: step 8 is already checked `[x]`, OR `FEATURE_BRANCH` is non-null (feature-branch tickets terminate at S4.7b — the integration PR is already open against `{FEATURE_BRANCH}` and does not need a separate `ClaudePRApproved` gate).
 
 Check the ticket's current labels:
 - If `ClaudePRApproved` is present: mark step 8 as done, sync checklist to Jira, and continue.
@@ -1180,6 +1245,8 @@ Check the ticket's current labels:
 ---
 
 ### Steps S4.9–S4.12: PR Push & Review (shared sub-procedure)
+
+**Skip if** `FEATURE_BRANCH` is non-null. Feature-branch tickets terminate at S4.7b — the integration PR into `{FEATURE_BRANCH}` was already opened there using these same checklist slots (9–12) for its sub-procedure mapping. S4.9–S4.12 below describe the **standalone-ticket** path: PR opens against `main` (`PR_TARGET`) and is gated by `ClaudePRApproved` (S4.8).
 
 S4.9 through S4.12 are an instance of the **Shared sub-procedure: PR Push & Review** (defined earlier in this file). Use these bindings:
 
