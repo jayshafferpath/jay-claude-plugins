@@ -144,9 +144,9 @@ describe("seed-checklist e2e", () => {
       `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary New`,
     );
 
-    expect(result.steps).toHaveLength(12);
+    expect(result.steps).toHaveLength(10);
     expect(result.steps[0].done).toBe(false);
-    expect(result.steps[11].done).toBe(false);
+    expect(result.steps[9].done).toBe(false);
     expect(result.markdown).toContain("# FRESH-1 - Work Checklist");
     expect(result.markdown).toContain("- [ ] 1. Plan generated");
   });
@@ -160,28 +160,27 @@ describe("seed-checklist e2e", () => {
     expect(result.steps[1].done).toBe(false);
   });
 
-  it("seeds with steps 1-7 done when ClaudeStackReady label present", async () => {
+  it("seeds with steps 1-6 done when ClaudeStackReady label present", async () => {
     const result = await runAsync(
       `EXEC-1 --work-dir ${WORK_DIR} --branch EXEC-1 --base-branch main --pr-target main --summary Done`,
     );
 
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 6; i++) {
       expect(result.steps[i].done).toBe(true);
     }
-    expect(result.steps[7].done).toBe(false);
+    expect(result.steps[6].done).toBe(false);
   });
 
-  it("seeds with steps 1-10 done when PR exists", async () => {
+  it("seeds with steps 1-9 done when PR exists", async () => {
     const result = await runAsync(
       `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary HasPR`,
       { prExists: true },
     );
 
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 9; i++) {
       expect(result.steps[i].done).toBe(true);
     }
-    expect(result.steps[10].done).toBe(false);
-    expect(result.steps[11].done).toBe(false);
+    expect(result.steps[9].done).toBe(false);
   });
 
   it("uses base_branch and pr_target frontmatter for stacked tickets", async () => {
@@ -194,14 +193,14 @@ describe("seed-checklist e2e", () => {
     expect(result.markdown).not.toContain("feature_branch:");
   });
 
-  it("pre-marks trivial-skipped steps (1, 4, 5, 6) as done with skip suffix", async () => {
+  it("pre-marks trivial-skipped steps (1, 4, 5) as done with skip suffix", async () => {
     const result = await runAsync(
       `TRIV-1 --work-dir ${WORK_DIR} --branch TRIV-1 --base-branch main --pr-target main --summary Trivial`,
     );
 
     expect(result.complexity).toBe("trivial");
     // Skipped steps are pre-checked and labeled.
-    for (const num of [1, 4, 5, 6]) {
+    for (const num of [1, 4, 5]) {
       const step = result.steps[num - 1];
       expect(step.done).toBe(true);
       expect(step.label).toContain("(skipped: trivial)");
@@ -209,7 +208,7 @@ describe("seed-checklist e2e", () => {
     // Non-skipped steps remain unchecked + unlabeled.
     expect(result.steps[1].done).toBe(false); // step 2: execute
     expect(result.steps[2].done).toBe(false); // step 3: AC verify
-    expect(result.steps[6].done).toBe(false); // step 7: stack ready
+    expect(result.steps[5].done).toBe(false); // step 6: stack ready
     expect(result.steps[1].label).not.toContain("(skipped");
     expect(result.markdown).toContain("complexity: trivial");
     expect(result.markdown).toContain(
@@ -234,8 +233,8 @@ describe("seed-checklist e2e", () => {
 
   it("trivial tier preserves stage progress signals (does not flip done→false)", async () => {
     // TRIV-2 has both complexity:trivial and ClaudeExecuting.
-    // ClaudeExecuting normally implies step 1 done; trivial pre-marks 1,4,5,6.
-    // Result: 1, 4, 5, 6 all done; everything else still false.
+    // ClaudeExecuting normally implies step 1 done; trivial pre-marks 1,4,5.
+    // Result: 1, 4, 5 all done; everything else still false.
     const result = await runAsync(
       `TRIV-2 --work-dir ${WORK_DIR} --branch TRIV-2 --base-branch main --pr-target main --summary Mixed`,
     );
@@ -244,7 +243,6 @@ describe("seed-checklist e2e", () => {
     expect(result.steps[0].done).toBe(true); // step 1 (skipped + ClaudeExecuting both want it true)
     expect(result.steps[3].done).toBe(true); // step 4 skipped
     expect(result.steps[4].done).toBe(true); // step 5 skipped
-    expect(result.steps[5].done).toBe(true); // step 6 skipped
     expect(result.steps[1].done).toBe(false); // step 2 execute, not skipped
   });
 

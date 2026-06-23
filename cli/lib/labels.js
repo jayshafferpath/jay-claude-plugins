@@ -61,7 +61,7 @@ export const SUBTASK_EXCLUSION_LABELS = Object.freeze([
 // Complexity tier labels. Set once at intake (manually, or by ticket-work's
 // classification step when no label is present) and never removed by the
 // lifecycle. Drives which steps in S4 actually run — `complexity:trivial`
-// drops S4.1 (plan), S4.4 (refactor), S4.5/S4.6 (pr-review). Absent label
+// drops S4.1 (plan), S4.4 (refactor), S4.5 (pr-review). Absent label
 // means standard.
 export const COMPLEXITY_LABELS = Object.freeze([
   "complexity:trivial",

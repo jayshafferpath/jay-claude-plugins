@@ -5,6 +5,9 @@ allowed-tools:
   - mcp__atlassian__getJiraIssue
   - mcp__atlassian__editJiraIssue
   - mcp__atlassian__addCommentToJiraIssue
+  - mcp__atlassian__atlassianUserInfo
+  - mcp__atlassian__getTransitionsForJiraIssue
+  - mcp__atlassian__transitionJiraIssue
   - mcp__plugin_figma_figma__get_metadata
   - mcp__plugin_figma_figma__get_screenshot
   - Bash(git *)
@@ -33,6 +36,7 @@ This command is the S1 → S3.5 prefix of `/ticket-work` lifted into a standalon
 What it does:
 - Resolves stack context (`resolve-stack`) and gates on unmerged blockers
 - Ensures `ClaudeWork` label is present
+- Claims the ticket: assigns to the current user (with conflict prompt) and transitions to **In Progress**
 - Ensures the feature branch exists (when the ticket is part of a Story/Epic stack)
 - Ensures the working directory exists (worktree by default, branch checkout with `--serial`)
 - Seeds the Jira checklist comment
@@ -41,7 +45,7 @@ What it does:
 
 What it deliberately does NOT do:
 - Move the ticket to `ClaudePlanning`
-- Run `/jira-start` or generate a plan
+- Generate a plan file, expand AC into EARS, or run codebase research
 - Execute, verify, refactor, review, or open a PR
 
 ## Arguments
@@ -53,10 +57,11 @@ Required: a single Jira ticket key (e.g., `PROJ-123`).
 ### Flags
 
 - `--serial`: Use branch checkout in the current repo instead of a worktree. Mirrors `ticket-work --serial`.
+- `--force-claim`: Skip the assignee-conflict prompt in Step 1.5 and override the existing assignee. For automation/queue flows.
 
 ### Flag Parsing
 
-Parse `$ARGUMENTS` to extract flags. Any token starting with `--` is a flag; the remaining token is the ticket key. Set `SERIAL_MODE = true` if `--serial` is present. If no ticket key is provided, display "Usage: /prework {TICKET_KEY} [--serial]" and stop.
+Parse `$ARGUMENTS` to extract flags. Any token starting with `--` is a flag; the remaining token is the ticket key. Set `SERIAL_MODE = true` if `--serial` is present, `FORCE_CLAIM = true` if `--force-claim` is present. If no ticket key is provided, display "Usage: /prework {TICKET_KEY} [--serial] [--force-claim]" and stop.
 
 ---
 
@@ -72,6 +77,88 @@ Run **S1: Detect Environment** from `commands/ticket-work.md` (sub-steps S1a, S1
 If `eligible` is `false` and `unblockedBlockers` is non-empty, display "Blocked: waiting on {unblockedBlockers[0]}" and **stop**.
 
 Ensure `ClaudeWork` label is present (S1c step).
+
+---
+
+## Step 1.5: Claim Ticket
+
+Assign the ticket to the current user (with safety checks) and transition it to **In Progress**. Idempotent — safe to re-run.
+
+### 1.5a: Fetch assignee + status
+
+`resolve-stack` does not surface assignee/status. Call `mcp__atlassian__getJiraIssue` once with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`. Extract:
+
+- `currentAssigneeAccountId` (or null)
+- `currentAssigneeName` (or null)
+- `currentStatus` (e.g. "To Do", "In Progress", "In Review", "Done")
+
+### 1.5b: Get current user
+
+Call `mcp__atlassian__atlassianUserInfo`. Store `account_id` as `MY_ACCOUNT_ID`, `name` as `MY_NAME`.
+
+### 1.5c: Fast-skip
+
+If ALL three are true, skip the rest of Step 1.5 with no further MCP writes:
+- `currentAssigneeAccountId == MY_ACCOUNT_ID`
+- `currentStatus == "In Progress"`
+- `ClaudeWork` label was already present at S1c entry (i.e. S1c did not add it)
+
+### 1.5d: Resolve assignee action
+
+Determine `ASSIGN_ACTION`:
+
+- If `currentAssigneeAccountId` is null → `ASSIGN_ACTION = "assign"`.
+- If `currentAssigneeAccountId == MY_ACCOUNT_ID` → `ASSIGN_ACTION = "noop"`.
+- Else (assigned to someone else):
+  - If `FORCE_CLAIM` is true → `ASSIGN_ACTION = "override"`.
+  - Otherwise, prompt the user via `AskUserQuestion`:
+    - Question: `"{TICKET_KEY} is currently assigned to {currentAssigneeName}. Override?"`
+    - Options:
+      - `"Override and assign to me"` → `ASSIGN_ACTION = "override"`
+      - `"Keep current assignee"` → `ASSIGN_ACTION = "noop"`
+      - `"Cancel prework"` → display "Cancelled" and **stop** the whole command.
+
+### 1.5e: Apply assignee
+
+If `ASSIGN_ACTION` is `"assign"` or `"override"`:
+
+- Call `mcp__atlassian__editJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`, `fields={"assignee": {"accountId": MY_ACCOUNT_ID}}`.
+- Set `ASSIGNEE_CHANGED = true`.
+
+Otherwise `ASSIGNEE_CHANGED = false`.
+
+### 1.5f: Transition to In Progress
+
+Define `IN_PROGRESS_OR_LATER = {"In Progress", "In Review", "Code Review", "Done", "Cancelled"}`. (Match case-insensitively.)
+
+If `currentStatus` is in that set → `STATUS_CHANGED = false`, skip transition.
+
+Otherwise:
+
+1. Call `mcp__atlassian__getTransitionsForJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`.
+2. Find the transition whose `name` matches `"In Progress"` (case-insensitive).
+3. If found, call `mcp__atlassian__transitionJiraIssue` with that `transitionId`. Set `STATUS_CHANGED = true`.
+4. If not found, list the available transition names and prompt the user via `AskUserQuestion` to pick one (or cancel). Apply the chosen transition. If the user cancels, set `STATUS_CHANGED = false` and continue (do not stop the whole command — the rest of prework is still useful).
+
+### 1.5g: Activity comment
+
+If `ASSIGNEE_CHANGED` or `STATUS_CHANGED`:
+
+```
+append-activity --ticket {TICKET_KEY} --message "Claimed by {MY_NAME}{, transitioned to In Progress if STATUS_CHANGED}"
+```
+
+Compose the message conditionally:
+- Both changed: `"Claimed by {MY_NAME}, transitioned to In Progress."`
+- Only assignee: `"Claimed by {MY_NAME}."`
+- Only status: `"Transitioned to In Progress."`
+
+Store `CLAIM_SUMMARY` for Step 5 display:
+- If fast-skip in 1.5c: `"already mine, In Progress"`
+- If `ASSIGN_ACTION == "noop"` and not status changed: `"kept {currentAssigneeName}"`
+- If `ASSIGN_ACTION == "assign"`: `"assigned to me"`
+- If `ASSIGN_ACTION == "override"`: `"overrode {currentAssigneeName} → me"`
+- Append `", transitioned to In Progress"` if `STATUS_CHANGED`.
 
 ---
 
@@ -198,6 +285,7 @@ Prework complete: {TICKET_KEY} - {SUMMARY}
   Branch:            {BRANCH_NAME} (base: {BASE_BRANCH})
   Feature branch:    {FEATURE_BRANCH or "none"}
   Mode:              {serial | worktree}
+  Claimed:           {CLAIM_SUMMARY}
   Checklist:         seeded in Jira ({steps_done}/{steps_total} done)
   Drift check:       {passed | refreshed | skipped — {reason}}
   Designs:           {N captured | none referenced | skipped by user}

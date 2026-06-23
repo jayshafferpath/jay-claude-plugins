@@ -28,7 +28,7 @@ if (args.includes("--help") || args.length === 0) {
       "the PR state and re-run.\n" +
       "\n" +
       "--extract-failed-step is a separate one-shot mode: scan an activity-log\n" +
-      "file body for the latest reference to a ticket-work step (S4.2/S4.3/S4.7)\n" +
+      "file body for the latest reference to a ticket-work step (S4.2/S4.3/S4.6)\n" +
       "and emit the matching recommendation (rework/fix-drift/manual).\n" +
       "\n" +
       "Output: { stacks: [...], queues: { autoSafe, asks, manual, blocked, inFlight, idle }, pendingProbes }\n",

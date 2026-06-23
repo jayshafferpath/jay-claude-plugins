@@ -31,7 +31,7 @@ Idempotent — resumes from checklist state.
 - **Queue mode** (`/ticket-work`): discovers eligible tickets via JQL, gates on stack deps, launches parallel agents.
 - **Parent expansion**: a Story/Task with subtasks expands to its eligible subtasks; labels and assignee are inherited.
 
-Steps: drift check → plan (`/jira-start`) → execute (`/plan-execute`) → verify AC → refactor → review (`/pr-review` + `/pr-execute-plan`) → stack-ready (merge into feature branch, or wait for `ClaudePRApproved`) → PR push & review sub-procedure (description, draft PR, CI + judged Copilot loop via `/cop-fight`, post review summary).
+Steps: drift check → plan (`/plan-ticket`) → execute (TDD Red-Green-Refactor per plan task) → verify AC → refactor → review (`/jay-pr-review` sanity plan) → stack-ready (merge into feature branch, or wait for `ClaudePRApproved`) → PR push & review sub-procedure (description, draft PR, post review summary). CI green and Copilot review comments are NOT automatic — run `/cop-fight` on demand after the PR opens.
 
 **Mode C** ships a completed stack's feature branch as a single PR (to main, or to the parent Epic's branch for nested Stories), reusing the same PR push & review sub-procedure with a final draft → ready flip.
 
@@ -41,8 +41,8 @@ Steps: drift check → plan (`/jira-start`) → execute (`/plan-execute`) → ve
 ClaudeWork                 -- durable: Claude owns this ticket
 ClaudeDriftChecked         -- Implementation Notes are current
 ClaudeReady                -- eligible for planning
-ClaudePlanning             -- /jira-start in progress
-ClaudeExecuting            -- /plan-execute in progress
+ClaudePlanning             -- /plan-ticket in progress
+ClaudeExecuting            -- TDD execution in progress
 ClaudeStackReady           -- review done. Standalone: awaiting ClaudePRApproved
 ClaudePRApproved           -- user-applied: gate for the PR push & review sub-procedure
 ClaudeNeedsReview          -- PR pushed or merged to feature branch; user reviews
@@ -180,4 +180,4 @@ CI enforces 90% branch coverage.
 
 - [Claude Code](https://claude.ai/code)
 - [Atlassian MCP server](https://mcp.atlassian.com)
-- Claude Code skills: `/jira-start`, `/plan-execute`, `/pr-description`, `/pr-review`, `/pr-execute-plan` (from [claude-plugins](https://github.com/pathccm/claude-plugins))
+- Claude Code skills: `/plan-ticket`, `/prework`, `/ticket-work` (all local to this plugin), `/jay-pr-description`, `/jay-pr-review` (local — replaces the upstream `/pr-review` + `/pr-execute-plan` pair)

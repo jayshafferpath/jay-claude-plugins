@@ -46,13 +46,11 @@ const STEP_LABELS = [
   "Plan executed with /plan-execute",
   "Acceptance criteria verified against Gherkin",
   "Refactoring pass with @refactor agent",
-  "PR review plan generated with /pr-review",
-  "PR review plan executed with /pr-execute-plan",
+  "PR review plan generated with /jay-pr-review",
   "Stack ready (unblocks downstream) — TERMINAL STATE",
   "PR approved",
   "PR description and title generated with /jay-pr-description",
   "PR pushed as draft",
-  "Copilot review comments resolved",
   "PR review summary posted",
 ];
 
@@ -62,9 +60,8 @@ const STEP_LABELS = [
 // logic, and the S4 loop in commands/ticket-work.md keep working unchanged.
 //   1 → /jira-start (no plan needed for trivial)
 //   4 → @refactor agent (small surface, low ROI)
-//   5 → /pr-review plan
-//   6 → /pr-execute-plan
-const TRIVIAL_SKIPPED_STEPS = new Set([1, 4, 5, 6]);
+//   5 → /jay-pr-review plan
+const TRIVIAL_SKIPPED_STEPS = new Set([1, 4, 5]);
 const TRIVIAL_SKIP_SUFFIX = " (skipped: trivial)";
 
 async function seedSteps() {
@@ -84,11 +81,11 @@ async function seedSteps() {
   const hasAny = (...ls) => ls.some(hasLabel);
 
   if (prExists) {
-    for (let i = 0; i < 10; i++) steps[i] = true;
+    for (let i = 0; i < 9; i++) steps[i] = true;
   } else if (hasAny("ClaudePRApproved", "ClaudeNeedsReview")) {
-    for (let i = 0; i < 8; i++) steps[i] = true;
-  } else if (hasLabel("ClaudeStackReady")) {
     for (let i = 0; i < 7; i++) steps[i] = true;
+  } else if (hasLabel("ClaudeStackReady")) {
+    for (let i = 0; i < 6; i++) steps[i] = true;
   } else {
     const reviewPlan = readReviewPlan(workDir, ticketKey);
     if (reviewPlan) {
@@ -117,7 +114,7 @@ async function seedSteps() {
     { step: 1, prefix: "execute" },
     { step: 2, prefix: "verify" },
     { step: 3, prefix: "refactor" },
-    { step: 5, prefix: "review" },
+    { step: 4, prefix: "review" },
   ];
 
   for (const { step, prefix } of stageMap) {
