@@ -20,17 +20,34 @@ function shellQuote(s) {
   return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }
 
-// Pull the description text out of a Jira issue. Atlassian's v3 description
-// field is ADF (rich object) or, when fetched via the v2 endpoint shim,
-// already a string. We render either to a flat string for regex parsing.
+// Pull the description text out of a Jira issue and normalize to a single
+// canonical wiki-style form (`h2. Heading`) so the parsers downstream don't
+// have to know which authoring path produced the text. Three input shapes
+// reach this function:
+//   1. ADF (v3 default) — heading nodes carry their level in attrs.level
+//   2. Wiki markup string (v2 shim, hand-authored) — already `h2. Heading`
+//   3. Markdown string — `## Heading`, `**Bold:**`, `[text](url)` links
+// For (3) we rewrite the headers in-place so `extractImplementationNotes`,
+// `parseTddRef`, and `extractSubsection` see a single canonical form.
 function descriptionText(fields) {
   const desc = fields?.description;
   if (!desc) return "";
-  if (typeof desc === "string") return desc;
-  // Best-effort flatten of ADF nodes.
+  if (typeof desc === "string") return normalizeMarkdown(desc);
   const parts = [];
   const walk = (node) => {
     if (!node) return;
+    if (node.type === "heading") {
+      const level = node.attrs?.level || 2;
+      const inner = [];
+      const collect = (n) => {
+        if (!n) return;
+        if (typeof n.text === "string") inner.push(n.text);
+        if (Array.isArray(n.content)) for (const c of n.content) collect(c);
+      };
+      if (Array.isArray(node.content)) for (const c of node.content) collect(c);
+      parts.push(`h${level}. ${inner.join("")}`);
+      return;
+    }
     if (typeof node.text === "string") parts.push(node.text);
     if (Array.isArray(node.content)) {
       for (const child of node.content) walk(child);
@@ -38,6 +55,26 @@ function descriptionText(fields) {
   };
   walk(desc);
   return parts.join("\n");
+}
+
+// Rewrite markdown headers and bold-label subsection markers to wiki form so
+// a single regex covers both authoring paths. Markdown links `[text](url)`
+// are rewritten to wiki `[text|url]` to match `linkRe` / `parseTddRef`.
+function normalizeMarkdown(text) {
+  return text
+    .replace(
+      /^(#{1,6})\s+(.*)$/gm,
+      (_m, hashes, rest) => `h${hashes.length}. ${rest}`,
+    )
+    .replace(
+      /\[[^\]\n]+\]\((https:\/\/github\.com\/[^/\s)]+\/[^/\s)]+\/blob\/[0-9a-f]{6,40}\/([^#\s)]+)#L(\d+)(?:-L(\d+))?)\)/g,
+      (_m, url, path, s, e) => `[${path}#L${s}${e ? `-L${e}` : ""}|${url}]`,
+    )
+    .replace(
+      /\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+      (_m, txt, url) => `[${txt}|${url}]`,
+    )
+    .replace(/\*\*([^*\n]+)\*\*/g, (_m, inner) => `*${inner}*`);
 }
 
 // Locate the `h2. Implementation Notes` block in the description text. Returns

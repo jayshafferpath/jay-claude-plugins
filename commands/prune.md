@@ -59,7 +59,7 @@ Store this list as `DOWNSTREAM` (each entry: key, summary, status).
 
 ## Step 2: Detect Merge Status
 
-If `FEATURE_BRANCH` is set, check whether the ticket has been merged into it. Use the merge commit subject convention from `/ticket-work` S4.7: `Merge {TICKET_KEY}: ...`.
+If `FEATURE_BRANCH` is set, check whether the ticket has been merged into it. Use the merge commit subject convention from `/ticket-work` S4.6: `Merge {TICKET_KEY}: ...`.
 
 ```bash
 cd {REPO_ROOT} && git fetch origin

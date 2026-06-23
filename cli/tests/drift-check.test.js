@@ -282,7 +282,11 @@ describe("driftCheck", () => {
     const description = {
       type: "doc",
       content: [
-        { type: "heading", content: [{ text: "h2. Implementation Notes" }] },
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ text: "Implementation Notes" }],
+        },
         {
           type: "paragraph",
           content: [
@@ -926,6 +930,105 @@ Research baseline: my-repo@${baseline}
     expect(result.citations[0].status).toBe("drifted");
     expect(result.citations[0].check).toBe("well-formed");
     expect(result.citations[0].reason).toMatch(/exceeds baseline/);
+  });
+
+  it("parses a fully markdown-authored description (## headers, **bold** subsections, [text](url) links)", async () => {
+    const repo = makeRepo("md-mode");
+    mkdirSync(join(repo, "docs/tdds/auth"), { recursive: true });
+    writeFileSync(
+      join(repo, "docs/tdds/auth.md"),
+      "# Auth TDD\n\n## Session Management\n\nDetails.\n",
+    );
+    writeFileSync(
+      join(repo, "docs/tdds/auth/my-repo.research.md"),
+      "# my-repo\n",
+    );
+    writeFileSync(
+      join(repo, "auth.ts"),
+      "export function requireSession() {}\n",
+    );
+    writeFileSync(join(repo, "src.ts"), "x\n");
+    mkdirSync(join(repo, "tests"), { recursive: true });
+    writeFileSync(join(repo, "tests/auth.test.ts"), "test()\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    const description = `## TDD Reference
+
+[Auth TDD](https://github.com/o/my-repo/blob/${baseline}/docs/tdds/auth.md#session-management)
+
+Repo path: docs/tdds/auth.md#session-management
+
+## Implementation Notes
+
+Research baseline: my-repo@${baseline}
+
+**Existing patterns to extend:**
+
+* **Auth middleware** — \`requireSession\` in [permalink](https://github.com/o/my-repo/blob/${baseline}/auth.ts#L1-L1)
+
+**Files likely to change:**
+
+* \`src.ts\`
+
+**Tests likely to extend:**
+
+* \`tests/auth.test.ts\`
+
+**Constraints:**
+
+* none surfaced`;
+    getIssue.mockResolvedValueOnce({ fields: { description } });
+
+    const result = await driftCheck("X-MD", { repoRoot: repo });
+    expect(result.mode).toBe("full");
+    expect(result.status).toBe("current");
+    expect(result.baseline["my-repo"]).toBe(baseline);
+    expect(result.patterns).toHaveLength(1);
+    expect(result.patterns[0]).toMatchObject({
+      name: "Auth middleware",
+      symbol: "requireSession",
+      symbolStatus: "current",
+    });
+    expect(result.filesLikelyToChange[0].pathStatus).toBe("current");
+    expect(result.testsLikelyToExtend[0].pathStatus).toBe("current");
+    expect(result.tddRef.path).toBe("docs/tdds/auth.md");
+    expect(result.tddRef.status).toBe("current");
+    expect(result.sidecars[0].status).toBe("current");
+    expect(result.constraintsRaw).toContain("none surfaced");
+  });
+
+  it("parses a markdown description that arrives as ADF heading nodes", async () => {
+    const repo = makeRepo("md-adf-mode");
+    writeFileSync(join(repo, "f.txt"), "a\nb\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    const description = {
+      type: "doc",
+      content: [
+        {
+          type: "heading",
+          attrs: { level: 2 },
+          content: [{ text: "Implementation Notes" }],
+        },
+        {
+          type: "paragraph",
+          content: [
+            {
+              text: `Research baseline: my-repo@${baseline}\n- [f.txt#L1-L2|https://github.com/o/my-repo/blob/${baseline}/f.txt#L1-L2]`,
+            },
+          ],
+        },
+      ],
+    };
+    getIssue.mockResolvedValueOnce({ fields: { description } });
+
+    const result = await driftCheck("X-ADF-MD", { repoRoot: repo });
+    expect(result.status).toBe("current");
+    expect(result.baseline["my-repo"]).toBe(baseline);
   });
 
   it("--lite mode preserves the legacy report shape", async () => {

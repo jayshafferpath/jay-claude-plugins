@@ -126,7 +126,7 @@ classify-actions --extract-failed-step --activity-log-file <tmp-log.md>
 (Or use the `extractFailedStep` lib helper directly if invoking from another script.) Use the recommendation to bias the per-ticket prompt in Step 6:
 - `S4.2` (TDD execute) → recommend `/rework`.
 - `S4.3` (TDD verify) → recommend `/fix-drift`.
-- `S4.7` (review issues) → recommend manual investigation.
+- `S4.6` (review issues / stack-ready) → recommend manual investigation.
 - Unknown / log not found → present both options without a recommendation.
 
 ---

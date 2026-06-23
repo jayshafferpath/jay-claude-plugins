@@ -320,13 +320,12 @@ The mapping is:
   Promoted from feature branch `{FEATURE_BRANCH}` to main.
   Part of {CONTAINER_KEY}.
   ```
-- 3b ↔ P2 (push, then `ensure-pr` — base is `main`, **non-draft** since `DRAFT=false`). Store `pr.number` as `PR_NUMBER` and `pr.url` as `PR_URL`. If `action` is `"exists"`, skip ahead to 3d.
-- 3c ↔ P5 (Copilot review loop)
-- 3d ↔ P6 (post review summary)
+- 3b ↔ P2 (push, then `ensure-pr` — base is `main`, **non-draft** since `DRAFT=false`). Store `pr.number` as `PR_NUMBER` and `pr.url` as `PR_URL`. If `action` is `"exists"`, skip ahead to 3c.
+- 3c ↔ P4 (post review summary)
 
-Promote-to-main does **not** run P3 / P4 / P7 — review work is owned by the per-ticket lifecycle (S4.5/S4.6) before promotion; P7 (mark-ready) is Mode-C-only.
+Promote-to-main does **not** run P3 / P5 — review work is owned by the per-ticket lifecycle (S4.5) before promotion; P5 (mark-ready) is Mode-C-only. CI green and Copilot review comment resolution are NOT run by promote-to-main — after the PR opens, run `/cop-fight` on demand.
 
-### 3e: Update Jira
+### 3d: Update Jira
 
 After the shared sub-procedure completes, append to the activity log:
 ```bash

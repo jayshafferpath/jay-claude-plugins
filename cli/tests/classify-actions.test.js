@@ -298,8 +298,8 @@ describe("extractFailedStep", () => {
     );
   });
 
-  it("returns S4.7 → manual", () => {
-    expect(extractFailedStep("review at S4.7").recommendation).toBe("manual");
+  it("returns S4.6 → manual", () => {
+    expect(extractFailedStep("review at S4.6").recommendation).toBe("manual");
   });
 
   it("uses the last matching step when multiple appear", () => {

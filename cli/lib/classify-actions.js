@@ -12,7 +12,7 @@
 
 const PROGRESS_LABELS_REQUIRING_HUMAN = new Set(["ClaudeFailed"]);
 
-const TICKET_WORK_STEPS = ["S4.2", "S4.3", "S4.7"];
+const TICKET_WORK_STEPS = ["S4.2", "S4.3", "S4.6"];
 
 function hasLabel(ticket, label) {
   return Array.isArray(ticket.labels) && ticket.labels.includes(label);

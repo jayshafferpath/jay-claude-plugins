@@ -48,7 +48,7 @@ gh pr view --json number,headRefName,headRefOid,baseRefName,url,headRepository,h
 
 Parse: `PR_NUMBER`, `BRANCH`, `HEAD_SHA`, `BASE`, `PR_URL`, `OWNER` (`headRepositoryOwner.login`), `REPO` (`headRepository.name`).
 
-If no PR exists for the current branch, stop and tell the user to run `/pr-create` first.
+If no PR exists for the current branch, stop and tell the user to open one first (e.g. `gh pr create --draft --fill`).
 
 ## Step 2: Initialize State
 

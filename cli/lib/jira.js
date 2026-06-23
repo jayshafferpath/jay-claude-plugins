@@ -55,7 +55,7 @@ export async function searchIssues(jql, fields = []) {
 export async function getIssue(key) {
   const creds = auth();
   const res = await fetch(
-    `${baseUrl(creds)}/issue/${key}?fields=summary,status,labels,issuelinks,parent,issuetype,assignee`,
+    `${baseUrl(creds)}/issue/${key}?fields=summary,status,labels,issuelinks,parent,issuetype,assignee,description`,
     { headers: headers(creds) },
   );
 
