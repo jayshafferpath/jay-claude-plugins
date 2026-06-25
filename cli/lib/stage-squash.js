@@ -22,10 +22,16 @@ function runOrThrow(cmd, cwd) {
 
 // Resolve the stage-start SHA: the most recent `[KEY]` stage commit, falling
 // back to the merge-base with the base branch when no stage commit exists yet.
+//
+// When falling back to the merge-base, fetch `origin/<base>` first so a
+// force-updated base branch (e.g., parent ticket was rebased upstream) does
+// not leave us computing against a stale local ref. Without the fetch, a
+// rebased branch's first stage-squash silently swallows unrelated commits.
 export function deriveStageStartSha(ticketKey, baseBranch, cwd) {
   const stage = run(`git log --grep="^\\[${ticketKey}\\]" -1 --format=%H`, cwd);
   if (stage) return stage;
   const base = baseBranch || "main";
+  run(`git fetch --quiet origin ${base}`, cwd);
   return run(`git merge-base HEAD origin/${base}`, cwd);
 }
 

@@ -96,6 +96,29 @@ export function isMergedInto(branch, target, cwd) {
   return result.split("\n").some((line) => line.trim() === `origin/${branch}`);
 }
 
+export function getMergedPrMap(baseBranch, cwd) {
+  if (!baseBranch || !cwd) return new Map();
+  const result = run(
+    `gh pr list --state merged --base ${baseBranch} --limit 200 --json headRefName,mergeCommit`,
+    cwd,
+  );
+  if (!result) return new Map();
+  let parsed;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return new Map();
+  }
+  const map = new Map();
+  for (const pr of parsed) {
+    const head = pr?.headRefName;
+    if (!head) continue;
+    const sha = pr?.mergeCommit?.oid || null;
+    if (!map.has(head)) map.set(head, sha);
+  }
+  return map;
+}
+
 export function getWorktreeList(repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return [];
   const result = run("git worktree list --porcelain", repoRoot);

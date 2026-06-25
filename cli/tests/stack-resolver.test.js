@@ -9,6 +9,7 @@ vi.mock("../lib/git.js", () => ({
   findBranch: vi.fn(),
   isAncestor: vi.fn(),
   isMergedInto: vi.fn(),
+  getMergedPrMap: vi.fn(() => new Map()),
 }));
 
 vi.mock("../lib/config.js", () => ({
@@ -16,7 +17,9 @@ vi.mock("../lib/config.js", () => ({
 }));
 
 const { getIssue, searchIssues } = await import("../lib/jira.js");
-const { findBranch, isAncestor, isMergedInto } = await import("../lib/git.js");
+const { findBranch, isAncestor, isMergedInto, getMergedPrMap } = await import(
+  "../lib/git.js"
+);
 const { loadDevRoot } = await import("../lib/config.js");
 const {
   resolveContainer,
@@ -280,6 +283,7 @@ describe("resolveStack", () => {
   beforeEach(() => {
     vi.resetAllMocks();
     loadDevRoot.mockReturnValue("/dev");
+    getMergedPrMap.mockReturnValue(new Map());
   });
 
   it("falls through to baseBranch when computePrTarget runs without a feature branch (Standalone container path)", async () => {
@@ -478,6 +482,139 @@ describe("resolveStack", () => {
     const sub2 = result.stack.find((t) => t.key === "SUB-2");
     expect(sub2.eligible).toBe(false);
     expect(sub2.unblockedBlockers).toEqual(["SUB-1"]);
+  });
+
+  it("flags mergedIntoFeature when branch tip is not an ancestor but a merged PR exists (squash merge)", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeNeedsReview"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockImplementation((base) => {
+      if (base === "STORY-1") return new Map([["SUB-1", "abc123"]]);
+      return new Map();
+    });
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoFeature).toBe(true);
+    expect(sub1.mergedIntoMain).toBe(false);
+  });
+
+  it("flags mergedIntoMain when branch tip is not in merged list but a merged PR to main exists (squash merge)", async () => {
+    getIssue.mockResolvedValue({
+      key: "T-1",
+      fields: issueFields({
+        labels: ["repo:backend"],
+      }),
+    });
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockImplementation((base) => {
+      if (base === "main") return new Map([["T-1", "abc123"]]);
+      return new Map();
+    });
+
+    const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
+    expect(result.stack[0].mergedIntoMain).toBe(true);
+  });
+
+  it("treats blocker as unblocked when its branch is squash-merged into feature branch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-2") {
+        return {
+          key: "SUB-2",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: { key: "SUB-1" },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeNeedsReview"],
+          issuelinks: [
+            { type: { outward: "blocks" }, outwardIssue: { key: "SUB-2" } },
+          ],
+        }),
+      },
+      {
+        key: "SUB-2",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [
+            {
+              type: { inward: "is blocked by" },
+              inwardIssue: { key: "SUB-1" },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockImplementation((base) => {
+      if (base === "STORY-1") return new Map([["SUB-1", "abc123"]]);
+      return new Map();
+    });
+
+    const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });
+    const sub2 = result.stack.find((t) => t.key === "SUB-2");
+    expect(sub2.eligible).toBe(true);
+    expect(sub2.unblockedBlockers).toEqual([]);
   });
 
   it("reports in-progress status for ClaudePlanning ticket", async () => {
@@ -925,6 +1062,72 @@ describe("resolveStack", () => {
     const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
     expect(result.container.parentContainerKey).toBeNull();
     expect(result.container.parentFeatureBranch).toBeNull();
+  });
+
+  it("treats ClaudePendingMainPromotion blocker as unblocking when its branch is merged into the feature branch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-2") {
+        return {
+          key: "SUB-2",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+            issuelinks: [
+              {
+                type: { inward: "is blocked by" },
+                inwardIssue: { key: "SUB-1" },
+              },
+            ],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          // Shipped to feature branch, awaiting /promote-to-main. Notably,
+          // ClaudePendingMainPromotion does NOT satisfy isFinished().
+          labels: ["ClaudeWork", "ClaudePendingMainPromotion"],
+          issuelinks: [
+            { type: { outward: "blocks" }, outwardIssue: { key: "SUB-2" } },
+          ],
+        }),
+      },
+      {
+        key: "SUB-2",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [
+            {
+              type: { inward: "is blocked by" },
+              inwardIssue: { key: "SUB-1" },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    // SUB-1's branch IS an ancestor of the feature branch (merged in).
+    isAncestor.mockImplementation((ancestor) => ancestor === "SUB-1");
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });
+    const sub2 = result.stack.find((t) => t.key === "SUB-2");
+    expect(sub2.eligible).toBe(true);
+    expect(sub2.unblockedBlockers).toEqual([]);
   });
 
   it("treats ClaudeStackComplete blocker as unblocking even when not merged into feature branch", async () => {

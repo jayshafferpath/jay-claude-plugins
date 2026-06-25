@@ -57,6 +57,11 @@ export function buildStacks(issues) {
       if (!containerCache.has(containerKey)) {
         containerCache.set(containerKey, parent.fields?.summary || "");
       }
+    } else if (parent?.fields?.issuetype?.name === "Epic") {
+      containerKey = parent.key;
+      if (!containerCache.has(containerKey)) {
+        containerCache.set(containerKey, parent.fields?.summary || "");
+      }
     } else {
       const epicLink = fields.issuelinks?.find(
         (l) =>

@@ -654,6 +654,14 @@ Compose a per-repo blob base: `https://github.com/{github_slug}/blob/{ticket_sha
 
 #### 5.0c: Compose the Implementation Notes Block
 
+Before composing the block, **verify each path in `*Files likely to change:*` and `*Tests likely to extend:*` against the cache on disk** for the correct repo. For every cited `{path}`:
+
+- If the file exists in `{REPO_MAP[github_slug].cache_dir}` at `{ticket_sha}`, frame the entry as an extension of the existing file (and, for a test file, name the existing file in `*Tests likely to extend:*` rather than implying a sibling needs to be created).
+- Only label a path as a new file when `git -C {cache_dir} cat-file -e {ticket_sha}:{path}` (or a Glob in the cache) confirms the path does not exist. Bias toward extension: prefer pointing at the nearest existing test file over inventing a parallel path.
+- If two plausible locations exist (e.g. `src/__tests__/pages/Foo.test.tsx` vs `src/pages/Foo.test.tsx`), pick the one already populated with sibling tests. Surface the choice in the `{brief reason}` so the executor can sanity-check it.
+
+This guard exists because `/ticket-work` will read these paths verbatim — a "new file" lie sends the executor on a wild-goose detour and the existing test file silently rots.
+
 Each ticket description gets an `h2. Implementation Notes` section in this shape:
 
 ```
