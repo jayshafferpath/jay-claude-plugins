@@ -1,10 +1,5 @@
 import { loadDevRoot } from "./config.js";
-import {
-  findBranch,
-  getMergedPrMap,
-  isAncestor,
-  isMergedInto,
-} from "./git.js";
+import { findBranch, getMergedPrMap, isAncestor, isMergedInto } from "./git.js";
 import { getIssue, searchIssues } from "./jira.js";
 import { featureBranchFromContainer } from "./stacks.js";
 import { resolveRepoRoot, topologicalSort } from "./util.js";
@@ -141,8 +136,7 @@ export async function resolveStack(ticketKey, opts = {}) {
 
   if (!container) {
     const devRoot = loadDevRoot();
-    const standaloneRepoRoot =
-      explicitRoot || resolveRepoRoot(labels, devRoot);
+    const standaloneRepoRoot = explicitRoot || resolveRepoRoot(labels, devRoot);
     const standaloneBranch = standaloneRepoRoot
       ? findBranch(ticketKey, standaloneRepoRoot)
       : null;
