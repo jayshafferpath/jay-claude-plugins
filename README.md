@@ -19,7 +19,9 @@ Claude Code commands for Jira ticket automation, PR workflows, and stacked PR ma
 | `/rebase-on-main [--cascade]` | Rebase the current branch onto `origin/main` and force-push. `--cascade` chains into `/stack-rebase`. |
 | `/prune KEY` | Revert the ticket's merge, close the PR, cancel the Jira ticket. |
 | `/rework KEY` | Reset the branch to its base and restart the lifecycle from scratch. |
-| `/cleanup KEY` | Post-merge teardown: delete branch, transition Jira to Done, cascade-rebase downstream, refresh feature branch. Flags: `--no-rebase`, `--no-refresh-feature`. |
+| `/cleanup KEY` | Auto-dispatching post-merge teardown. Detects the merge target and runs phase-1 or terminal cleanup. Flags: `--no-rebase`, `--no-refresh-feature`. |
+| `/cleanup-main KEY` | Explicit terminal cleanup: PR merged to `main` → delete branch, Jira → Done, cascade-rebase, refresh feature branch. Refuses if the merge target was an Epic feature branch. |
+| `/cleanup-feature KEY` | Explicit phase-1 cleanup: PR merged into the parent Epic's feature branch → retain branch + Jira state for `/promote-to-main`, cascade-rebase siblings, refresh Epic branch. Refuses if the merge target was `main`. |
 | `/ears-requirements [topic]` | Ideate and write EARS requirements interactively. |
 | `/cop-fight` | Drive CI to green and judge each Copilot review comment on viability — implement the sound ones, dismiss the rest with an explanatory reply. Replaces blind auto-fix loops. |
 
@@ -81,7 +83,7 @@ Jira is the source of truth — git has no knowledge of stack structure.
 
 **Promotion** (`/promote-to-main`): walks the stack in dep order. For each ticket: `git rebase --onto origin/main {prev} {curr}` strips ancestor commits, opens a PR to main, waits for merge, advances.
 
-**Cleanup** (`/cleanup KEY`):
+**Cleanup** (`/cleanup KEY`, or the explicit `/cleanup-main KEY` / `/cleanup-feature KEY`):
 1. Verifies the merge landed.
 2. Deletes branch + transitions Jira → Done.
 3. Cascade-rebases unmerged downstream tickets onto fresh main; retargets the first downstream PR's base.
@@ -89,7 +91,7 @@ Jira is the source of truth — git has no knowledge of stack structure.
 
 Skip steps 3–4 with `--no-rebase` / `--no-refresh-feature`.
 
-**Two-phase cleanup** for Story-containers under an Epic: phase 1 runs cascade-rebase + Epic branch refresh but keeps the Story branch alive (sets `ClaudePendingMainPromotion`); phase 2 runs after `/promote-to-main` lands the Story PR on main and finishes terminal cleanup.
+**Two-phase cleanup** for Story-containers under an Epic: phase 1 (`/cleanup-feature`) runs cascade-rebase + Epic branch refresh but keeps the Story branch alive (sets `ClaudePendingMainPromotion`); phase 2 (`/cleanup-main`) runs after `/promote-to-main` lands the Story PR on main and finishes terminal cleanup. Use `/cleanup` if you don't want to think about which phase applies — it auto-dispatches based on the detected merge target.
 
 ## Project Structure
 

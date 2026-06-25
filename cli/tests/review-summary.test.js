@@ -26,15 +26,22 @@ describe("findReviewPlanFile", () => {
     expect(findReviewPlanFile("/plans", "T-1")).toBeNull();
   });
 
-  it("finds pr-review-*.md file", () => {
+  it("finds pr-review-*.md file when no ticket key is supplied", () => {
     existsSync.mockReturnValue(true);
     readdirSync.mockReturnValue([
       "jira-T-1.md",
       "pr-review-2024-01-01.md",
       "other.md",
     ]);
-    const result = findReviewPlanFile("/plans", "T-1");
+    const result = findReviewPlanFile("/plans", undefined);
     expect(result).toBe("/plans/pr-review-2024-01-01.md");
+  });
+
+  it("finds pr-review-{ticketKey}.md when ticket key is supplied", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue(["jira-T-1.md", "pr-review-T-1.md"]);
+    const result = findReviewPlanFile("/plans", "T-1");
+    expect(result).toBe("/plans/pr-review-T-1.md");
   });
 
   it("finds pr-{ticketKey}*.md file", () => {
@@ -42,6 +49,15 @@ describe("findReviewPlanFile", () => {
     readdirSync.mockReturnValue(["jira-T-1.md", "pr-T-1-review.md"]);
     const result = findReviewPlanFile("/plans", "T-1");
     expect(result).toBe("/plans/pr-T-1-review.md");
+  });
+
+  it("ignores stale pr-review-*.md from a different ticket when ticket key is supplied", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue([
+      "pr-review-T-9-leftover.md",
+      "pr-review-2024-01-01.md",
+    ]);
+    expect(findReviewPlanFile("/plans", "T-1")).toBeNull();
   });
 
   it("returns null when no matching file", () => {
@@ -100,7 +116,7 @@ describe("postSummary", () => {
 
   it("posts summary and returns success", () => {
     existsSync.mockReturnValue(true);
-    readdirSync.mockReturnValue(["pr-review-plan.md"]);
+    readdirSync.mockReturnValue(["pr-review-T-1.md"]);
     readFileSync.mockReturnValue(
       "- [x] **Issue one**: fixed\n- [ ] **Issue two**: pending\n",
     );
@@ -114,7 +130,7 @@ describe("postSummary", () => {
 
   it("returns gh_comment_failed when gh command fails", () => {
     existsSync.mockReturnValue(true);
-    readdirSync.mockReturnValue(["pr-review-plan.md"]);
+    readdirSync.mockReturnValue(["pr-review-T-1.md"]);
     readFileSync.mockReturnValue("- [x] **Fix**: done\n");
     execSync.mockImplementation(() => {
       throw new Error("gh failed");

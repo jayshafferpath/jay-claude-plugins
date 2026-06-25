@@ -18,11 +18,22 @@ export function findReviewPlanFile(plansDir, ticketKey) {
   if (!existsSync(plansDir)) return null;
 
   const files = readdirSync(plansDir);
-  const match = files.find(
-    (f) =>
-      f.match(/^pr-review-.*\.md$/) ||
-      (ticketKey && f.match(new RegExp(`^pr-${ticketKey}.*\\.md$`, "i"))),
-  );
+
+  // When a ticket key is supplied, require the filename to reference it.
+  // Without this scoping, a leftover `pr-review-*.md` from a prior ticket
+  // (e.g. sibling in the same stack, or an aborted run) wins the match and
+  // we end up posting a stale summary against the wrong PR.
+  if (ticketKey) {
+    const escapedKey = ticketKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const scoped = new RegExp(
+      `^(pr-review-|pr-)${escapedKey}([._-].*)?\\.md$`,
+      "i",
+    );
+    const match = files.find((f) => scoped.test(f));
+    return match ? join(plansDir, match) : null;
+  }
+
+  const match = files.find((f) => f.match(/^pr-review-.*\.md$/));
   return match ? join(plansDir, match) : null;
 }
 

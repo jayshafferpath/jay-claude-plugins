@@ -18,6 +18,7 @@ const {
   getPrDetails,
   getPrDiffStat,
   getWorktreeList,
+  getMergedPrMap,
   isAncestor,
   isMergedInto,
   getStageCommits,
@@ -276,6 +277,49 @@ describe("isMergedInto", () => {
       throw new Error("fail");
     });
     expect(isMergedInto("feat-1", "main", "/repo")).toBe(false);
+  });
+});
+
+describe("getMergedPrMap", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns empty map when baseBranch or cwd is falsy", () => {
+    expect(getMergedPrMap(null, "/repo").size).toBe(0);
+    expect(getMergedPrMap("main", null).size).toBe(0);
+  });
+
+  it("parses gh output into a head→sha map", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([
+        { headRefName: "TICK-1", mergeCommit: { oid: "abc123" } },
+        { headRefName: "TICK-2", mergeCommit: { oid: "def456" } },
+      ]),
+    );
+    const map = getMergedPrMap("main", "/repo");
+    expect(map.get("TICK-1")).toBe("abc123");
+    expect(map.get("TICK-2")).toBe("def456");
+    expect(map.size).toBe(2);
+  });
+
+  it("falls back to null sha when mergeCommit is missing", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([{ headRefName: "TICK-1", mergeCommit: null }]),
+    );
+    expect(getMergedPrMap("main", "/repo").get("TICK-1")).toBeNull();
+  });
+
+  it("returns empty map when gh fails", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(getMergedPrMap("main", "/repo").size).toBe(0);
+  });
+
+  it("returns empty map when output is unparseable", () => {
+    execSync.mockReturnValue("not json");
+    expect(getMergedPrMap("main", "/repo").size).toBe(0);
   });
 });
 

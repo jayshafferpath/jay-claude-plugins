@@ -1,5 +1,5 @@
 ---
-description: "Clean up a ticket post-merge. Terminal cleanup (PR merged to main): delete branch, transition Jira to Done, cascade-rebase downstream, refresh feature branch. Phase-1 cleanup (Story-container PR merged into parent Epic's feature branch): retain branch and Jira state for /promote-to-main, but still cascade-rebase siblings and refresh the Epic branch. Re-run after the Story's main PR merges to finish terminal cleanup."
+description: "Auto-dispatching cleanup. Detects merge target and runs the right phase: terminal (PR merged to main) → delete branch, Jira→Done, cascade-rebase, refresh feature branch; phase-1 (Story-container PR merged into parent Epic's feature branch) → retain branch + Jira state for /promote-to-main, cascade-rebase siblings, refresh Epic branch. If you know the phase, prefer the explicit entry points: /cleanup-main (post main-merge) or /cleanup-feature (post Story→Epic merge)."
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
@@ -39,12 +39,14 @@ Optional flags:
 - `--no-rebase` — skip the post-cleanup cascade rebase of downstream stacked tickets (Step 7). Useful when downstream branches are intentionally being abandoned, or when you'd rather rebase manually later.
 - `--no-refresh-feature` — skip the feature-branch refresh (Step 8). Useful if the feature branch carries hand-authored integration commits you don't want clobbered, or if you'd rather refresh manually.
 - `--yes` (alias: `--no-confirm`) — skip the interactive confirmation prompt at the end of Step 3. Print the plan, then proceed straight into Step 4. Used by `/orchestrate` so its auto-safe cleanup pass doesn't deadlock on a prompt; humans should generally omit the flag and review the plan first.
+- `--require-phase={feature|main}` — assert the detected cleanup phase before proceeding. `feature` accepts only Phase-1 cleanup (Story-container merged into parent Epic feature branch); `main` accepts only terminal cleanup (PR merged to `main`). If the detected phase doesn't match, refuse with a pointer to the other entry point. Set by `/cleanup-feature` and `/cleanup-main`; humans calling `/cleanup` directly should omit it.
 
 Parse `$ARGUMENTS` into:
 - `TICKET_KEY` — the first non-flag token.
 - `REBASE_DOWNSTREAM` (boolean) — defaults to `true`, set to `false` if `--no-rebase` is present.
 - `REFRESH_FEATURE` (boolean) — defaults to `true`, set to `false` if `--no-refresh-feature` is present.
 - `AUTO_CONFIRM` (boolean) — defaults to `false`, set to `true` if `--yes` or `--no-confirm` is present.
+- `REQUIRE_PHASE` (string|null) — defaults to `null`. Set to `"feature"` or `"main"` if `--require-phase={feature|main}` is present. Any other value is an arg-parse error: display "Unknown --require-phase value: {value}. Expected `feature` or `main`." and **stop**.
 
 ---
 
@@ -90,6 +92,28 @@ When `DEFER_DESTRUCTIVE` is `true`:
 If `REPO_ROOT` is null: display "Cannot resolve repo root for {TICKET_KEY}. Ensure a `repo:` label is set on the ticket or its container." and **stop**.
 
 If `BRANCH_NAME` is null: display "No branch on record for {TICKET_KEY}. If this ticket was completed via a different workflow, transition it manually." and **stop**.
+
+#### Phase guard (`--require-phase`)
+
+If `REQUIRE_PHASE` is non-null, validate against the detected phase before doing any irreversible work. The detected phase is `"feature"` when `DEFER_DESTRUCTIVE` is `true`, otherwise `"main"`.
+
+- If `REQUIRE_PHASE == "feature"` AND `DEFER_DESTRUCTIVE` is `false`:
+  ```
+  Refuse to run /cleanup-feature on {TICKET_KEY} — detected phase is terminal
+  (MERGE_TARGET={MERGE_TARGET}). The PR landed on main, not on an Epic feature
+  branch. Use /cleanup-main {TICKET_KEY} instead.
+  ```
+  and **stop**.
+- If `REQUIRE_PHASE == "main"` AND `DEFER_DESTRUCTIVE` is `true`:
+  ```
+  Refuse to run /cleanup-main on {TICKET_KEY} — detected phase is phase-1
+  (MERGE_TARGET={MERGE_TARGET}, parent Epic feature branch). The Story-container
+  has shipped to its Epic but not yet to main. Use /cleanup-feature {TICKET_KEY}
+  now; re-run /cleanup-main {TICKET_KEY} after /promote-to-main lands it on main.
+  ```
+  and **stop**.
+
+Otherwise (phase matches, or `REQUIRE_PHASE` is null) continue.
 
 ### 1c: Identify Downstream Stack
 

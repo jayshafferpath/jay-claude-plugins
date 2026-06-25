@@ -1,5 +1,10 @@
 import { loadDevRoot } from "./config.js";
-import { findBranch, isAncestor, isMergedInto } from "./git.js";
+import {
+  findBranch,
+  getMergedPrMap,
+  isAncestor,
+  isMergedInto,
+} from "./git.js";
 import { getIssue, searchIssues } from "./jira.js";
 import { featureBranchFromContainer } from "./stacks.js";
 import { resolveRepoRoot, topologicalSort } from "./util.js";
@@ -135,13 +140,26 @@ export async function resolveStack(ticketKey, opts = {}) {
   const container = resolveContainer(fields);
 
   if (!container) {
+    const devRoot = loadDevRoot();
+    const standaloneRepoRoot =
+      explicitRoot || resolveRepoRoot(labels, devRoot);
+    const standaloneBranch = standaloneRepoRoot
+      ? findBranch(ticketKey, standaloneRepoRoot)
+      : null;
+    let standaloneMergedIntoMain = false;
+    if (standaloneRepoRoot && standaloneBranch) {
+      const mainMerged = getMergedPrMap("main", standaloneRepoRoot);
+      standaloneMergedIntoMain =
+        isMergedInto(standaloneBranch, "main", standaloneRepoRoot) ||
+        mainMerged.has(standaloneBranch);
+    }
     return {
       container: null,
       stack: [
         {
           key: ticketKey,
           summary: fields.summary,
-          branch: null,
+          branch: standaloneBranch,
           baseBranch: "main",
           prTarget: "main",
           status: ticketStatus(labels, fields.status?.statusCategory?.key),
@@ -150,7 +168,7 @@ export async function resolveStack(ticketKey, opts = {}) {
           unblockedBlockers: [],
           eligible: true,
           mergedIntoFeature: false,
-          mergedIntoMain: false,
+          mergedIntoMain: standaloneMergedIntoMain,
         },
       ],
       inputTicket: ticketKey,
@@ -254,6 +272,12 @@ export async function resolveStack(ticketKey, opts = {}) {
   const remaining = [...ticketMap.keys()].filter((k) => !sorted.includes(k));
   const orderedKeys = [...sorted, ...remaining];
 
+  const featureMergedPrs =
+    repoRoot && featureBranch
+      ? getMergedPrMap(featureBranch, repoRoot)
+      : new Map();
+  const mainMergedPrs = repoRoot ? getMergedPrMap("main", repoRoot) : new Map();
+
   const stack = [];
   for (const key of orderedKeys) {
     const ticket = ticketMap.get(key);
@@ -271,28 +295,40 @@ export async function resolveStack(ticketKey, opts = {}) {
     let mergedIntoMain = false;
     if (repoRoot && branch) {
       if (featureBranch) {
-        mergedIntoFeature = isAncestor(branch, featureBranch, repoRoot);
+        mergedIntoFeature =
+          isAncestor(branch, featureBranch, repoRoot) ||
+          featureMergedPrs.has(branch);
       }
-      mergedIntoMain = isMergedInto(branch, "main", repoRoot);
+      mergedIntoMain =
+        isMergedInto(branch, "main", repoRoot) || mainMergedPrs.has(branch);
     }
 
     const unblockedBlockers = ticket.blockers.filter((bKey) => {
       const blocker = ticketMap.get(bKey);
       if (!blocker) return false;
+
+      const blockerBranch =
+        featureBranch && repoRoot ? findBranch(bKey, repoRoot) : null;
+      const branchInFeature =
+        blockerBranch &&
+        (isAncestor(blockerBranch, featureBranch, repoRoot) ||
+          featureMergedPrs.has(blockerBranch));
+
+      // Branch-level merge truth wins over Jira/label state: if the blocker's
+      // branch is already in the feature branch, downstream is unblocked even
+      // when the blocker carries ClaudePendingMainPromotion (shipped to the
+      // Epic feature branch, awaiting /promote-to-main).
+      if (branchInFeature) return false;
+
       if (!isFinished(blocker.labels, blocker.statusCategoryKey)) return true;
       // ClaudeStackComplete blockers are stack-containers (Stories with their
       // own subtasks) that PR directly to main; their branch is not merged
       // into the parent's feature branch. Trust the completion label.
       if (blocker.labels.includes("ClaudeStackComplete")) return false;
-      if (featureBranch && repoRoot) {
-        const blockerBranch = findBranch(bKey, repoRoot);
-        if (
-          blockerBranch &&
-          !isAncestor(blockerBranch, featureBranch, repoRoot)
-        ) {
-          return true;
-        }
-      }
+      // Finished by label with a branch that's NOT in the feature branch
+      // (e.g. ClaudeNeedsReview with an open PR) — still blocked.
+      if (blockerBranch) return true;
+      // Finished by label, no branch found — trust the label.
       return false;
     });
 
