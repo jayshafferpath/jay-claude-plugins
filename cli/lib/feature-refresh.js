@@ -92,7 +92,10 @@ function runCapture(cmd, cwd) {
 }
 
 function verifyRef(ref, repoRoot) {
-  const r = runCapture(`git rev-parse --verify --quiet ${ref}^{commit}`, repoRoot);
+  const r = runCapture(
+    `git rev-parse --verify --quiet ${ref}^{commit}`,
+    repoRoot,
+  );
   return r.ok;
 }
 
@@ -175,7 +178,10 @@ function commitsBeingDiscarded(repoRoot, featureBranch, mergeTarget) {
     repoRoot,
   );
   if (!r.ok) return null;
-  return r.stdout.split("\n").map((s) => s.trim()).filter(Boolean);
+  return r.stdout
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 // Commits reachable from the union of (downstream branch refs ∪ mergeSha SHAs)
@@ -193,7 +199,10 @@ function commitsReplayable(repoRoot, mergeTarget, eligibleEntries) {
   );
   if (!r.ok) return null;
   return new Set(
-    r.stdout.split("\n").map((s) => s.trim()).filter(Boolean),
+    r.stdout
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean),
   );
 }
 
@@ -398,10 +407,7 @@ export function refreshFeatureBranch(opts) {
       // The mergeSha is itself a merge commit (squash from GitHub). Use -m 1
       // so cherry-pick takes the first-parent diff. Keep author/committer
       // consistent with `git merge --no-ff` semantics via -x for traceability.
-      replay = runCapture(
-        `git cherry-pick -m 1 -x ${d.mergeSha}`,
-        repoRoot,
-      );
+      replay = runCapture(`git cherry-pick -m 1 -x ${d.mergeSha}`, repoRoot);
       via = "cherry-pick";
     } else {
       // Filtered out above; defensive.

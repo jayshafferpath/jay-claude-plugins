@@ -314,7 +314,12 @@ export async function resolveStack(ticketKey, opts = {}) {
     const branchKeys = branch ? [branch] : [];
     if (featureBranch) {
       for (const [head, sha] of featureMergedPrs) {
-        if (branchKeys.includes(head) || head === key || head.startsWith(`${key}-`) || head.startsWith(`${key}/`)) {
+        if (
+          branchKeys.includes(head) ||
+          head === key ||
+          head.startsWith(`${key}-`) ||
+          head.startsWith(`${key}/`)
+        ) {
           mergedIntoFeature = true;
           if (!featureMergeSha) featureMergeSha = sha || null;
         }
@@ -324,7 +329,12 @@ export async function resolveStack(ticketKey, opts = {}) {
       }
     }
     for (const [head, sha] of mainMergedPrs) {
-      if (branchKeys.includes(head) || head === key || head.startsWith(`${key}-`) || head.startsWith(`${key}/`)) {
+      if (
+        branchKeys.includes(head) ||
+        head === key ||
+        head.startsWith(`${key}-`) ||
+        head.startsWith(`${key}/`)
+      ) {
         mergedIntoMain = true;
         if (!mainMergeSha) mainMergeSha = sha || null;
       }

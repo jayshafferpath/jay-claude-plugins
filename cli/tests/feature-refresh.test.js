@@ -396,7 +396,10 @@ describe("refreshFeatureBranch — NEV-863 regressions", () => {
         return "aaaa1111\nbbbb2222\n";
       }
       // rev-list across replay sources returns only one of the discarded shas
-      if (cmd.startsWith("git rev-list t1") || cmd.startsWith("git rev-list ")) {
+      if (
+        cmd.startsWith("git rev-list t1") ||
+        cmd.startsWith("git rev-list ")
+      ) {
         return "aaaa1111\n";
       }
     });
@@ -408,6 +411,43 @@ describe("refreshFeatureBranch — NEV-863 regressions", () => {
     });
     expect(out.outcome).toBe("skipped-unrecoverable-commits");
     expect(out.unrecoverableCommits).toEqual(["bbbb2222"]);
+  });
+
+  it("returns skipped-orphan-check-failed when the discarded-commits rev-list fails", () => {
+    mockGit((cmd) => {
+      if (cmd === "git rev-list feat ^origin/main") {
+        const err = new Error("rev-list failed");
+        err.status = 128;
+        throw err;
+      }
+    });
+    const out = refreshFeatureBranch({
+      repoRoot: "/r",
+      featureBranch: "feat",
+      mergeTarget: "main",
+      downstreams: [{ ticket: "T-1", branch: "t1", status: "rebased" }],
+    });
+    expect(out.outcome).toBe("skipped-orphan-check-failed");
+    expect(out.orphanCheckError).toMatch(/rev-list feat/);
+  });
+
+  it("returns skipped-orphan-check-failed when the replay-sources rev-list fails", () => {
+    mockGit((cmd) => {
+      if (cmd === "git rev-list feat ^origin/main") return "aaaa1111\n";
+      if (cmd.startsWith("git rev-list t1 ")) {
+        const err = new Error("rev-list failed");
+        err.status = 128;
+        throw err;
+      }
+    });
+    const out = refreshFeatureBranch({
+      repoRoot: "/r",
+      featureBranch: "feat",
+      mergeTarget: "main",
+      downstreams: [{ ticket: "T-1", branch: "t1", status: "rebased" }],
+    });
+    expect(out.outcome).toBe("skipped-orphan-check-failed");
+    expect(out.orphanCheckError).toMatch(/replay sources/);
   });
 
   it("NEV-863 mirror — mix of live branches + gone branches with mergeSha replays all", () => {
@@ -423,7 +463,10 @@ describe("refreshFeatureBranch — NEV-863 regressions", () => {
       if (cmd.startsWith("git rev-list")) {
         return "sha888\nsha890\nsha1015\n";
       }
-      if (cmd.startsWith("git cherry-pick") || cmd.startsWith("git merge --no-ff")) {
+      if (
+        cmd.startsWith("git cherry-pick") ||
+        cmd.startsWith("git merge --no-ff")
+      ) {
         replays.push(cmd);
         return "";
       }
