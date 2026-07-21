@@ -63,15 +63,21 @@ Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-
 - `BRANCH_NAME` = ticket's `branch`
 - `SUMMARY` = ticket's `summary`
 
-Determine the **merge target** for this ticket's PR. The same Story-container can be cleaned twice — once after merging into the parent Epic's feature branch (`DEFER_DESTRUCTIVE=true`), and again after `/promote-to-main` lands it on main (terminal cleanup). Pick the target so re-invocation does the right thing:
+Determine the **merge target** for this ticket's PR. The same Story-container can be cleaned twice — once after merging into the parent Epic's feature branch (`DEFER_DESTRUCTIVE=true`), and again after `/promote-to-main` lands it on main (terminal cleanup). Pick the target so re-invocation does the right thing.
 
-- If `BRANCH_NAME === FEATURE_BRANCH` AND `PARENT_FEATURE_BRANCH` is non-null:
-  - Probe for a merged main-targeting PR first:
+Let `ENTRY = STACK_ORDER.find(s => s.key === TICKET_KEY)`. Prefer `resolve-stack`'s merge flags as the source of truth — they already reflect ancestry against both `origin/main` and the container's feature branch, so leaf tickets (which have `BRANCH_NAME !== FEATURE_BRANCH`) get routed correctly instead of defaulting to `main`.
+
+- If `ENTRY.mergedIntoMain === true`: `MERGE_TARGET = "main"`. Terminal cleanup applies.
+- Else if `ENTRY.mergedIntoFeature === true` AND `FEATURE_BRANCH` is non-null:
+  - If `BRANCH_NAME === FEATURE_BRANCH` AND `PARENT_FEATURE_BRANCH` is non-null: `MERGE_TARGET = PARENT_FEATURE_BRANCH`. Story-container shipped to the parent Epic's feature branch.
+  - Otherwise: `MERGE_TARGET = FEATURE_BRANCH`. Leaf ticket (subtask/Story with no children) shipped to its container's feature branch.
+- Else if `BRANCH_NAME === FEATURE_BRANCH` AND `PARENT_FEATURE_BRANCH` is non-null:
+  - Story-container fallback for the not-yet-flagged case (pre-tagging window before `resolve-stack` observes the merge). Probe for a merged main-targeting PR first:
     ```bash
     verify-merge {BRANCH_NAME} --base main --cwd {REPO_ROOT}
     ```
     If `merged` is `true` in the output, this is the post-promotion second pass: set `MERGE_TARGET = "main"`. Terminal cleanup applies.
-  - Otherwise `MERGE_TARGET = PARENT_FEATURE_BRANCH`. The Story-container has only PR'd to the Epic's feature branch so far.
+  - Otherwise `MERGE_TARGET = PARENT_FEATURE_BRANCH`.
 - Otherwise: `MERGE_TARGET = "main"`. Default flow — ticket-branch PRs go to main once promoted.
 
 When `MERGE_TARGET` is not `main`, several downstream steps shift target:
@@ -455,7 +461,13 @@ The detection / reset / re-merge / push pipeline is implemented in `cli/lib/feat
 
 ### 8a: Run the refresh
 
-Determine the cascade verdict from `REBASE_RESULTS` (Step 7): if any entry has `status: "conflict"`, set `CASCADE_STATUS = "conflict"`; otherwise `"completed"`. Build the `--downstreams` argument by joining `{ticket}:{branch}:{status}:{summary}` quadruples (in stack order) from `STACK_ORDER` entries whose `mergedIntoMain === false`. Use the Step 7 status per ticket if available; default to `rebased`. Skip entries with no branch.
+Determine the cascade verdict from `REBASE_RESULTS` (Step 7): if any entry has `status: "conflict"`, set `CASCADE_STATUS = "conflict"`; otherwise `"completed"`. Build the `--downstreams` argument by joining `{ticket}:{branch}:{status}:{summary}:{mergeSha}` quintuples (in stack order) from `STACK_ORDER` entries whose `mergedIntoMain === false`. Use the Step 7 status per ticket if available; default to `rebased`.
+
+For each STACK_ORDER entry:
+- `{branch}` — the ticket's `branch` field, or empty string if null (terminal cleanup may have deleted the branch on a prior pass).
+- `{mergeSha}` — the ticket's `featureMergeSha` field if set, otherwise empty. This is the load-bearing fallback: when the branch is gone but the squash mergeSha is on record, feature-refresh.js will cherry-pick the merge commit instead of `git merge --no-ff`. **Do NOT skip entries with branch:null and mergeSha set** — those are exactly the entries Step 8 must preserve, and dropping them is what produced the NEV-863 incident.
+
+Only skip an entry from `--downstreams` when both `branch` and `featureMergeSha` are empty AND `mergedIntoFeature === false` (genuinely not in the feature branch yet). When `mergedIntoFeature === true` but no replay source is available, the CLI will refuse with `skipped-unresolvable-predecessor` and the refresh will not run — that refusal needs human investigation, not a silent skip.
 
 ```bash
 cleanup-feature-refresh \
@@ -469,10 +481,13 @@ cleanup-feature-refresh \
 Parse stdout as JSON. The `outcome` field is one of:
 - `refreshed` — full success.
 - `skipped-orphans` — feature branch carries commits not in `origin/{MERGE_TARGET}` and not in any tracked ticket branch. The CLI returns the orphan commits in `orphans`.
+- `skipped-orphan-check-failed` — orphan detection could not complete (a downstream branch ref is missing or `git log`/`git rev-list` failed). `missingRefs` lists refs that did not resolve; `orphanCheckError` carries the underlying git error. **This is the NEV-863 close-fail**: in prior versions a missing ref silently returned "no orphans" and let the reset destroy work. Investigate the missing ref before retrying.
+- `skipped-unresolvable-predecessor` — a `mergedIntoFeature` predecessor has neither a live branch nor a `featureMergeSha` to replay. `unresolvable` lists the ticket keys. Re-run `/cleanup {KEY} --yes --no-rebase --no-refresh-feature` on each to backfill its `merged/{KEY}` tag and surface the squash SHA, then retry.
+- `skipped-unrecoverable-commits` — pre-reset reachability check found commits on the feature branch that no downstream branch or mergeSha covers. `unrecoverableCommits` lists the SHAs. Reset would destroy these; investigate manually before retrying.
 - `skipped-dirty-worktree` — a secondary worktree on the feature branch has uncommitted changes (paths in `dirtyWorktrees`).
 - `skipped-checkout-failed` — primary worktree refused checkout (`checkoutError` field has details).
 - `skipped-cascade-conflict` — Step 7 conflicted; refusing to refresh on top of a half-rebased cascade.
-- `partial-merge-conflict` — re-merge conflicted on `conflictBranch`; pushed whatever merged cleanly. `conflictFiles` lists the files.
+- `partial-merge-conflict` — replay conflicted on `conflictBranch` (or `conflictTicket` when replayed via cherry-pick); pushed whatever replayed cleanly. `conflictFiles` lists the files; `conflictVia` is `"merge"` or `"cherry-pick"`.
 - `pushed-failed` — local refresh succeeded but force-push failed (`pushError` has details).
 
 Store the outcome and `oldSha` (the pre-refresh feature-branch SHA, recoverable via reflog if anything goes sideways).

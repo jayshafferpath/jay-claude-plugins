@@ -141,11 +141,27 @@ export async function resolveStack(ticketKey, opts = {}) {
       ? findBranch(ticketKey, standaloneRepoRoot)
       : null;
     let standaloneMergedIntoMain = false;
-    if (standaloneRepoRoot && standaloneBranch) {
+    let standaloneMainMergeSha = null;
+    if (standaloneRepoRoot) {
       const mainMerged = getMergedPrMap("main", standaloneRepoRoot);
-      standaloneMergedIntoMain =
-        isMergedInto(standaloneBranch, "main", standaloneRepoRoot) ||
-        mainMerged.has(standaloneBranch);
+      for (const [head, sha] of mainMerged) {
+        if (
+          (standaloneBranch && head === standaloneBranch) ||
+          head === ticketKey ||
+          head.startsWith(`${ticketKey}-`) ||
+          head.startsWith(`${ticketKey}/`)
+        ) {
+          standaloneMergedIntoMain = true;
+          if (!standaloneMainMergeSha) standaloneMainMergeSha = sha || null;
+        }
+      }
+      if (standaloneBranch && !standaloneMergedIntoMain) {
+        standaloneMergedIntoMain = isMergedInto(
+          standaloneBranch,
+          "main",
+          standaloneRepoRoot,
+        );
+      }
     }
     return {
       container: null,
@@ -163,6 +179,8 @@ export async function resolveStack(ticketKey, opts = {}) {
           eligible: true,
           mergedIntoFeature: false,
           mergedIntoMain: standaloneMergedIntoMain,
+          featureMergeSha: null,
+          mainMergeSha: standaloneMainMergeSha,
         },
       ],
       inputTicket: ticketKey,
@@ -287,14 +305,32 @@ export async function resolveStack(ticketKey, opts = {}) {
 
     let mergedIntoFeature = false;
     let mergedIntoMain = false;
-    if (repoRoot && branch) {
-      if (featureBranch) {
-        mergedIntoFeature =
-          isAncestor(branch, featureBranch, repoRoot) ||
-          featureMergedPrs.has(branch);
+    let featureMergeSha = null;
+    let mainMergeSha = null;
+    // Match on the live branch first, then fall back to any merged-PR
+    // headRefName that starts with the ticket key (terminal cleanup may
+    // have deleted the branch locally and on origin — the PR record on
+    // GitHub still carries the original headRefName + mergeCommit).
+    const branchKeys = branch ? [branch] : [];
+    if (featureBranch) {
+      for (const [head, sha] of featureMergedPrs) {
+        if (branchKeys.includes(head) || head === key || head.startsWith(`${key}-`) || head.startsWith(`${key}/`)) {
+          mergedIntoFeature = true;
+          if (!featureMergeSha) featureMergeSha = sha || null;
+        }
       }
-      mergedIntoMain =
-        isMergedInto(branch, "main", repoRoot) || mainMergedPrs.has(branch);
+      if (repoRoot && branch && !mergedIntoFeature) {
+        mergedIntoFeature = isAncestor(branch, featureBranch, repoRoot);
+      }
+    }
+    for (const [head, sha] of mainMergedPrs) {
+      if (branchKeys.includes(head) || head === key || head.startsWith(`${key}-`) || head.startsWith(`${key}/`)) {
+        mergedIntoMain = true;
+        if (!mainMergeSha) mainMergeSha = sha || null;
+      }
+    }
+    if (repoRoot && branch && !mergedIntoMain) {
+      mergedIntoMain = isMergedInto(branch, "main", repoRoot);
     }
 
     const unblockedBlockers = ticket.blockers.filter((bKey) => {
@@ -343,6 +379,8 @@ export async function resolveStack(ticketKey, opts = {}) {
       eligible,
       mergedIntoFeature,
       mergedIntoMain,
+      featureMergeSha,
+      mainMergeSha,
     });
   }
 
