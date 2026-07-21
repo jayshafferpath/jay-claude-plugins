@@ -550,6 +550,91 @@ describe("resolveStack", () => {
     expect(result.stack[0].mergedIntoMain).toBe(true);
   });
 
+  it("standalone ticket matches main-merged PR by ticket-key slash-prefix headRefName", async () => {
+    getIssue.mockResolvedValue({
+      key: "T-1",
+      fields: issueFields({
+        labels: ["repo:backend"],
+      }),
+    });
+
+    findBranch.mockReturnValue(null);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockImplementation((base) => {
+      if (base === "main") return new Map([["T-1/feature", "sha-slash"]]);
+      return new Map();
+    });
+
+    const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
+    expect(result.stack[0].mergedIntoMain).toBe(true);
+    expect(result.stack[0].mainMergeSha).toBe("sha-slash");
+  });
+
+  it("standalone ticket falls back to isMergedInto when no headRefName matches", async () => {
+    getIssue.mockResolvedValue({
+      key: "T-1",
+      fields: issueFields({
+        labels: ["repo:backend"],
+      }),
+    });
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(true);
+    getMergedPrMap.mockReturnValue(new Map());
+
+    const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
+    expect(result.stack[0].mergedIntoMain).toBe(true);
+    expect(result.stack[0].mainMergeSha).toBe(null);
+  });
+
+  it("stacked ticket matches main-merged PR by ticket-key prefix headRefName when branch is gone", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockImplementation((base) => {
+      if (base === "main") return new Map([["SUB-1/old-branch", "main-sha"]]);
+      return new Map();
+    });
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoMain).toBe(true);
+    expect(sub1.mainMergeSha).toBe("main-sha");
+  });
+
   it("treats blocker as unblocked when its branch is squash-merged into feature branch", async () => {
     getIssue.mockImplementation(async (key) => {
       if (key === "SUB-2") {

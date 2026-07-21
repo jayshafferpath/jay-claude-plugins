@@ -78,86 +78,7 @@ When a parent Story/Task has `ClaudeReady`, its subtasks are eligible for planni
 
 ## Code Style
 
-Apply these principles when writing or refactoring code in S4.2 (execute) and S4.4 (refactor). Derived from analysis of merged PRs across the org. Project-local conventions (existing patterns in the touched files, CLAUDE.md, linter config) always win over this guide when they conflict — match what's around you.
-
-### Functions & Control Flow
-- Early-return guard clauses with descriptive errors before main logic; avoid nested conditionals.
-- Wrap related parameters in typed structs to prevent positional/context mismatches at call sites.
-- Initialize dependencies near their consumers; group logically-related declarations together.
-- Await async calls to resolve values rather than chaining inline promises.
-- Separate I/O (data fetching) from business logic.
-- Parenthesize long ternary expressions before chaining methods.
-- Prefer explicit conditional assignment over spread-operator ternaries when clarity matters.
-- Avoid `Array.map()` for side effects — use `forEach`/`for-of`.
-- Extract shared logic into helpers instead of duplicating near-identical blocks.
-
-### Error Handling
-- Wrap instrumented operations in try-catch that logs stack traces before emitting failure metrics.
-- Apply consistent error handling across sibling functions (same query pattern, uniform error types).
-- Throw domain-specific exceptions from a dedicated errors namespace, not generic `Error`.
-- Include specific context and interpolated variables in error messages.
-- Record failure metric, then rethrow — preserve original error semantics.
-- Async handlers must have try-catch or null checks; never let DB errors propagate uncaught.
-
-### Logging & Instrumentation
-- Use a centralized logger factory (`getLogger(__name__)`-style) rather than instantiating loggers ad-hoc.
-- Use an environment-aware logger that delegates dev (pretty) vs prod (structured).
-- Instrument step boundaries (start, milestone, completion) with structured context.
-- Export metric name constants; never hardcode metric strings at call sites.
-- Pair count metrics with duration histograms; bracket duration inside the try block.
-- Track outcomes via attempt + failure counts rather than a separate success counter.
-
-### Types & Data Modeling
-- Use enums for constrained value sets instead of string literals.
-- Define static lookup maps as class properties (`O(1)` reference) for known reference data.
-- Use factory/container patterns to pre-initialize and cache clients by key.
-- Annotate local variable types explicitly when they cross try/catch scope boundaries.
-- Define narrow, explicit payload interfaces — separate interfaces for input params vs output data.
-- Validate input shape and bounds at the route boundary (JSON Schema) before the handler runs.
-- Mirror DB columns directly in responses when no transformation is needed.
-
-### Configuration & Environment
-- Validate env/config via typed helpers (`requiredEnvVariable`, `requiredNumber`) returning typed structs.
-- Consolidate related env vars into a single JSON config object.
-- Use hierarchical, domain-suffixed env var names (`API_KEY_AUTH_FRONTEND`, not `AUTH_KEY`).
-- Prefer standard platform env vars (`NODE_EXTRA_CA_CERTS`) over inventing new ones.
-- Centralize config validation in a single source-of-truth array; update atomically.
-- Gate feature behavior behind config flags parsed from string to boolean.
-
-### Testing
-- Update production code and tests in the same commit — keep mocks and assertions in sync.
-- Extract test setup into factory functions (`makeRequest`, `createX`); use spread for partial overrides.
-- Assert concrete expected values, not loose matchers like `toBeGreaterThanOrEqual` when the exact value is known.
-- Remove `it.only()` / `fdescribe` / `.skip` before committing.
-- Never use `as never` or other type-bypass casts in mocks — fix the underlying type mismatch.
-- Don't seed unused tables or assert response shape without verifying inputs drive query predicates.
-
-### Infrastructure as Code (Terraform / Docker / Migrations)
-- Centralize Terraform naming via `locals` as a single source of truth; never replace shared names with hardcoded literals.
-- Pin Terraform modules to explicit versions with full source paths.
-- Use descriptive resource names that document intent (e.g. `allow_X_to_Y`).
-- Initialize Terraform secret variables with `"Placeholder"`, never real values in VCS.
-- Mirror Terraform secret resource names to code config names.
-- Commit Terraform lock files with provider hashes.
-- Apply identical syntax symmetrically across parallel resources (dev/prod).
-- Use `CREATE INDEX CONCURRENTLY` with `transaction = false` for non-blocking production DDL.
-- Write idempotent migrations with `IF NOT EXISTS` / `IF EXISTS` guards on both up and down.
-- Name indexes consistently: `{table}_{column}_idx` snake_case.
-- Split Docker builds into explicit stages; prefer explicit workspace lists over globs.
-
-### Naming & Style
-- Boolean prefixes: `is*`, `has*`, `should*`.
-- One canonical name per concept across files; follow existing patterns when extending (e.g. `build_*` task names).
-- Prefer template literals over string concatenation.
-- Order object literal properties logically (headers, contentType, payload — not scattered).
-- Initialize collections multiline for cleaner diffs and easier extension.
-- Insert into sorted lists in order, not at the end — reduces merge conflicts.
-
-### Refactoring & PR Hygiene
-- Refactor across all layers (config, plugin, tests, IaC) in one sweep — no orphaned references.
-- Prefer focused, minimal defensive changes over opportunistic refactors in the same diff.
-- Reuse established infrastructure patterns instead of inventing custom mechanisms.
-- Apply find-and-replace systematically across docs for consistency.
+The **Code Style** section in `~/.claude/CLAUDE.md` is the source of truth. S4.2 (execute) and S4.4 (refactor) apply it verbatim. Project-local conventions (existing patterns in the touched files, CLAUDE.md, linter config) always win when they conflict.
 
 ## Arguments
 
@@ -1060,7 +981,7 @@ Tests are written in the project's native test framework.
 
    Implement the minimum code to make the failing test pass. This is where the plan task's actual implementation happens.
 
-   **Before writing**: apply the **Code Style** section above. Project-local conventions in the surrounding files win when they conflict.
+   **Before writing**: apply the **Code Style** section in `~/.claude/CLAUDE.md`. Project-local conventions in the surrounding files win when they conflict.
 
    After implementing, run the test:
    ```bash
@@ -1103,7 +1024,7 @@ Tests are written in the project's native test framework.
 
    Implement the AC directly. Do not split into per-task commits; the entire ticket is one logical change.
 
-   **Before writing**: apply the **Code Style** section above. Project-local conventions in the surrounding files win when they conflict.
+   **Before writing**: apply the **Code Style** section in `~/.claude/CLAUDE.md`. Project-local conventions in the surrounding files win when they conflict.
 
    #### 6'b: Add Gherkin-driven tests (if any scenarios exist)
 
@@ -1243,7 +1164,7 @@ After TDD execution and acceptance verification, run a targeted refactoring pass
    ```
 3. Launch the refactor agent targeting only the changed files:
    - Use the Agent tool with `subagent_type: "refactor"`
-   - Prompt: "Analyze the following files for CRAP score, DRY violations, and refactoring opportunities. These were changed as part of ticket {TICKET_KEY}. Only flag issues introduced or worsened by this branch's changes — don't report pre-existing issues in unchanged code. Implement any refactorings that are clearly beneficial (reduce complexity, eliminate duplication) without changing behavior. Skip anything marginal or subjective. Files: {FILE_LIST}\n\nAdditionally, evaluate the diff against the **Code Style** principles in `commands/ticket-work.md` (Functions & Control Flow, Error Handling, Logging & Instrumentation, Types & Data Modeling, Configuration & Environment, Testing, Infrastructure as Code, Naming & Style, Refactoring & PR Hygiene). Apply style fixes when they're clear improvements and don't change behavior. Project-local conventions in the surrounding files win when they conflict with the guide. Do not enlarge the diff opportunistically — fix what's broken or stylistically off in *this branch's* changes."
+   - Prompt: "Analyze the following files for CRAP score, DRY violations, and refactoring opportunities. These were changed as part of ticket {TICKET_KEY}. Only flag issues introduced or worsened by this branch's changes — don't report pre-existing issues in unchanged code. Implement any refactorings that are clearly beneficial (reduce complexity, eliminate duplication) without changing behavior. Skip anything marginal or subjective. Files: {FILE_LIST}\n\nAdditionally, evaluate the diff against the **Code Style** principles in `~/.claude/CLAUDE.md` (Functions & Control Flow, Error Handling, Logging & Instrumentation, Types & Data Modeling, Configuration & Environment, Testing, Infrastructure as Code, Naming & Style, Refactoring & PR Hygiene). Apply style fixes when they're clear improvements and don't change behavior. Project-local conventions in the surrounding files win when they conflict with the guide. Do not enlarge the diff opportunistically — fix what's broken or stylistically off in *this branch's* changes."
 4. After the refactor agent completes:
    - Run the full test suite to confirm nothing broke:
      ```bash
