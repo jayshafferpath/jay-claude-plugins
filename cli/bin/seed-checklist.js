@@ -75,7 +75,7 @@ async function seedSteps() {
   const planExists = existsSync(planPath);
 
   const prInfo = getPrInfo(branchName, workDir);
-  const prExists = prInfo !== null;
+  const prExists = prInfo !== null && prInfo.state === "OPEN";
 
   const hasLabel = (l) => labels.includes(l);
   const hasAny = (...ls) => ls.some(hasLabel);
@@ -118,7 +118,7 @@ async function seedSteps() {
   ];
 
   for (const { step, prefix } of stageMap) {
-    if (hasStageCommit(ticketKey, prefix, workDir)) {
+    if (hasStageCommit(ticketKey, prefix, workDir, baseBranch)) {
       for (let i = 0; i <= step; i++) steps[i] = true;
     }
   }
