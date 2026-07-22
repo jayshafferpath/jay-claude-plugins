@@ -151,10 +151,11 @@ export function getStageCommits(ticketKey, cwd) {
     });
 }
 
-export function hasStageCommit(ticketKey, stagePrefix, cwd) {
+export function hasStageCommit(ticketKey, stagePrefix, cwd, baseBranch) {
   if (!ticketKey || !stagePrefix || !cwd) return false;
+  const range = baseBranch ? ` origin/${baseBranch}..HEAD` : "";
   const result = run(
-    `git log --oneline --grep="^\\[${ticketKey}\\] ${stagePrefix}:"`,
+    `git log --oneline${range} --grep="^\\[${ticketKey}\\] ${stagePrefix}:"`,
     cwd,
   );
   return result !== null && result.trim().length > 0;

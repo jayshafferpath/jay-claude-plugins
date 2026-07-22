@@ -29,12 +29,12 @@ function createIssueResponse(key, labels = []) {
   };
 }
 
-function createShims(prExists = false) {
+function createShims(prExists = false, prState = "OPEN") {
   mkdirSync(SHIM_DIR, { recursive: true });
 
   let ghPrView;
   if (prExists) {
-    ghPrView = `echo '{"number":5,"url":"http://pr/5","state":"OPEN"}'`;
+    ghPrView = `echo '{"number":5,"url":"http://pr/5","state":"${prState}"}'`;
   } else {
     ghPrView = "exit 1";
   }
@@ -58,7 +58,7 @@ exit 1
 }
 
 function runAsync(args, opts = {}) {
-  createShims(opts.prExists || false);
+  createShims(opts.prExists || false, opts.prState || "OPEN");
   return new Promise((resolve, reject) => {
     const env = {
       ...process.env,
@@ -181,6 +181,24 @@ describe("seed-checklist e2e", () => {
       expect(result.steps[i].done).toBe(true);
     }
     expect(result.steps[9].done).toBe(false);
+  });
+
+  it("ignores a MERGED PR from a prior life on a rework'd branch", async () => {
+    const result = await runAsync(
+      `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary ReworkedFresh`,
+      { prExists: true, prState: "MERGED" },
+    );
+
+    expect(result.steps.every((s) => s.done === false)).toBe(true);
+  });
+
+  it("ignores a CLOSED PR from a prior life on a rework'd branch", async () => {
+    const result = await runAsync(
+      `FRESH-1 --work-dir ${WORK_DIR} --branch FRESH-1 --base-branch main --pr-target main --summary ReworkedFresh`,
+      { prExists: true, prState: "CLOSED" },
+    );
+
+    expect(result.steps.every((s) => s.done === false)).toBe(true);
   });
 
   it("uses base_branch and pr_target frontmatter for stacked tickets", async () => {

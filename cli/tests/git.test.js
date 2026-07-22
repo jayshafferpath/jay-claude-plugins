@@ -388,6 +388,27 @@ describe("hasStageCommit", () => {
     });
     expect(hasStageCommit("TICK-1", "plan", "/repo")).toBe(false);
   });
+
+  it("bounds the search to origin/{baseBranch}..HEAD when baseBranch is provided", () => {
+    let capturedCmd = "";
+    execSync.mockImplementation((cmd) => {
+      capturedCmd = cmd;
+      return "";
+    });
+    hasStageCommit("TICK-1", "plan", "/repo", "NEV-1348");
+    expect(capturedCmd).toContain("origin/NEV-1348..HEAD");
+  });
+
+  it("omits the range when baseBranch is not provided", () => {
+    let capturedCmd = "";
+    execSync.mockImplementation((cmd) => {
+      capturedCmd = cmd;
+      return "";
+    });
+    hasStageCommit("TICK-1", "plan", "/repo");
+    expect(capturedCmd).not.toContain("origin/");
+    expect(capturedCmd).not.toContain("..HEAD");
+  });
 });
 
 describe("getLastStageCommitSha", () => {
