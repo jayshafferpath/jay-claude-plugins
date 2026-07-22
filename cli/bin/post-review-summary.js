@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { join } from "node:path";
+import { resolve } from "node:path";
 import { postSummary } from "../lib/review-summary.js";
 
 const args = process.argv.slice(2);
@@ -22,7 +22,7 @@ const branch = args[0];
 const plansDirArg = getFlag("--plans-dir") || ".claude/plans";
 const ticketKey = getFlag("--ticket-key")?.toUpperCase();
 const cwd = process.cwd();
-const plansDir = join(cwd, plansDirArg);
+const plansDir = resolve(cwd, plansDirArg);
 
 const result = postSummary(branch, plansDir, ticketKey, cwd);
 console.log(JSON.stringify(result, null, 2));

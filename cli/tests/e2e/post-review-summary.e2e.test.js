@@ -94,6 +94,23 @@ describe("post-review-summary e2e", () => {
     expect(output.issuesResolved).toBe(1);
   });
 
+  it("resolves an absolute --plans-dir against the file it contains", () => {
+    const absPlans = join(TMP, "abs-plans");
+    mkdirSync(absPlans, { recursive: true });
+    writeFileSync(
+      join(absPlans, "pr-ABS-1-review.md"),
+      "# Review\n- [x] **Fix**: ok\n",
+    );
+
+    const { exitCode, output } = run(
+      `feat-abs --plans-dir ${absPlans} --ticket-key ABS-1`,
+    );
+
+    expect(exitCode).toBe(0);
+    expect(output.posted).toBe(true);
+    expect(output.issuesFound).toBe(1);
+  });
+
   it("exits with code 1 when no plan file found", () => {
     const emptyPlans = join(TMP, "empty-plans");
     mkdirSync(emptyPlans, { recursive: true });
