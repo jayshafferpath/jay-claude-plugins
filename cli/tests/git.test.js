@@ -25,6 +25,8 @@ const {
   isSameCommit,
   isShaAncestorOf,
   isTicketMergeRevertedOn,
+  isTicketMergeStandingRevertedOn,
+  hasTicketCommitAfter,
   resolveMergedTag,
   getStageCommits,
   hasStageCommit,
@@ -521,6 +523,143 @@ describe("isTicketMergeRevertedOn", () => {
     // Without --all-match, git ORs the greps and an ordinary commit merely
     // mentioning the ticket would read as a revert.
     expect(cmd).toContain("--all-match");
+  });
+
+  // The live NEV-1441 shape: #182 merged, was reverted, then #191 re-merged the
+  // same ticket. The re-merge carries no revert trailer, so the
+  // revert-of-a-revert recursion cannot see it.
+  it("returns false when the ticket re-merged after the revert", () => {
+    execSync
+      .mockReturnValueOnce("d932d73\n") // the standing revert of NEV-1441
+      .mockReturnValueOnce("") // it was not itself reverted
+      .mockReturnValueOnce("4c81267\n") // ...but NEV-1441 landed again after it
+      .mockReturnValueOnce(""); // and that re-land is not a revert
+    expect(isTicketMergeRevertedOn("NEV-1441", "NEV-1352", "/repo")).toBe(
+      false,
+    );
+  });
+});
+
+describe("hasTicketCommitAfter", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when any argument is falsy", () => {
+    expect(hasTicketCommitAfter(null, "sha", "main", "/repo")).toBe(false);
+    expect(hasTicketCommitAfter("NEV-1", null, "main", "/repo")).toBe(false);
+    expect(hasTicketCommitAfter("NEV-1", "sha", null, "/repo")).toBe(false);
+    expect(hasTicketCommitAfter("NEV-1", "sha", "main", null)).toBe(false);
+  });
+
+  it("returns false when the ticket has no commit after the sha", () => {
+    execSync.mockReturnValue("");
+    expect(
+      hasTicketCommitAfter("NEV-1441", "d932d73", "NEV-1352", "/repo"),
+    ).toBe(false);
+  });
+
+  it("returns true when a non-revert ticket commit follows the sha", () => {
+    execSync
+      .mockReturnValueOnce("4c81267\n") // NEV-1441 commit after the revert
+      .mockReturnValueOnce(""); // none of them are reverts
+    expect(
+      hasTicketCommitAfter("NEV-1441", "d932d73", "NEV-1352", "/repo"),
+    ).toBe(true);
+  });
+
+  it("ignores a later revert that merely names the ticket", () => {
+    // A second revert of the same ticket is not a re-land, so it must not count.
+    execSync.mockReturnValueOnce("revert2\n").mockReturnValueOnce("revert2\n");
+    expect(
+      hasTicketCommitAfter("NEV-1441", "d932d73", "NEV-1352", "/repo"),
+    ).toBe(false);
+  });
+
+  it("scopes the search to commits after the sha", () => {
+    execSync.mockReturnValue("");
+    hasTicketCommitAfter("NEV-1441", "d932d73", "NEV-1352", "/repo");
+    const cmd = execSync.mock.calls[0][0];
+    // The range is what keeps the original pre-revert merge from being
+    // mistaken for the re-land.
+    expect(cmd).toContain("git log d932d73..origin/NEV-1352");
+    expect(cmd).toContain('--grep="NEV-1441"');
+  });
+});
+
+describe("isTicketMergeStandingRevertedOn", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when target or cwd is missing", () => {
+    expect(isTicketMergeStandingRevertedOn("NEV-1", "sha", null, "/repo")).toBe(
+      false,
+    );
+    expect(isTicketMergeStandingRevertedOn("NEV-1", "sha", "main", null)).toBe(
+      false,
+    );
+  });
+
+  it("returns true when a key-matched revert is standing", () => {
+    execSync
+      .mockReturnValueOnce("d932d73\n") // key-scoped revert found
+      .mockReturnValueOnce("") // not itself reverted
+      .mockReturnValueOnce(""); // no re-land after it
+    expect(
+      isTicketMergeStandingRevertedOn(
+        "NEV-1441",
+        "squash1",
+        "NEV-1352",
+        "/repo",
+      ),
+    ).toBe(true);
+  });
+
+  it("falls back to the merge sha when no revert carries the key", () => {
+    // Covers a revert whose subject was reworded and lost the ticket key.
+    execSync
+      .mockReturnValueOnce("") // key-scoped search finds nothing
+      .mockReturnValueOnce("revert1\n") // but the sha was reverted
+      .mockReturnValueOnce("") // that revert still stands
+      .mockReturnValueOnce(""); // and nothing re-landed after the merge
+    expect(
+      isTicketMergeStandingRevertedOn(
+        "NEV-1441",
+        "squash1",
+        "NEV-1352",
+        "/repo",
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false when the sha was reverted but the ticket re-landed after", () => {
+    execSync
+      .mockReturnValueOnce("") // no key-matched revert
+      .mockReturnValueOnce("revert1\n") // sha was reverted
+      .mockReturnValueOnce("") // revert stands
+      .mockReturnValueOnce("4c81267\n") // ...but the ticket landed again
+      .mockReturnValueOnce(""); // and that re-land is not a revert
+    expect(
+      isTicketMergeStandingRevertedOn(
+        "NEV-1441",
+        "squash1",
+        "NEV-1352",
+        "/repo",
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when nothing was reverted at all", () => {
+    execSync.mockReturnValue("");
+    expect(
+      isTicketMergeStandingRevertedOn(
+        "NEV-1441",
+        "squash1",
+        "NEV-1352",
+        "/repo",
+      ),
+    ).toBe(false);
   });
 });
 
