@@ -5,10 +5,9 @@ import {
   getOpenPrMap,
   isAncestor,
   isMergedInto,
-  isRevertedOn,
   isSameCommit,
   isShaAncestorOf,
-  isTicketMergeRevertedOn,
+  isTicketMergeStandingRevertedOn,
   resolveMergedTag,
 } from "./git.js";
 import { getIssue, searchIssues } from "./jira.js";
@@ -439,21 +438,22 @@ export async function resolveStack(ticketKey, opts = {}) {
     // connects the two.
     if (repoRoot) {
       if (mergedIntoFeature && featureBranch) {
-        const revertedBySha =
-          featureMergeSha &&
-          isRevertedOn(featureMergeSha, featureBranch, repoRoot);
         if (
-          revertedBySha ||
-          isTicketMergeRevertedOn(key, featureBranch, repoRoot)
+          isTicketMergeStandingRevertedOn(
+            key,
+            featureMergeSha,
+            featureBranch,
+            repoRoot,
+          )
         ) {
           mergedIntoFeature = false;
           featureMergeSha = null;
         }
       }
       if (mergedIntoMain) {
-        const revertedBySha =
-          mainMergeSha && isRevertedOn(mainMergeSha, "main", repoRoot);
-        if (revertedBySha || isTicketMergeRevertedOn(key, "main", repoRoot)) {
+        if (
+          isTicketMergeStandingRevertedOn(key, mainMergeSha, "main", repoRoot)
+        ) {
           mergedIntoMain = false;
           mainMergeSha = null;
         }
@@ -487,9 +487,12 @@ export async function resolveStack(ticketKey, opts = {}) {
       const blockerReverted =
         featureBranch &&
         repoRoot &&
-        ((blockerMergeSha &&
-          isRevertedOn(blockerMergeSha, featureBranch, repoRoot)) ||
-          isTicketMergeRevertedOn(bKey, featureBranch, repoRoot));
+        isTicketMergeStandingRevertedOn(
+          bKey,
+          blockerMergeSha,
+          featureBranch,
+          repoRoot,
+        );
       const branchInFeature =
         !blockerReverted &&
         (blockerShipped ||

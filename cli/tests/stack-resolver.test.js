@@ -14,8 +14,7 @@ vi.mock("../lib/git.js", () => ({
   resolveMergedTag: vi.fn(() => null),
   isShaAncestorOf: vi.fn(() => false),
   isSameCommit: vi.fn(() => false),
-  isRevertedOn: vi.fn(() => false),
-  isTicketMergeRevertedOn: vi.fn(() => false),
+  isTicketMergeStandingRevertedOn: vi.fn(() => false),
 }));
 
 vi.mock("../lib/config.js", () => ({
@@ -32,8 +31,7 @@ const {
   resolveMergedTag,
   isShaAncestorOf,
   isSameCommit,
-  isRevertedOn,
-  isTicketMergeRevertedOn,
+  isTicketMergeStandingRevertedOn,
 } = await import("../lib/git.js");
 const { loadDevRoot } = await import("../lib/config.js");
 const {
@@ -811,8 +809,8 @@ describe("resolveStack", () => {
       base === "STORY-1" ? new Map([["SUB-1", "squash1"]]) : new Map(),
     );
     // ...but that commit has since been reverted on the feature branch.
-    isRevertedOn.mockImplementation(
-      (sha, target) => sha === "squash1" && target === "STORY-1",
+    isTicketMergeStandingRevertedOn.mockImplementation(
+      (_key, sha, target) => sha === "squash1" && target === "STORY-1",
     );
 
     const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
@@ -864,17 +862,72 @@ describe("resolveStack", () => {
     getMergedPrMap.mockImplementation((base) =>
       base === "STORY-1" ? new Map([["SUB-1", "stale-sha"]]) : new Map(),
     );
-    // ...so no revert names it, and the SHA check finds nothing.
-    isRevertedOn.mockReturnValue(false);
-    // The key-scoped search still locates the standing revert.
-    isTicketMergeRevertedOn.mockImplementation(
-      (ticketKey, target) => ticketKey === "SUB-1" && target === "STORY-1",
+    // The key-scoped search still locates the standing revert even though the
+    // reported SHA is stale.
+    isTicketMergeStandingRevertedOn.mockImplementation(
+      (ticketKey, _sha, target) =>
+        ticketKey === "SUB-1" && target === "STORY-1",
     );
 
     const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
     const sub1 = result.stack.find((t) => t.key === "SUB-1");
     expect(sub1.mergedIntoFeature).toBe(false);
     expect(sub1.featureMergeSha).toBeNull();
+  });
+
+  // The other half of the NEV-1441 story: after the revert, the ticket merged
+  // again under a brand-new PR (#191). The re-merge is an ordinary squash commit
+  // with no revert trailer, so a resolver that only looks for a
+  // revert-of-the-revert never sees the re-land and reports the ticket as
+  // reverted forever — blocking /promote-to-main against work plainly on the
+  // branch.
+  it("reports mergedIntoFeature when the ticket re-merged after being reverted", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    // The newest merged PR for the branch is the re-land (#191 in the live
+    // stack), not the reverted original.
+    getMergedPrMap.mockImplementation((base) =>
+      base === "STORY-1" ? new Map([["SUB-1", "reland-sha"]]) : new Map(),
+    );
+    // No revert is standing: the work is back on the branch.
+    isTicketMergeStandingRevertedOn.mockReturnValue(false);
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoFeature).toBe(true);
+    expect(sub1.featureMergeSha).toBe("reland-sha");
   });
 
   it("re-blocks a downstream ticket when its blocker's merge was reverted", async () => {
@@ -929,8 +982,8 @@ describe("resolveStack", () => {
     getMergedPrMap.mockImplementation((base) =>
       base === "STORY-1" ? new Map([["SUB-1", "squash1"]]) : new Map(),
     );
-    isRevertedOn.mockImplementation(
-      (sha, target) => sha === "squash1" && target === "STORY-1",
+    isTicketMergeStandingRevertedOn.mockImplementation(
+      (_key, sha, target) => sha === "squash1" && target === "STORY-1",
     );
 
     const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });

@@ -227,8 +227,87 @@ export function isTicketMergeRevertedOn(ticketKey, target, cwd) {
     .map((line) => line.trim())
     .filter(Boolean);
 
-  // A revert that was itself reverted is a re-land, so it no longer counts.
-  return reverts.some((revert) => !isRevertedOn(revert, target, cwd));
+  // A revert no longer counts once the work is back on the branch. That happens
+  // two ways: the revert was itself reverted, or — the common one — the ticket
+  // simply re-merged afterwards under a brand-new PR. The second leaves no
+  // revert-of-a-revert trailer to find, so ask whether any later commit
+  // re-landed the ticket instead.
+  return reverts.some(
+    (revert) =>
+      !isRevertedOn(revert, target, cwd) &&
+      !hasTicketCommitAfter(ticketKey, revert, target, cwd),
+  );
+}
+
+// Whether {ticketKey} has a commit on origin/{target} that landed strictly
+// after {sha}.
+//
+// This is what distinguishes "reverted" from "reverted, then re-landed". A
+// re-merge after a revert is an ordinary new squash commit — it carries no
+// `This reverts commit` trailer, so the revert-of-a-revert recursion cannot see
+// it and the ticket reads as reverted forever. NEV-1441 hit exactly this: PR
+// #182 merged, was reverted, then re-merged as PR #191, and the resolver kept
+// reporting mergedIntoFeature: false against work plainly on the branch.
+//
+// The `{sha}..origin/{target}` range is what makes this safe: it only sees
+// commits that are descendants of the revert, so the original pre-revert merge
+// can never be mistaken for the re-land. Reverts are excluded so a revert that
+// happens to name the key doesn't count as its own re-land.
+export function hasTicketCommitAfter(ticketKey, sha, target, cwd) {
+  if (!ticketKey || !sha || !target || !cwd) return false;
+
+  const result = run(
+    `git log ${sha}..origin/${target} --format=%H --grep="${ticketKey}"`,
+    cwd,
+  );
+  if (!result) return false;
+
+  const candidates = result
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (candidates.length === 0) return false;
+
+  const reverting = run(
+    `git log ${sha}..origin/${target} --format=%H --grep="This reverts commit" --grep="${ticketKey}" --all-match`,
+    cwd,
+  );
+  const revertShas = new Set(
+    (reverting || "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean),
+  );
+
+  return candidates.some((candidate) => !revertShas.has(candidate));
+}
+
+// Whether {ticketKey}'s work is currently reverted off origin/{target} — the
+// single question every caller actually wants answered.
+//
+// Both signals are consulted because each covers a gap in the other:
+// isTicketMergeRevertedOn finds a revert across a feature-branch rewrite (which
+// changes the merge SHA), while the SHA check still catches a revert whose
+// subject was reworded and no longer carries the key. Either one is enough to
+// call the work reverted.
+//
+// A standing revert found by SHA gets the same re-land test the key path
+// already applies: the work may have re-merged afterwards under a new PR, in
+// which case it is on the branch and not reverted at all.
+export function isTicketMergeStandingRevertedOn(
+  ticketKey,
+  mergeSha,
+  target,
+  cwd,
+) {
+  if (!target || !cwd) return false;
+
+  if (ticketKey && isTicketMergeRevertedOn(ticketKey, target, cwd)) return true;
+
+  if (!mergeSha || !isRevertedOn(mergeSha, target, cwd)) return false;
+
+  // Reverted by SHA — unless the ticket landed again after that merge.
+  return !(ticketKey && hasTicketCommitAfter(ticketKey, mergeSha, target, cwd));
 }
 
 export function getMergedPrMap(baseBranch, cwd) {
