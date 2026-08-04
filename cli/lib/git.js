@@ -147,6 +147,90 @@ export function isShaAncestorOf(sha, target, cwd) {
   return result !== null;
 }
 
+// Whether origin/{branch} and origin/{target} point at the very same commit.
+//
+// Distinguishes "merged" from "sitting at the base with no work yet". A branch
+// freshly created from its base — or hard-reset back onto it by /rework — is
+// trivially an ancestor of that base, so isAncestor alone reports it as merged
+// when it has in fact contributed nothing. A genuinely merged branch is a
+// *strict* ancestor: the base carries the merge (or squash) commit on top of it,
+// so the two tips differ.
+export function isSameCommit(branch, target, cwd) {
+  if (!branch || !target || !cwd) return false;
+  const left = run(`git rev-parse --verify origin/${branch}^{commit}`, cwd);
+  const right = run(`git rev-parse --verify origin/${target}^{commit}`, cwd);
+  if (!left || !right) return false;
+  return left === right;
+}
+
+// Whether the work introduced by {sha} has since been reverted on origin/{target}.
+//
+// A merge can be undone after the fact — /rework on an already-merged ticket
+// reverts it off the feature branch. That leaves two misleading traces behind:
+// GitHub's merged-PR record is immutable, and the merge commit itself stays
+// reachable. Both keep reporting "merged" while the code is gone, so ancestry
+// alone over-reports merge state and downstream tickets read as unblocked by
+// work that no longer exists.
+//
+// Git's `This reverts commit <sha>.` trailer is the only durable evidence, so
+// the branch history is what we search. A revert that has itself been reverted
+// is a re-land and cancels out, which is why this recurses: only a revert still
+// standing counts against the original.
+export function isRevertedOn(sha, target, cwd, depth = 0) {
+  if (!sha || !target || !cwd) return false;
+  // Guard against pathological revert chains (and any cycle a rewritten history
+  // could produce) rather than recursing without bound.
+  if (depth > 10) return false;
+
+  const result = run(
+    `git log origin/${target} --format=%H --grep="This reverts commit ${sha}"`,
+    cwd,
+  );
+  if (!result) return false;
+
+  const reverts = result
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return reverts.some(
+    (revert) => !isRevertedOn(revert, target, cwd, depth + 1),
+  );
+}
+
+// Whether a revert of {ticketKey}'s merge is standing on origin/{target},
+// located by ticket key rather than by a specific merge SHA.
+//
+// isRevertedOn needs the exact SHA the revert names, but the SHA a caller has
+// is often not that one: GitHub's merged-PR record pins the merge commit as it
+// existed at merge time, and a later feature-branch rewrite (cascade rebase,
+// /cleanup's refresh) replays that merge under a fresh SHA. The revert then
+// names the *rewritten* commit while the PR record still reports the original,
+// so an exact-SHA match misses a revert that is plainly there.
+//
+// The ticket key is the stable link across a rewrite: /rework and /prune both
+// write it into the revert body, and squash-merge subjects carry it by
+// convention (`feat(KEY): …`), so `Revert "feat(KEY): …"` retains it. Matching
+// both the revert trailer and the key keeps this from firing on an ordinary
+// commit that merely mentions the ticket.
+export function isTicketMergeRevertedOn(ticketKey, target, cwd) {
+  if (!ticketKey || !target || !cwd) return false;
+
+  const result = run(
+    `git log origin/${target} --format=%H --grep="This reverts commit" --grep="${ticketKey}" --all-match`,
+    cwd,
+  );
+  if (!result) return false;
+
+  const reverts = result
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  // A revert that was itself reverted is a re-land, so it no longer counts.
+  return reverts.some((revert) => !isRevertedOn(revert, target, cwd));
+}
+
 export function getMergedPrMap(baseBranch, cwd) {
   if (!baseBranch || !cwd) return new Map();
   const result = run(

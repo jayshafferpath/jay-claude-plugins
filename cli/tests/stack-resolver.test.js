@@ -13,6 +13,9 @@ vi.mock("../lib/git.js", () => ({
   getOpenPrMap: vi.fn(() => new Map()),
   resolveMergedTag: vi.fn(() => null),
   isShaAncestorOf: vi.fn(() => false),
+  isSameCommit: vi.fn(() => false),
+  isRevertedOn: vi.fn(() => false),
+  isTicketMergeRevertedOn: vi.fn(() => false),
 }));
 
 vi.mock("../lib/config.js", () => ({
@@ -28,6 +31,9 @@ const {
   getOpenPrMap,
   resolveMergedTag,
   isShaAncestorOf,
+  isSameCommit,
+  isRevertedOn,
+  isTicketMergeRevertedOn,
 } = await import("../lib/git.js");
 const { loadDevRoot } = await import("../lib/config.js");
 const {
@@ -757,6 +763,229 @@ describe("resolveStack", () => {
     const sub2 = result.stack.find((t) => t.key === "SUB-2");
     expect(sub2.unblockedBlockers).toContain("SUB-1");
     expect(sub2.eligible).toBe(false);
+  });
+
+  // Regression, reproducing the NEV-1441 rework shape: the ticket had already
+  // merged into the Epic feature branch, then /rework reverted it back off.
+  // GitHub's merged-PR record is immutable and the merge commit stays
+  // reachable, so both keep reporting "merged" after the code is gone. Before
+  // the fix this reported mergedIntoFeature: true, which made the ticket-work
+  // S2.5 cleanup-prerequisites gate fire and re-assert the stale merged state.
+  it("clears mergedIntoFeature when the merge was reverted off the feature branch", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    // The immutable merged-PR record still names the squash commit.
+    getMergedPrMap.mockImplementation((base) =>
+      base === "STORY-1" ? new Map([["SUB-1", "squash1"]]) : new Map(),
+    );
+    // ...but that commit has since been reverted on the feature branch.
+    isRevertedOn.mockImplementation(
+      (sha, target) => sha === "squash1" && target === "STORY-1",
+    );
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoFeature).toBe(false);
+    expect(sub1.featureMergeSha).toBeNull();
+  });
+
+  // The live NEV-1441 shape: the feature branch was rewritten after the merge,
+  // so the on-branch squash commit (which the revert names) differs from the
+  // SHA GitHub's PR record still reports. The exact-SHA check therefore misses,
+  // and only the ticket-key match finds the revert.
+  it("clears mergedIntoFeature via ticket-key match when the revert names a rewritten SHA", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    // GitHub reports the pre-rewrite SHA...
+    getMergedPrMap.mockImplementation((base) =>
+      base === "STORY-1" ? new Map([["SUB-1", "stale-sha"]]) : new Map(),
+    );
+    // ...so no revert names it, and the SHA check finds nothing.
+    isRevertedOn.mockReturnValue(false);
+    // The key-scoped search still locates the standing revert.
+    isTicketMergeRevertedOn.mockImplementation(
+      (ticketKey, target) => ticketKey === "SUB-1" && target === "STORY-1",
+    );
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoFeature).toBe(false);
+    expect(sub1.featureMergeSha).toBeNull();
+  });
+
+  it("re-blocks a downstream ticket when its blocker's merge was reverted", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-2") {
+        return {
+          key: "SUB-2",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+      {
+        key: "SUB-2",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork"],
+          issuelinks: [
+            {
+              type: { name: "Blocks", inward: "is blocked by" },
+              inwardIssue: { key: "SUB-1", fields: issueFields() },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    // The blocker's branch still looks merged by ancestry and by PR record.
+    isAncestor.mockImplementation((ancestor) => ancestor === "SUB-1");
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockImplementation((base) =>
+      base === "STORY-1" ? new Map([["SUB-1", "squash1"]]) : new Map(),
+    );
+    isRevertedOn.mockImplementation(
+      (sha, target) => sha === "squash1" && target === "STORY-1",
+    );
+
+    const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });
+    const sub2 = result.stack.find((t) => t.key === "SUB-2");
+    expect(sub2.unblockedBlockers).toEqual(["SUB-1"]);
+    expect(sub2.eligible).toBe(false);
+  });
+
+  // A branch reset onto its base — /rework's own reset, or a branch created and
+  // not yet committed to — is trivially an ancestor of that base. Ancestry
+  // alone therefore reads "no work yet" as "merged".
+  it("does not flag mergedIntoFeature when the branch tip equals the feature branch tip", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudeReady"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    findBranch.mockImplementation((key) => key);
+    // Ancestor of the feature branch, but only because it *is* the same commit.
+    isAncestor.mockReturnValue(true);
+    isSameCommit.mockImplementation(
+      (branch, target) => branch === "SUB-1" && target === "STORY-1",
+    );
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockReturnValue(new Map());
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoFeature).toBe(false);
   });
 
   it("flags mergedIntoMain when branch tip is not in merged list but a merged PR to main exists (squash merge)", async () => {
