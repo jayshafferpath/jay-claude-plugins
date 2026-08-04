@@ -15,7 +15,7 @@ Equivalent to `/cleanup {KEY} --require-phase=main`. The wrapped command:
 - Appends a "Shipped" entry to the ticket's activity log; if it was the last unmerged ticket in its container, appends a "Stack complete" entry to the container.
 - Cascade-rebases any unmerged downstream stacked tickets onto `main`.
 - Refreshes the long-lived feature branch by resetting to `origin/main` and re-merging still-unmerged ticket branches.
-- Retires the `merged/{KEY}` tag created during Phase-1 (if present).
+- Retires the `merged/{KEY}` tag (if present) — but only when the verified merge target really is `main`. A leaf ticket whose PR merged into its container's feature branch also runs terminal cleanup, and there the tag is retained: it is that ticket's only durable ship record once its branch is deleted, and the `featureMergeSha` replay source for feature-branch refreshes.
 - Refuses if the detected merge target is the parent Epic's feature branch (wrong phase) and points you at `/cleanup-feature`.
 
 For Phase-1 cleanup after a Story-container ships to its Epic feature branch, use `/cleanup-feature {KEY}`.
