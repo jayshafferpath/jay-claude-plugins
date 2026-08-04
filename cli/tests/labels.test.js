@@ -10,12 +10,13 @@ import {
   getComplexity,
   IN_FLIGHT_LABELS,
   isInFlight,
+  isReviewStatus,
   LABEL_DISPLAY_ORDER,
-  LABEL_TO_STATUS_TRANSITIONS,
   PROGRESS_LABELS,
   progressLabelsOn,
+  REVIEW_STATUS_NAMES,
+  STATUS_TRANSITIONS,
   SUBTASK_EXCLUSION_LABELS,
-  TERMINAL_LABELS,
 } from "../lib/labels.js";
 
 describe("labels.js label sets", () => {
@@ -28,16 +29,25 @@ describe("labels.js label sets", () => {
     expect(Object.isFrozen(PROGRESS_LABELS)).toBe(true);
     expect(PROGRESS_LABELS).toEqual([
       "ClaudeReady",
-      "ClaudeDriftChecked",
       "ClaudePlanning",
       "ClaudeExecuting",
       "ClaudeStackReady",
       "ClaudePRApproved",
+      "ClaudeFailed",
+    ]);
+  });
+
+  it("does not carry labels whose state is derivable from git, the PR, or Jira status", () => {
+    for (const retired of [
+      "ClaudeDriftChecked",
       "ClaudeNeedsReview",
       "ClaudePendingMainPromotion",
       "ClaudeMainPR",
-      "ClaudeFailed",
-    ]);
+      "ClaudePruned",
+      "ClaudeDesignsCaptured",
+    ]) {
+      expect(ALL_LIFECYCLE_LABELS).not.toContain(retired);
+    }
   });
 
   it("exports CONTAINER_LABELS containing ClaudeStackComplete", () => {
@@ -45,17 +55,11 @@ describe("labels.js label sets", () => {
     expect(CONTAINER_LABELS).toContain("ClaudeStackComplete");
   });
 
-  it("exports TERMINAL_LABELS containing ClaudePruned", () => {
-    expect(Object.isFrozen(TERMINAL_LABELS)).toBe(true);
-    expect(TERMINAL_LABELS).toContain("ClaudePruned");
-  });
-
-  it("ALL_LIFECYCLE_LABELS aggregates all four buckets", () => {
+  it("ALL_LIFECYCLE_LABELS aggregates every bucket", () => {
     expect(ALL_LIFECYCLE_LABELS).toEqual([
       ...DURABLE_LABELS,
       ...PROGRESS_LABELS,
       ...CONTAINER_LABELS,
-      ...TERMINAL_LABELS,
     ]);
   });
 
@@ -69,27 +73,44 @@ describe("labels.js label sets", () => {
       "ClaudeExecuting",
       "ClaudeStackReady",
       "ClaudePRApproved",
-      "ClaudeNeedsReview",
       "ClaudeFailed",
     ]);
   });
 
-  it("LABEL_TO_STATUS_TRANSITIONS maps ClaudeNeedsReview to review-style transitions", () => {
-    expect(Object.isFrozen(LABEL_TO_STATUS_TRANSITIONS)).toBe(true);
-    expect(LABEL_TO_STATUS_TRANSITIONS.ClaudeNeedsReview).toEqual([
+  it("STATUS_TRANSITIONS maps the review event to review-style transitions", () => {
+    expect(Object.isFrozen(STATUS_TRANSITIONS)).toBe(true);
+    expect(STATUS_TRANSITIONS.review).toEqual([
       "In Review",
       "Code Review",
       "Review",
     ]);
-    // Every key must be a known progress label.
-    for (const key of Object.keys(LABEL_TO_STATUS_TRANSITIONS)) {
-      expect(PROGRESS_LABELS).toContain(key);
-    }
   });
 
   it("LABEL_DISPLAY_ORDER lists most-advanced state first", () => {
     expect(LABEL_DISPLAY_ORDER[0]).toEqual(["ClaudeFailed", "FAILED"]);
     expect(LABEL_DISPLAY_ORDER.at(-1)).toEqual(["ClaudeReady", "ready"]);
+  });
+
+  it("LABEL_DISPLAY_ORDER only references live labels", () => {
+    for (const [label] of LABEL_DISPLAY_ORDER) {
+      expect(ALL_LIFECYCLE_LABELS).toContain(label);
+    }
+  });
+});
+
+describe("isReviewStatus", () => {
+  it("matches every configured review status name, case-insensitively", () => {
+    for (const name of REVIEW_STATUS_NAMES) {
+      expect(isReviewStatus(name)).toBe(true);
+      expect(isReviewStatus(name.toUpperCase())).toBe(true);
+    }
+  });
+
+  it("returns false for non-review statuses and empty input", () => {
+    expect(isReviewStatus("In Progress")).toBe(false);
+    expect(isReviewStatus("Done")).toBe(false);
+    expect(isReviewStatus(null)).toBe(false);
+    expect(isReviewStatus(undefined)).toBe(false);
   });
 });
 

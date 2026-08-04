@@ -18,24 +18,30 @@ allowed-tools:
 
 # Orchestrate
 
-Survey every active stack the user is working on, decide the next safe action per ticket, run the auto-safe ones in batch, and surface the rest as decisions for the user. This is the project-level coordinator that wraps `/cleanup`, `/promote-to-main`, `/ticket-work`, `/rework`, `/fix-drift`, and `/stack-rebase`.
+Survey every active stack the user is working on, decide the next safe action per ticket, run the auto-safe ones in batch, and surface the rest as decisions for the user. This is the project-level coordinator that wraps `/prework`, `/ticket-work`, `/cleanup`, `/promote-to-main`, `/rework`, `/fix-drift`, and `/stack-rebase`.
 
 The orchestrator is **status-first, action-second**. It always prints a full status view before it runs anything, so the user can redirect if the auto-decisions look wrong.
+
+It handles two entry paths:
+
+- **Lifecycle tickets** — tickets already carrying a `Claude*` label. Orchestrate advances them along the state machine (plan → execute → PR → promote → cleanup).
+- **Cold tickets** — tickets assigned to the user that don't yet carry any `Claude*` label. Orchestrate surfaces them as kickoff candidates and, on approval, chains `/prework KEY` → `/ticket-work KEY` to enter the lifecycle.
 
 ## Arguments
 
 `$ARGUMENTS`
 
 Optional:
+- `KEY` (positional) — narrow to a single ticket. Equivalent to `--scope KEY`. If the ticket carries no `Claude*` labels, it is treated as a cold-kickoff candidate.
 - `--status` — read-only. Print the survey, do not run any actions. Useful for `/loop`-style polling.
-- `--auto-all` — also auto-run the actions that normally prompt (`/rework`, `/fix-drift`). Use after a `--status` pass looks right.
+- `--auto-all` — also auto-run the actions that normally prompt (`/rework`, `/fix-drift`, `/ticket-work`, cold `/prework` + `/ticket-work`). Use after a `--status` pass looks right.
 - `--scope KEY` — narrow to one container or ticket key instead of project-wide. Resolves via `resolve-stack`.
 - `--no-loop` — run a single survey-and-dispatch round instead of repeating until idle.
 
 Parse `$ARGUMENTS` into:
 - `STATUS_ONLY` (boolean) — true if `--status` is present.
 - `AUTO_ALL` (boolean) — true if `--auto-all` is present.
-- `SCOPE_KEY` (string|null) — value of `--scope`, uppercased and validated against `^[A-Z][A-Z0-9_]+-\d+$`.
+- `SCOPE_KEY` (string|null) — value of `--scope` **or** the first positional (non-flag) token, uppercased and validated against `^[A-Z][A-Z0-9_]+-\d+$`. If both are provided and disagree, display "Conflicting scope: positional {K1} vs --scope {K2}." and **stop**.
 - `LOOP` (boolean) — true unless `--no-loop` is present.
 
 If `--status` and `--auto-all` are both present: display "Cannot combine --status (read-only) with --auto-all." and **stop**.
@@ -49,26 +55,44 @@ If `--status` and `--auto-all` are both present: display "Cannot combine --statu
 - `mcp__atlassian__getAccessibleAtlassianResources` → first `id` is `CLOUD_ID`.
 - `mcp__atlassian__atlassianUserInfo` → `account_id` is `MY_ACCOUNT_ID`.
 
-### 1b: Enumerate Container Keys
+### 1b: Enumerate Container Keys and Cold Tickets
 
-If `SCOPE_KEY` is set, skip this step — Step 2 will resolve directly from the scope key.
+Initialize `CONTAINER_KEYS = []` and `COLD_TICKETS = []`. `COLD_TICKETS` holds `{ key, summary, status, issuetype }` for tickets that are assigned but not yet in the lifecycle (no `Claude*` labels).
 
-Otherwise, enumerate every container that has at least one in-flight ticket assigned to the user. This step only collects keys; the per-stack `resolve-stack --fetch` runs in Step 2.
+**Scoped mode** — if `SCOPE_KEY` is set:
 
-`mcp__atlassian__searchJiraIssuesUsingJql` with:
+- Fetch the scoped ticket once via `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={SCOPE_KEY}`, fields `key, summary, status, labels, issuetype, parent, issuelinks, assignee`.
+- If any label starts with `Claude`, treat as lifecycle: skip cold-ticket handling here — Step 2 will `resolve-stack` from `SCOPE_KEY`.
+- Otherwise, treat as cold: append `{ key, summary, status, issuetype }` to `COLD_TICKETS`. Skip Step 2 entirely (there is no stack to resolve yet — `/prework` will resolve it).
 
-```
-labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done
-```
+**Project-wide mode** — if `SCOPE_KEY` is null, run two JQL searches:
 
-Fields: `key, summary, status, labels, issuelinks, parent, issuetype`.
+1. **Lifecycle tickets** — `mcp__atlassian__searchJiraIssuesUsingJql` with:
 
-For each issue, derive its container key:
-- Sub-task → `parent.key`.
-- Otherwise → first `issuelinks` entry pointing at an Epic, or `parent.key` if parent is an Epic.
-- Standalone (no container) → use the ticket's own key.
+   ```
+   labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done
+   ```
 
-Deduplicate to a list of unique `CONTAINER_KEYS`. If empty, display "No active stacks found." and **stop**.
+   Fields: `key, summary, status, labels, issuelinks, parent, issuetype`.
+
+   For each issue, derive its container key:
+   - Sub-task → `parent.key`.
+   - Otherwise → first `issuelinks` entry pointing at an Epic, or `parent.key` if parent is an Epic.
+   - Standalone (no container) → use the ticket's own key.
+
+   Deduplicate into `CONTAINER_KEYS`.
+
+2. **Cold tickets** — `mcp__atlassian__searchJiraIssuesUsingJql` with:
+
+   ```
+   assignee = currentUser() AND statusCategory != Done AND (labels is EMPTY OR NOT (labels in ("ClaudeWork", "ClaudeReady", "ClaudePlanning", "ClaudeExecuting", "ClaudeStackReady", "ClaudePRApproved", "ClaudeFailed")))
+   ```
+
+   Fields: `key, summary, status, labels, issuetype`.
+
+   Filter out anything whose `status` is in `{"In Review", "Code Review", "Done", "Cancelled"}` (defensive — statusCategory should already have excluded Done, but reviews aren't kickoff candidates). Append `{ key, summary, status, issuetype }` to `COLD_TICKETS`.
+
+If both `CONTAINER_KEYS` and `COLD_TICKETS` are empty, display "No active stacks or cold tickets found." and **stop**.
 
 ---
 
@@ -76,7 +100,9 @@ Deduplicate to a list of unique `CONTAINER_KEYS`. If empty, display "No active s
 
 Initialize `STACKS = []` (per-container snapshot).
 
-For each container key (or just `SCOPE_KEY` if scoped), in alphabetical order, run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={CONTAINER_KEY}` and `FETCH=true`. The orchestrator additionally captures `stack[*].status`, `stack[*].blockers`, `stack[*].mergedIntoFeature`, and `stack[*].mergedIntoMain` per ticket from the same JSON.
+If `SCOPE_KEY` was resolved to a cold ticket in Step 1b (no `Claude*` labels), skip stack resolution — `COLD_TICKETS` already has what Step 4/6 need. Proceed to Step 3.
+
+Otherwise: for each container key (or just `SCOPE_KEY` if scoped to a lifecycle ticket), in alphabetical order, run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={CONTAINER_KEY}` and `FETCH=true`. The orchestrator additionally captures `stack[*].status`, `stack[*].blockers`, `stack[*].mergedIntoFeature`, and `stack[*].mergedIntoMain` per ticket from the same JSON.
 
 If `REPO_ROOT` is null: record the stack with an error marker (`error: "no repo root"`) and continue — we can still show its Jira state, but cannot do git-side work.
 
@@ -88,25 +114,35 @@ Append the parsed result to `STACKS`.
 
 The decision table is implemented in `cli/lib/classify-actions.js` and exposed as the `classify-actions` CLI. Pass the resolved `STACKS` snapshot to it; it applies the 9-rule first-match table, surfaces stack-level flags (`needsStackRebase`, `blockedOnContainer`), and emits `pendingProbes` for any rule-1a candidate whose parent-feature-branch merge state is unknown.
 
-> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch → `cleanup-phase-1`; rule 2 = `ClaudePRApproved` → `promote-to-main`; rules 3-4 = `ClaudeStackReady` → `awaiting-pr-approval`; rule 5 = `ClaudeFailed` → `failed`; rule 6 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 7 = `ClaudeReady && eligible` → `ticket-work`; rule 8 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 9 = idle. Container-blocked overrides every rule.
+> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch, phase-1 not yet run → `cleanup-phase-1`; rule 1b = same shape but `phaseOneDone` → `promote-to-main` (phase-1 cleanup already ran, the main PR hasn't landed); rule 2 = `ClaudePRApproved` → `promote-to-main`; rules 3-4 = `ClaudeStackReady` → `awaiting-pr-approval`; rule 5 = `ClaudeFailed` → `failed`; rule 6 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 7 = `ClaudeReady && eligible` → `ticket-work`; rule 8 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 9 = idle. Container-blocked overrides every rule.
 
 ### 3a: Probe rule-1a candidates
 
-For each ticket whose `branch === container.featureBranch` AND `container.parentFeatureBranch` is non-null AND `labels` does **not** include `ClaudePendingMainPromotion`, probe the parent-feature-branch merge state:
+Whether phase-1 cleanup already ran for a ticket is recorded by the `merged/{KEY}` git tag that `/cleanup` Step 2d pushes. Read the whole set once per repo root:
+
+```bash
+git ls-remote origin 'refs/tags/merged/*'
+```
+
+A ticket whose key appears as `refs/tags/merged/{KEY}` has `phaseOneDone = true`; annotate it as such in the `STACKS` snapshot.
+
+For each ticket whose `branch === container.featureBranch` AND `container.parentFeatureBranch` is non-null AND whose `phaseOneDone` is not true, probe the parent-feature-branch merge state:
 
 ```bash
 verify-merge {branch} --base {parentFeatureBranch} --cwd {REPO_ROOT}
 ```
 
-Build a JSON map `{ branch: { mergedToParentFeatureBranch: <bool> } }` from the results. Skip tickets that don't fit the prefilter — they don't need probing.
+Build a JSON map `{ branch: { mergedToParentFeatureBranch: <bool> } }` from the results. Skip tickets that don't fit the prefilter — a `phaseOneDone` ticket is already past phase-1 and classifies as `promote-to-main` without a probe.
 
 ### 3b: Run classifier
 
 Write the `STACKS` array (using the JSON shape `{ container: { key, featureBranch, parentFeatureBranch, unmergedBlockers }, tickets: [{ key, branch, labels, mergedIntoMain, mergedIntoFeature, eligible, blockers }] }`) to a temp file, and the probe map to a second temp file. Then:
 
 ```bash
-classify-actions --stacks-file <tmp-stacks.json> --pr-state-file <tmp-pr-state.json>
+classify-actions --stacks-file <tmp-stacks.json> --pr-state-file <tmp-pr-state.json> --repo-root {REPO_ROOT}
 ```
+
+`--repo-root` lets the CLI resolve `phaseOneDone` itself from the `merged/{KEY}` tags on origin, so it stays correct even if Step 3a's annotation was skipped. Pass it whenever `REPO_ROOT` resolved; a ticket that already carries an explicit `phaseOneDone` in the stacks JSON is left as-is.
 
 Parse stdout as JSON. The output has:
 - `stacks` — per-stack array with `classifications` (ticket-level) and `stackFlags` (`needsStackRebase`, `blockedOnContainer`).
@@ -158,11 +194,19 @@ Annotate each ticket's `→ {next_action}` line with one of:
 - `⊘ blocked on container {KEY}` — waiting on parent container merge.
 - `· idle` — nothing to do.
 
-After all stacks, print a project summary:
+If `COLD_TICKETS` is non-empty, print a separate section **after** all stacks:
+
+```
+Cold tickets (assigned, not yet in lifecycle):
+  - {KEY}: {summary}    [{issuetype}, {status}] → ? ask: prework + ticket-work
+  ...
+```
+
+After all stacks and cold tickets, print a project summary:
 
 ```
 ─────────────────────────────────────
-Project survey: {N} stacks, {M} tickets
+Project survey: {N} stacks, {M} lifecycle tickets, {C} cold tickets
 
 Auto-safe queue ({count}):
   - /cleanup KEY1
@@ -170,6 +214,7 @@ Auto-safe queue ({count}):
 
 Awaiting your decision ({count}):
   - KEY3 — failed, /rework or /fix-drift?
+  - KEY4 — cold, kick off with /prework + /ticket-work?
 
 Awaiting your approval ({count}):
   - KEY5 — stack ready, label ClaudePRApproved
@@ -211,17 +256,18 @@ Do **not** re-survey between actions in the batch. We re-survey once at the end 
 
 ## Step 6: Ask About Risky Actions
 
-This step covers two scopes:
+This step covers three scopes:
 
-- **Per-ticket prompts** — one prompt per ticket whose `next_action` is `"failed"` or `"ticket-work"`. Each ticket gets its own prompt; the user answers each independently.
+- **Per-ticket prompts** — one prompt per ticket whose `next_action` is `"failed"`, `"ticket-work"`, or (for cold tickets) `"cold-kickoff"`. Each ticket gets its own prompt; the user answers each independently.
 - **Per-stack prompts** — one prompt per stack whose `needs_stack_rebase = true`, regardless of how many tickets it contains. The stack-rebase action runs once on the leading ticket and cascades to the rest of the chain.
 
 If `AUTO_ALL` is true, queue them as auto:
 - per-ticket `failed` → run `/fix-drift {KEY}` first (less destructive); if it bails or labels stay `ClaudeFailed`, stop and surface for manual `/rework`.
 - per-ticket `ticket-work` → run `/ticket-work {KEY}`.
+- per-ticket `cold-kickoff` → run `/prework {KEY}`; if it succeeds, immediately run `/ticket-work {KEY}`. If `/prework` bails (blocker, drift, cancelled claim), record the outcome and skip `/ticket-work` for that ticket.
 - per-stack `needs_stack_rebase` → run `/stack-rebase {leading-ticket-of-stack}` once for the whole stack.
 
-Run each via the Skill tool (e.g., for `failed`, use the Skill tool to run skill `fix-drift` with args `{KEY}`; for `ticket-work`, run skill `ticket-work` with args `{KEY}`; for `needs_stack_rebase`, run skill `stack-rebase` with args `{leading-ticket-of-stack}`), append to `RUN_RESULTS`.
+Run each via the Skill tool (e.g., for `failed`, use the Skill tool to run skill `fix-drift` with args `{KEY}`; for `ticket-work`, run skill `ticket-work` with args `{KEY}`; for `cold-kickoff`, run skill `prework` with args `{KEY}` and then, on success, skill `ticket-work` with args `{KEY}`; for `needs_stack_rebase`, run skill `stack-rebase` with args `{leading-ticket-of-stack}`), append to `RUN_RESULTS`.
 
 Otherwise (default), ask the user **per ticket**, not in a single mega-prompt:
 
@@ -248,6 +294,15 @@ For each `ticket-work` candidate:
 {KEY}: {summary} — ready to start
   Run /ticket-work {KEY}? [y/N/skip]
 ```
+
+For each `cold-kickoff` candidate (from `COLD_TICKETS`), prompt:
+
+```
+{KEY}: {summary} — cold ticket ({issuetype}, {status})
+  Kick off with /prework {KEY} then /ticket-work {KEY}? [y/N/skip]
+```
+
+On `y`: run skill `prework` with args `{KEY}`. If prework completes without bailing, run skill `ticket-work` with args `{KEY}`. Record both outcomes in `RUN_RESULTS` (a prework bailout skips `/ticket-work` and records `outcome: "stopped"` with the prework reason).
 
 For each stack with `needs_stack_rebase = true`, prompt **once** (not per-ticket):
 

@@ -19,7 +19,7 @@ allowed-tools:
 
 # Prune
 
-> **Label source of truth**: `cli/lib/labels.js` is canonical for the Claude lifecycle label set. The `PROGRESS_LABELS` removed in Step 8 and the `TERMINAL_LABELS` (`ClaudePruned`) added in its place both come from there. The JSON patch enumerates them explicitly because Atlassian's API needs the exact list.
+> **Label source of truth**: `cli/lib/labels.js` is canonical for the Claude lifecycle label set. The `PROGRESS_LABELS` removed in Step 7 come from there. The JSON patch enumerates them explicitly because Atlassian's API needs the exact list. No label marks a pruned ticket — the Jira status (Cancelled / Won't Do) is the record.
 
 Remove a ticket from the stack: revert its merge from the feature branch, close its PR, and cancel the Jira ticket.
 
@@ -101,7 +101,7 @@ Actions:
   1. {if merged: "Revert merge commit MERGE_SHA on " + FEATURE_BRANCH + " and force-push" else: "Skip — nothing merged to revert"}
   2. {if PR_STATE == "OPEN": "Close PR " + PR_URL + " with comment" else: "Skip — PR already closed/missing"}
   3. Transition {TICKET_KEY} in Jira to "Won't Do" / "Cancelled"
-  4. Add ClaudePruned label, remove progress labels, append activity log
+  4. Remove progress labels, append activity log
 ```
 
 If `DOWNSTREAM` is non-empty, append a warning block:
@@ -221,18 +221,18 @@ Use `mcp__atlassian__getTransitionsForJiraIssue` with `cloudId={CLOUD_ID}`, `iss
 From the `transitions` array, find the first transition whose `name` matches (case-insensitive) one of: `Won't Do`, `Wont Do`, `Cancelled`, `Canceled`, `Won't Fix`. Store its `id` as `TRANSITION_ID`.
 
 If no matching transition is found:
-- Display: "No cancel-style transition available for {TICKET_KEY}. Available transitions: {names}. Add the ClaudePruned label only and skip status change."
-- Set `TRANSITION_ID = null` and continue to 7b.
+- Display: "No cancel-style transition available for {TICKET_KEY}. Available transitions: {names}. Clearing progress labels only — the ticket will need to be cancelled by hand."
+- Set `TRANSITION_ID = null` and continue to 7b. Carry this forward so Step 8's summary flags that the ticket is still in a live status despite being pruned.
 
 ### 7b: Update Labels
 
-Run `set-ticket-state` to clear every progress label currently on the ticket and apply the terminal `ClaudePruned` marker. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
+Run `set-ticket-state` to clear every progress label currently on the ticket. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
 
 ```bash
-set-ticket-state {TICKET_KEY} --clear-progress --add ClaudePruned
+set-ticket-state {TICKET_KEY} --clear-progress
 ```
 
-Note: `ClaudeWork` is durable and never removed.
+Note: `ClaudeWork` is durable and never removed. No label records the prune — the Cancelled / Won't Do status applied in 7c is the sole marker.
 
 ### 7c: Transition Status
 
@@ -273,7 +273,7 @@ Branch:         {BRANCH_NAME}
 Feature branch: {FEATURE_BRANCH or "(none)"}
 PR:             {PR_URL or "(none)"} — {closed | already closed | n/a}
 Merge revert:   {MERGE_SHA reverted on FEATURE_BRANCH | skipped — nothing to revert}
-Jira:           {transition name or "labels updated only"}
+Jira:           {transition name or "⚠ no cancel transition available — progress labels cleared, status still live; cancel manually"}
 
 {if DOWNSTREAM non-empty:
 "⚠ Downstream tickets may now be broken — review:
@@ -289,5 +289,5 @@ Jira:           {transition name or "labels updated only"}
 - If revert conflicts: stop immediately and report. Never auto-resolve.
 - If `gh pr close` fails: report and continue (PR state is not load-bearing).
 - If push to feature branch fails: stop before touching Jira so state stays consistent.
-- If Jira transition lookup returns no cancel-style option: fall back to labels-only and warn.
+- If Jira transition lookup returns no cancel-style option: clear the progress labels, then warn in the run summary that the ticket must be cancelled by hand — there is no label that stands in for the Cancelled status.
 - If the ticket has no merge on the feature branch and no PR and no progress labels: there's nothing to prune — display a notice and stop.

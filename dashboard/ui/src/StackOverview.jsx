@@ -19,7 +19,9 @@ export function StackOverview({ stacks, jiraBaseUrl }) {
             return acc;
           }, {});
 
-          const done = (counts.ClaudeStackReady || 0) + (counts.ClaudePRApproved || 0) + (counts.ClaudeNeedsReview || 0);
+          // "PR open" has no label — it's derived from the live PR / Jira status.
+          const prOpen = stack.tickets.filter((t) => t.state === "PR open").length;
+          const done = (counts.ClaudeStackReady || 0) + (counts.ClaudePRApproved || 0) + prOpen;
           const inProgress = (counts.ClaudeExecuting || 0) + (counts.ClaudePlanning || 0);
           const waiting = stack.tickets.filter((t) => t.waitingOn).length;
           const failed = counts.ClaudeFailed || 0;
@@ -139,7 +141,8 @@ function DagTree({ layers, tickets, jiraBaseUrl, mergeOrder }) {
 function nodeColor(ticket) {
   if (ticket.stateLabel === "ClaudeFailed") return "failed";
   if (ticket.waitingOn) return "waiting";
-  if (["ClaudeStackReady", "ClaudePRApproved", "ClaudeNeedsReview"].includes(ticket.stateLabel)) return "done";
+  if (ticket.state === "PR open") return "done";
+  if (["ClaudeStackReady", "ClaudePRApproved"].includes(ticket.stateLabel)) return "done";
   if (["ClaudeExecuting", "ClaudePlanning"].includes(ticket.stateLabel)) return "active";
   if (["ClaudePlanNeedsApproval", "ClaudePlanApproved"].includes(ticket.stateLabel)) return "pending";
   return "idle";

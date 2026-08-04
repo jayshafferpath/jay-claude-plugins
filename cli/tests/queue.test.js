@@ -24,9 +24,7 @@ const {
 describe("QUEUE_QUERIES", () => {
   it("preserves the readyForPlanning JQL exactly as written in commands/ticket-work.md", () => {
     expect(QUEUE_QUERIES.readyForPlanning).toContain('labels = "ClaudeReady"');
-    expect(QUEUE_QUERIES.readyForPlanning).toContain(
-      'labels NOT IN ("ClaudeExecuting", "ClaudeNeedsReview", "ClaudeFailed")',
-    );
+    expect(QUEUE_QUERIES.readyForPlanning).toContain("statusCategory != Done");
     expect(QUEUE_QUERIES.readyForPlanning).toContain(
       "assignee = currentUser()",
     );
@@ -36,6 +34,14 @@ describe("QUEUE_QUERIES", () => {
     expect(QUEUE_QUERIES.inFlight).toContain(
       'labels IN ("ClaudeExecuting", "ClaudePRApproved")',
     );
+  });
+
+  it("does not filter on retired labels — progress labels are mutually exclusive", () => {
+    for (const query of Object.values(QUEUE_QUERIES)) {
+      expect(query).not.toContain("ClaudeNeedsReview");
+      expect(query).not.toContain("ClaudeDriftChecked");
+      expect(query).not.toContain("ClaudePendingMainPromotion");
+    }
   });
 });
 
@@ -273,7 +279,7 @@ describe("promoteDownstream", () => {
       container: { key: "EPIC-3", type: "Story" },
       stack: [
         { key: "DONE-3", labels: ["ClaudeWork"], eligible: false },
-        { key: "OTHER", labels: ["ClaudeNeedsReview"], eligible: false },
+        { key: "OTHER", labels: [], inReview: true, eligible: false },
       ],
     });
     getIssue.mockResolvedValue({ fields: { labels: [] } });

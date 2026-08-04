@@ -14,7 +14,10 @@ const STATE_COLORS = {
 };
 
 function renderTicketLine(ticket, prefix) {
-  const state = labelState(ticket.labels);
+  const state = labelState(ticket.labels, {
+    openPr: ticket.openPr,
+    statusName: ticket.statusName,
+  });
   const colorFn = STATE_COLORS[state.display] || chalk.dim;
   const stateStr = colorFn(`[${state.display}]`);
   const hint = actionHint(state.label);
@@ -157,9 +160,9 @@ export function renderVerbose(ticket) {
       lines.push(`  ${check} ${step.num}. ${step.label}${extra}${marker}`);
     }
   } else {
-    const state = labelState(labels);
+    const state = labelState(labels, { openPr: pr, statusName: status });
     lines.push(
-      "Checklist:  (no checklist file — state inferred from Jira labels)",
+      "Checklist:  (no checklist file — state inferred from Jira + PR state)",
     );
     lines.push(`  Current: ${state.display}`);
   }

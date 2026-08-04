@@ -7,6 +7,7 @@ import { loadEnv } from "../lib/env.js";
 loadEnv();
 
 import { classifyActions, extractFailedStep } from "../lib/classify-actions.js";
+import { getMergedTagKeys } from "../lib/git.js";
 
 const args = process.argv.slice(2);
 
@@ -27,6 +28,10 @@ if (args.includes("--help") || args.length === 0) {
       "classify-actions emits it under `pendingProbes` so the caller can fetch\n" +
       "the PR state and re-run.\n" +
       "\n" +
+      "--repo-root <path> lets rule 1a read `merged/{KEY}` tags from origin to\n" +
+      "decide whether phase-1 cleanup already ran. Without it, pass\n" +
+      "phaseOneDone per ticket in the stacks JSON.\n" +
+      "\n" +
       "--extract-failed-step is a separate one-shot mode: scan an activity-log\n" +
       "file body for the latest reference to a ticket-work step (S4.2/S4.3/S4.6)\n" +
       "and emit the matching recommendation (rework/fix-drift/manual).\n" +
@@ -44,6 +49,7 @@ function getFlag(name) {
 
 const stacksFile = getFlag("--stacks-file");
 const prStateFile = getFlag("--pr-state-file");
+const repoRoot = getFlag("--repo-root");
 const fromStdin = args.includes("--stacks-stdin");
 const extractMode = args.includes("--extract-failed-step");
 const activityLogFile = getFlag("--activity-log-file");
@@ -112,9 +118,24 @@ for (const [branch, value] of Object.entries(prStateMap)) {
   }
 }
 
+const stackList = Array.isArray(stacks) ? stacks : stacks.stacks;
+
+// Resolve phaseOneDone from `merged/{KEY}` tags when a repo root is supplied.
+// Tickets that already carry the flag in the snapshot keep their value.
+if (repoRoot) {
+  const mergedTags = getMergedTagKeys(repoRoot);
+  for (const stack of stackList || []) {
+    for (const ticket of stack?.tickets || []) {
+      if (ticket.phaseOneDone === undefined) {
+        ticket.phaseOneDone = mergedTags.has(ticket.key);
+      }
+    }
+  }
+}
+
 try {
   const out = classifyActions({
-    stacks: Array.isArray(stacks) ? stacks : stacks.stacks,
+    stacks: stackList,
     mergedToParentFeatureBranch,
   });
   console.log(JSON.stringify(out, null, 2));

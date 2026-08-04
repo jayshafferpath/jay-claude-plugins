@@ -22,6 +22,7 @@ const {
   getTransitions,
   transitionIssue,
   pickTransition,
+  transitionForEvent,
 } = await import("../lib/jira.js");
 
 function mockFetch(body, ok = true, status = 200) {
@@ -168,13 +169,13 @@ describe("jira module", () => {
 
     it("supports adding a non-progress label without clearing progress", () => {
       const patch = buildSetStatePatch(["ClaudeWork", "ClaudeStackReady"], {
-        add: ["ClaudePruned"],
+        add: ["complexity:trivial"],
       });
       // Progress labels are cleared because the operation declares a state move.
       expect(patch.labels).toEqual(
         expect.arrayContaining([
           { remove: "ClaudeStackReady" },
-          { add: "ClaudePruned" },
+          { add: "complexity:trivial" },
         ]),
       );
     });
@@ -240,10 +241,9 @@ describe("jira module", () => {
       expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 
-    it("transitions Jira status to In Review when moving to ClaudeNeedsReview", async () => {
+    it("never touches workflow status — transitions are now explicit", async () => {
       global.fetch = vi
         .fn()
-        // getIssue (current labels)
         .mockResolvedValueOnce({
           ok: true,
           json: () =>
@@ -251,147 +251,18 @@ describe("jira module", () => {
               fields: { labels: ["ClaudeWork", "ClaudeStackReady"] },
             }),
         })
-        // editIssue (label patch)
-        .mockResolvedValueOnce({ ok: true, status: 204 })
-        // getTransitions
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              transitions: [
-                { id: "11", name: "In Progress" },
-                { id: "21", name: "In Review" },
-                { id: "31", name: "Done" },
-              ],
-            }),
-        })
-        // transitionIssue
         .mockResolvedValueOnce({ ok: true, status: 204 });
 
-      const ops = await setTicketState("X-1", { to: "ClaudeNeedsReview" });
+      const ops = await setTicketState("X-1", { to: "ClaudeExecuting" });
       expect(ops).toEqual([
         { remove: "ClaudeStackReady" },
-        { add: "ClaudeNeedsReview" },
+        { add: "ClaudeExecuting" },
       ]);
-      // Last fetch must be the POST to /transitions with id 21.
-      const lastCall =
-        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
-      expect(lastCall[0]).toBe(
-        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
-      );
-      expect(lastCall[1].method).toBe("POST");
-      expect(JSON.parse(lastCall[1].body)).toEqual({
-        transition: { id: "21" },
-      });
-    });
-
-    it("matches review-style transitions case-insensitively (e.g. 'Code Review')", async () => {
-      global.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              fields: { labels: ["ClaudeWork"] },
-            }),
-        })
-        .mockResolvedValueOnce({ ok: true, status: 204 })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              transitions: [
-                { id: "11", name: "Open" },
-                { id: "41", name: "code review" },
-              ],
-            }),
-        })
-        .mockResolvedValueOnce({ ok: true, status: 204 });
-
-      await setTicketState("X-1", { to: "ClaudeNeedsReview" });
-      const lastCall =
-        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
-      expect(JSON.parse(lastCall[1].body)).toEqual({
-        transition: { id: "41" },
-      });
-    });
-
-    it("warns and continues when no review-style transition is available", async () => {
-      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-      global.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              fields: { labels: ["ClaudeWork"] },
-            }),
-        })
-        .mockResolvedValueOnce({ ok: true, status: 204 })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              transitions: [
-                { id: "11", name: "Open" },
-                { id: "31", name: "Done" },
-              ],
-            }),
-        });
-
-      const ops = await setTicketState("X-1", { to: "ClaudeNeedsReview" });
-      expect(ops).toEqual([{ add: "ClaudeNeedsReview" }]);
-      expect(warn).toHaveBeenCalled();
-      // Only 3 fetches: getIssue, editIssue, getTransitions. No POST to /transitions.
-      expect(global.fetch).toHaveBeenCalledTimes(3);
-      warn.mockRestore();
-    });
-
-    it("does not transition when the target label has no transition mapping", async () => {
-      global.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () => Promise.resolve({ fields: { labels: ["ClaudeWork"] } }),
-        })
-        .mockResolvedValueOnce({ ok: true, status: 204 });
-
-      await setTicketState("X-1", { to: "ClaudeExecuting" });
-      // Only 2 fetches: getIssue + editIssue. No /transitions traffic.
+      // Only getIssue + editIssue. No /transitions traffic for any label.
       expect(global.fetch).toHaveBeenCalledTimes(2);
-    });
-
-    it("still transitions status when only the status needs to change (label already present)", async () => {
-      global.fetch = vi
-        .fn()
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              fields: { labels: ["ClaudeWork", "ClaudeNeedsReview"] },
-            }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              transitions: [{ id: "21", name: "In Review" }],
-            }),
-        })
-        .mockResolvedValueOnce({ ok: true, status: 204 });
-
-      const ops = await setTicketState("X-1", { to: "ClaudeNeedsReview" });
-      // Label patch was a no-op so ops is null, but the transition still ran.
-      expect(ops).toBeNull();
-      expect(global.fetch).toHaveBeenCalledTimes(3);
-      const lastCall =
-        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
-      expect(lastCall[0]).toBe(
-        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
-      );
-      expect(JSON.parse(lastCall[1].body)).toEqual({
-        transition: { id: "21" },
-      });
+      for (const call of global.fetch.mock.calls) {
+        expect(call[0]).not.toContain("/transitions");
+      }
     });
   });
 
@@ -468,6 +339,95 @@ describe("jira module", () => {
     it("handles missing transitions input gracefully", () => {
       expect(pickTransition(null, ["In Review"])).toBeNull();
       expect(pickTransition(undefined, ["In Review"])).toBeNull();
+    });
+  });
+
+  describe("transitionForEvent", () => {
+    it("moves the ticket to In Review for the review event", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [
+                { id: "11", name: "In Progress" },
+                { id: "21", name: "In Review" },
+              ],
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      const match = await transitionForEvent("X-1", "review");
+      expect(match).toEqual({ id: "21", name: "In Review" });
+      const lastCall =
+        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
+      expect(lastCall[0]).toBe(
+        "https://x.atlassian.net/rest/api/3/issue/X-1/transitions",
+      );
+      expect(lastCall[1].method).toBe("POST");
+      expect(JSON.parse(lastCall[1].body)).toEqual({
+        transition: { id: "21" },
+      });
+    });
+
+    it("matches review-style transitions case-insensitively (e.g. 'code review')", async () => {
+      global.fetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          json: () =>
+            Promise.resolve({
+              transitions: [
+                { id: "11", name: "Open" },
+                { id: "41", name: "code review" },
+              ],
+            }),
+        })
+        .mockResolvedValueOnce({ ok: true, status: 204 });
+
+      await transitionForEvent("X-1", "review");
+      const lastCall =
+        global.fetch.mock.calls[global.fetch.mock.calls.length - 1];
+      expect(JSON.parse(lastCall[1].body)).toEqual({
+        transition: { id: "41" },
+      });
+    });
+
+    it("warns and returns null when no matching transition exists", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      global.fetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            transitions: [{ id: "31", name: "Done" }],
+          }),
+      });
+
+      expect(await transitionForEvent("X-1", "review")).toBeNull();
+      expect(warn).toHaveBeenCalled();
+      // No POST — only the getTransitions probe.
+      expect(global.fetch).toHaveBeenCalledTimes(1);
+      warn.mockRestore();
+    });
+
+    it("swallows API failures so the caller is never blocked on status", async () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      global.fetch = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve("boom"),
+      });
+
+      expect(await transitionForEvent("X-1", "review")).toBeNull();
+      expect(warn).toHaveBeenCalled();
+      warn.mockRestore();
+    });
+
+    it("throws on an unknown event name", async () => {
+      await expect(transitionForEvent("X-1", "nope")).rejects.toThrow(
+        'Unknown status event "nope"',
+      );
     });
   });
 

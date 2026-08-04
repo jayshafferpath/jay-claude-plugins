@@ -1,7 +1,7 @@
 import { execSync } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { LABEL_DISPLAY_ORDER } from "./labels.js";
+import { isReviewStatus, LABEL_DISPLAY_ORDER } from "./labels.js";
 
 export function glob(dir, pattern) {
   try {
@@ -11,9 +11,15 @@ export function glob(dir, pattern) {
   }
 }
 
-export function labelState(labels) {
+// Resolve the display state for a ticket. Labels win when present; "PR open"
+// is no longer a label, so it is derived from an open PR or a review-flavored
+// Jira status via the optional second argument.
+export function labelState(labels, { openPr = null, statusName = null } = {}) {
   for (const [label, display] of LABEL_DISPLAY_ORDER) {
     if (labels.includes(label)) return { label, display };
+  }
+  if (openPr || isReviewStatus(statusName)) {
+    return { label: null, display: "PR open" };
   }
   return { label: null, display: "unknown" };
 }

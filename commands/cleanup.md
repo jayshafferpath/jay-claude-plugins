@@ -23,7 +23,7 @@ allowed-tools:
 
 # Cleanup
 
-> **Label source of truth**: `cli/lib/labels.js` is canonical for the Claude lifecycle label set (`PROGRESS_LABELS`, `DURABLE_LABELS`, `CONTAINER_LABELS`, `TERMINAL_LABELS`). The JSON patches below enumerate labels explicitly because Atlassian's API needs the exact list — but if a label is added or removed lifecycle-wide, update `labels.js` first and then sync the patches here.
+> **Label source of truth**: `cli/lib/labels.js` is canonical for the Claude lifecycle label set (`PROGRESS_LABELS`, `DURABLE_LABELS`, `CONTAINER_LABELS`). The JSON patches below enumerate labels explicitly because Atlassian's API needs the exact list — but if a label is added or removed lifecycle-wide, update `labels.js` first and then sync the patches here.
 
 Post-merge teardown for a single ticket: verify its PR landed on its merge target (typically `main`, but the parent Epic's feature branch when the cleaned ticket *is* a Story-container that PR'd to its Epic), delete the local + remote branch, remove progress labels, transition Jira to Done, append a "stack complete" note to the container's activity log if applicable, cascade-rebase any unmerged downstream tickets onto the merge target so their branches don't dangle off the deleted branch, and refresh the long-lived feature branch by resetting it to fresh `origin/{target}` and re-merging the still-unmerged ticket branches.
 
@@ -92,7 +92,7 @@ Also derive `DEFER_DESTRUCTIVE`:
 
 When `DEFER_DESTRUCTIVE` is `true`:
 - Step 4 is skipped entirely (branch stays alive for `/promote-to-main` to rebase).
-- Step 5 still appends an activity-log entry and removes in-progress labels, but does **not** transition the ticket to Done and applies a `ClaudePendingMainPromotion` label so the orchestrator knows a follow-up cleanup is owed.
+- Step 5 still appends an activity-log entry, but does **not** transition the ticket to Done and does **not** touch progress labels — the ticket stays in its current in-progress state so `/promote-to-main` still sees live Jira state. The `merged/{TICKET_KEY}` tag written in Step 2d is what tells a later `/cleanup` or `/orchestrate` run that phase-1 already ran and a follow-up cleanup is owed.
 - Steps 6, 7, and 8 still run — sibling stacks need rebasing onto the refreshed Epic branch even while the just-shipped Story branch is preserved.
 
 If `REPO_ROOT` is null: display "Cannot resolve repo root for {TICKET_KEY}. Ensure a `repo:` label is set on the ticket or its container." and **stop**.
@@ -170,7 +170,7 @@ Otherwise, store `PR_NUMBER` = `prNumber`, `PR_URL` = `prUrl`, `MERGE_SHA` = `me
 
 **Skip if** `MERGE_TARGET == "main"` — terminal cleanup deletes the tag in Step 4d instead.
 
-When the cleaned ticket merged into a feature branch (Phase-1 cleanup), tag the squash commit so downstream commands can locate the merge without parsing commit messages. The tag name encodes the ticket key.
+When the cleaned ticket merged into a feature branch (Phase-1 cleanup), tag the squash commit so downstream commands can locate the merge without parsing commit messages. The tag name encodes the ticket key. The tag is also the durable record that Phase-1 cleanup ran for this ticket: `/orchestrate` and a re-invoked `/cleanup` read it to tell "shipped to the Epic, awaiting main promotion" apart from "not yet cleaned at all".
 
 ```bash
 cd {REPO_ROOT} && git tag -f merged/{TICKET_KEY} {MERGE_SHA}
@@ -208,8 +208,9 @@ Actions:
 else:
   "  1. (deferred) Branch {BRANCH_NAME} kept alive — needed for /promote-to-main onto main
   2. (deferred) {TICKET_KEY} stays In Progress — Done transition runs after main-merge cleanup
-  3. Remove in-progress labels and apply ClaudePendingMainPromotion
-  4. Append \"Shipped to {MERGE_TARGET}\" entry to {TICKET_KEY} activity log"}
+  3. (deferred) Progress labels left as-is — cleared by the main-merge cleanup
+  4. Tag merge commit as merged/{TICKET_KEY} — the durable record that phase 1 ran
+  5. Append \"Shipped to {MERGE_TARGET}\" entry to {TICKET_KEY} activity log"}
 {if this is the last unmerged ticket in CONTAINER_KEY:
   "  6. Append \"Stack complete\" entry to " + CONTAINER_KEY + " activity log"}
 {if REBASE_DOWNSTREAM is true:
@@ -305,23 +306,15 @@ If no matching transition is found:
 
 ### 5b: Update Labels
 
-Run `set-ticket-state` to clear every progress label currently on the ticket. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
+Skip if `DEFER_DESTRUCTIVE` is `true` — phase-1 cleanup leaves progress labels alone. The ticket is still in flight (`/promote-to-main` has yet to land it on main), so its progress state must survive; the `merged/{TICKET_KEY}` tag from Step 2d is the durable marker that phase 1 already ran.
 
-If `DEFER_DESTRUCTIVE` is `true`, also add `ClaudePendingMainPromotion` so the orchestrator knows a follow-up cleanup is owed once this ticket merges to main:
-
-```bash
-set-ticket-state {TICKET_KEY} --to ClaudePendingMainPromotion
-```
-
-Otherwise (terminal cleanup):
+Otherwise (terminal cleanup), run `set-ticket-state` to clear every progress label currently on the ticket. The CLI consults `cli/lib/labels.js` (`PROGRESS_LABELS`) so the enumeration stays canonical.
 
 ```bash
 set-ticket-state {TICKET_KEY} --clear-progress
 ```
 
-(`ClaudePendingMainPromotion` is in `PROGRESS_LABELS` and is therefore cleared automatically.)
-
-Note: `ClaudeWork` is durable and never removed. No new terminal label is added — Jira status (Done) is the source of truth for terminal cleanup.
+Note: `ClaudeWork` is durable and never removed. No terminal label is added — Jira status (Done) is the source of truth for terminal cleanup.
 
 ### 5c: Transition Status
 
@@ -339,7 +332,8 @@ Shipped to {MERGE_TARGET} (Epic feature branch). Awaiting main promotion.
 - PR: {PR_URL}
 - Merge commit: `{MERGE_SHA}`
 - Branch retained: `{BRANCH_NAME}` — kept until /promote-to-main lands it on main
-- Status: still In Progress; ClaudePendingMainPromotion applied
+- Merge tagged: `merged/{TICKET_KEY}`
+- Status: unchanged (still in progress); progress labels left in place
 ```
 
 Otherwise (terminal cleanup) body:
@@ -550,7 +544,9 @@ Cleanup {TICKET_KEY} — {if DEFER_DESTRUCTIVE: "Phase 1 Complete (awaiting main
 
 Branch:         {if DEFER_DESTRUCTIVE: BRANCH_NAME + " — retained (needed by /promote-to-main)" else: BRANCH_NAME + " — deleted (local + remote)"}
 PR:             {PR_URL} (merged at {MERGE_SHA})
-Jira:           {if DEFER_DESTRUCTIVE: "still In Progress; ClaudePendingMainPromotion applied" else: transition name or "labels updated only"}
+Jira:           {if DEFER_DESTRUCTIVE: "unchanged — still in progress, awaiting main promotion" else: transition name or "labels updated only"}
+{if DEFER_DESTRUCTIVE:
+"Merge tag:      merged/" + TICKET_KEY + " — phase 1 recorded"}
 {if container note appended:
 "Container:      " + CONTAINER_KEY + " — stack complete note appended"}
 {if REBASE_RESULTS is non-empty:
@@ -593,7 +589,7 @@ Field rules:
 ## Error Handling
 
 - If repo root cannot be resolved: refuse to run.
-- When `DEFER_DESTRUCTIVE` is true: Steps 4 (branch delete) and 5c (Jira transition) are skipped; the ticket stays In Progress with `ClaudePendingMainPromotion` applied. The branch must remain on disk and on the remote because `/promote-to-main` rebases it onto main next. After the main-targeting PR merges, re-run `/cleanup {TICKET_KEY}` — the second invocation will detect the merged main PR via Step 1b's probe and run terminal cleanup.
+- When `DEFER_DESTRUCTIVE` is true: Steps 4 (branch delete), 5b (label clear), and 5c (Jira transition) are skipped; the ticket keeps its current status and progress labels, and the `merged/{TICKET_KEY}` tag from Step 2d records that phase 1 ran. The branch must remain on disk and on the remote because `/promote-to-main` rebases it onto main next. After the main-targeting PR merges, re-run `/cleanup {TICKET_KEY}` — the second invocation will detect the merged main PR via Step 1b's probe and run terminal cleanup.
 - If no merged PR to `MERGE_TARGET` is found: refuse to run — direct the user to `/prune` (abandon) or wait for merge.
 - If the merge SHA is not reachable from `origin/{MERGE_TARGET}`: refuse — `MERGE_TARGET` may have been rewritten, or the merge isn't local yet.
 - If the working tree is dirty when we need to switch off the branch: stop before touching anything.

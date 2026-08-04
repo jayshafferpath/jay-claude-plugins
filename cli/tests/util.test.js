@@ -24,6 +24,27 @@ describe("labelState", () => {
   it("returns unknown when no labels match", () => {
     expect(labelState([])).toEqual({ label: null, display: "unknown" });
   });
+
+  it("derives 'PR open' from an open PR when no label matches", () => {
+    expect(labelState([], { openPr: { number: 4 } })).toEqual({
+      label: null,
+      display: "PR open",
+    });
+  });
+
+  it("derives 'PR open' from a review-flavored Jira status", () => {
+    expect(labelState([], { statusName: "In Review" })).toEqual({
+      label: null,
+      display: "PR open",
+    });
+  });
+
+  it("prefers an explicit label over the derived PR state", () => {
+    expect(labelState(["ClaudeFailed"], { openPr: { number: 4 } })).toEqual({
+      label: "ClaudeFailed",
+      display: "FAILED",
+    });
+  });
 });
 
 describe("actionHint", () => {
