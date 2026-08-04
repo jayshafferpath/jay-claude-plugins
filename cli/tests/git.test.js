@@ -21,6 +21,8 @@ const {
   getMergedPrMap,
   isAncestor,
   isMergedInto,
+  isShaAncestorOf,
+  resolveMergedTag,
   getStageCommits,
   hasStageCommit,
   getLastStageCommitSha,
@@ -51,6 +53,48 @@ describe("findBranch", () => {
     existsSync.mockReturnValue(true);
     execSync.mockReturnValue("");
     expect(findBranch("TICK-1", "/repo")).toBeNull();
+  });
+
+  // Terminal cleanup deletes the local branch. Without a remote fallback the
+  // ticket reads as having no branch at all, which disables every downstream
+  // merge check and makes shipped work look unstarted (issue #32).
+  it("falls back to the remote-tracking branch when no local branch exists", () => {
+    existsSync.mockReturnValue(true);
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("git branch -r --list")) return "  origin/TICK-1\n";
+      return "";
+    });
+    expect(findBranch("TICK-1", "/repo")).toBe("TICK-1");
+  });
+
+  it("prefers a local branch over the remote when both exist", () => {
+    existsSync.mockReturnValue(true);
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("git branch -r --list")) return "  origin/TICK-1\n";
+      return "  TICK-1-local\n";
+    });
+    expect(findBranch("TICK-1", "/repo")).toBe("TICK-1-local");
+  });
+
+  it("strips the origin/ prefix so callers can re-add it", () => {
+    existsSync.mockReturnValue(true);
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("git branch -r --list")) return "  origin/TICK-1-fix\n";
+      return "";
+    });
+    // isAncestor/isMergedInto interpolate `origin/${branch}` themselves, so a
+    // returned value carrying the prefix would produce `origin/origin/…`.
+    expect(findBranch("TICK-1", "/repo")).toBe("TICK-1-fix");
+  });
+
+  it("skips symbolic refs such as origin/HEAD -> origin/main", () => {
+    existsSync.mockReturnValue(true);
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("git branch -r --list"))
+        return "  origin/HEAD -> origin/main\n  origin/TICK-1\n";
+      return "";
+    });
+    expect(findBranch("TICK-1", "/repo")).toBe("TICK-1");
   });
 
   it("returns null when execSync throws", () => {
@@ -277,6 +321,72 @@ describe("isMergedInto", () => {
       throw new Error("fail");
     });
     expect(isMergedInto("feat-1", "main", "/repo")).toBe(false);
+  });
+});
+
+describe("resolveMergedTag", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when ticketKey or cwd is falsy", () => {
+    expect(resolveMergedTag(null, "/repo")).toBeNull();
+    expect(resolveMergedTag("TICK-1", null)).toBeNull();
+  });
+
+  it("returns the commit the merged/{KEY} tag points at", () => {
+    execSync.mockReturnValue("abc123\n");
+    expect(resolveMergedTag("TICK-1", "/repo")).toBe("abc123");
+  });
+
+  it("dereferences to a commit so annotated tags resolve", () => {
+    execSync.mockReturnValue("abc123\n");
+    resolveMergedTag("TICK-1", "/repo");
+    // Annotated tags (which /cleanup creates) resolve to a tag object, not a
+    // commit, unless ^{commit} is applied — the raw object SHA would then fail
+    // every merge-base check.
+    const cmd = execSync.mock.calls[0][0];
+    expect(cmd).toContain("refs/tags/merged/TICK-1^{commit}");
+  });
+
+  it("returns null when the tag does not exist", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("unknown revision");
+    });
+    expect(resolveMergedTag("TICK-1", "/repo")).toBeNull();
+  });
+});
+
+describe("isShaAncestorOf", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when sha or target is falsy", () => {
+    expect(isShaAncestorOf(null, "main", "/repo")).toBe(false);
+    expect(isShaAncestorOf("abc123", null, "/repo")).toBe(false);
+    expect(isShaAncestorOf("abc123", "main", null)).toBe(false);
+  });
+
+  it("returns true when merge-base --is-ancestor succeeds", () => {
+    execSync.mockReturnValue("");
+    expect(isShaAncestorOf("abc123", "main", "/repo")).toBe(true);
+  });
+
+  it("returns false when the sha is not reachable from the target", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("exit 1");
+    });
+    expect(isShaAncestorOf("abc123", "main", "/repo")).toBe(false);
+  });
+
+  it("compares a raw sha against origin/{target}", () => {
+    execSync.mockReturnValue("");
+    isShaAncestorOf("abc123", "NEV-1352", "/repo");
+    const cmd = execSync.mock.calls[0][0];
+    // The sha must NOT be origin/-prefixed (it isn't a branch), but the target
+    // must be — that asymmetry is the whole point of this helper.
+    expect(cmd).toContain("--is-ancestor abc123 origin/NEV-1352");
   });
 });
 
