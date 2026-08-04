@@ -233,6 +233,7 @@ The gate is self-healing: if a ticket is merged-into-feature but lacks its tag, 
    - Use the `Skill` tool to run skill `cleanup` with args `{entry.key} --yes --no-rebase --no-refresh-feature`.
      - `--yes` skips the confirmation prompt.
      - `--no-rebase --no-refresh-feature` keep the cleanup focused on tag creation. Cascade work is the calling command's responsibility (or `/orchestrate`'s) — this sub-procedure just unblocks the stack gate.
+     - **`--no-rebase` is load-bearing for re-entrancy, not just scope.** `/cleanup` Step 7 shells out to `cascade-rebase`, the same library `/stack-rebase` Step 4 uses. Since `/stack-rebase` gates on this sub-procedure at its Step 1.5, dropping `--no-rebase` would let cleanup's cascade re-enter the caller. Keep the flag.
    - Re-probe the tag: `git -C {REPO_ROOT} ls-remote origin refs/tags/merged/{entry.key}`.
    - If still empty, `/cleanup` refused to create the tag (typically because its own Step 2 verification failed — no merged PR found, or MERGE_SHA not reachable from `origin/{MERGE_TARGET}`). Display:
 
@@ -260,11 +261,17 @@ The gate is self-healing: if a ticket is merged-into-feature but lacks its tag, 
 
 ## Callers
 
-- `/promote-to-main` — Step 1b-final.
-- `/ticket-work` Q5 — before fanning out parallel agents.
-- `/ticket-work` S2.5 — before rebasing the ticket branch.
-- `/stack-rebase` — before cascade rebase.
-- `/orchestrate` — implements its own sweep but should delegate to this sub-procedure as the canonical detection.
+- `/promote-to-main` — Step 1b-final, before the tag walk.
+- `/ticket-work` S1d — after stack resolution, before `ensure-work-dir` and the S2.5 rebase consume `BASE_BRANCH`.
+- `/ticket-work` Q4.5 — once per `(REPO_ROOT, CONTAINER_KEY)` group, before Q5 prepares working directories. Skips the offending group rather than stopping the whole queue.
+- `/stack-rebase` Step 1.5 — before the scenario check and cascade rebase.
+- `/orchestrate` — **does not call this sub-procedure.** It runs its own equivalent tag sweep at Step 3a (`git ls-remote origin 'refs/tags/merged/*'` → `phaseOneDone`) and feeds that into `classifyTicket`, which dispatches `cleanup-phase-1` / `cleanup-terminal` as first-class actions. That's a deliberate difference in kind: the orchestrator *surfaces and queues* cleanup as a visible action for the user to see before it runs, whereas this sub-procedure *silently backfills* to unblock a single command. Converging them would mean either hiding cleanups from the orchestrator's queue display or making this gate interactive. If they do converge later, `cli/lib/classify-actions.js` is the place to share the detection, not the prose.
+
+## Non-callers
+
+`/prework` (`commands/prework.md`) reaches `ensure-work-dir` at its Step 2 without resolving stack context at all, so it has no `STACK_ORDER` to gate on and is not wired here. It's a pre-planning setup step whose output is consumed by `/ticket-work`, which gates at S1d — so the un-cleaned state gets caught before any implementation work begins. Adding the gate to `/prework` would require adding stack resolution to it first.
+
+Note that this set of call sites is a convention, not an enforced invariant: any future command that consumes `STACK_ORDER` must opt in explicitly. The alternative — putting the gate inside `resolve-stack` so every consumer inherits it — was considered and rejected, because it would turn a read-only resolver into something that mutates git state and pushes tags as a side effect of being asked a question.
 
 ---
 
@@ -500,8 +507,10 @@ For each ticket, find the label starting with `repo:` (e.g., `repo:my-backend`).
 
 For each ticket, run:
 ```bash
-resolve-stack {KEY} --repo-root {REPO_ROOT}
+resolve-stack {KEY} --repo-root {REPO_ROOT} --fetch
 ```
+
+`--fetch` is required for the same reason as S1c: Q4.5's cleanup gate reads `mergedIntoFeature` / `mergedIntoMain` from this output, and stale local origin refs would make it skip a predecessor whose merge has already landed.
 
 Parse the JSON output. Find the ticket's entry in the `stack` array. Use:
 - `FEATURE_BRANCH` = `container.featureBranch`
@@ -513,6 +522,16 @@ Parse the JSON output. Find the ticket's entry in the `stack` array. Use:
 If the ticket's `eligible` is `false`:
 - **skip this ticket**
 - Display: "Skipping {KEY}: waiting on {unblockedBlockers[0]}"
+
+## Q4.5: Ensure Cleanup Prerequisites
+
+Before preparing any working directory, verify the surviving tickets' stacks have no un-cleaned feature-branch merges. A stale stack view here would be inherited by every agent launched in Q6, so failing once at the queue level beats N parallel failures.
+
+Group the surviving tickets by `(REPO_ROOT, CONTAINER_KEY)` and run the **Ensure Cleanup Prerequisites** sub-procedure **once per group** — tickets in the same stack share one `STACK_ORDER` and one tag set, so per-ticket invocation would repeat the same `git ls-remote` and the same backfills. For each group, pass the group's `STACK_ORDER` and `REPO_ROOT` with `RESOLVED_KEY` set to the first ticket key in the group.
+
+If the sub-procedure halts for a group (a `/cleanup` that could not produce its tag), **skip every ticket in that group** and display its refusal, then continue with the remaining groups. One stack blocked on a human should not stall the rest of the queue — this is a deliberate departure from the single-ticket path at S1d, which stops outright because it has only one stack to work on.
+
+When a group's stack was refreshed by a backfill, re-bind that group's Q4 fields (`BASE_BRANCH`, `BRANCH_NAME`, `FEATURE_BRANCH`, `CONTAINER_BASE`, `UNMERGED_BLOCKERS`) from the refreshed stack before Q5 consumes them.
 
 ## Q5: Prepare Working Directories (Sequential)
 
@@ -667,7 +686,9 @@ Determine if we are already in the correct worktree:
 
 ### S1c: Resolve Stack Context
 
-Run the **Stack Context Resolution** sub-procedure (defined below) with `KEY={TICKET_KEY}` and `REPO_ROOT={CURRENT_ROOT}`. After the sub-procedure runs, also extract from the ticket's `stack[]` entry:
+Run the **Stack Context Resolution** sub-procedure (defined below) with `KEY={TICKET_KEY}`, `REPO_ROOT={CURRENT_ROOT}`, and `FETCH=true`. The fetch matters for S1d: the cleanup gate decides which predecessors need a tag from `mergedIntoFeature` / `mergedIntoMain`, and those flags are computed against local origin refs. Resolving without `--fetch` can report a predecessor as unmerged when its merge already landed, silently skipping the backfill the gate exists to perform. (The gate's own tag probe uses `git ls-remote`, which always reads the remote directly and needs no fetch.)
+
+After the sub-procedure runs, also extract from the ticket's `stack[]` entry:
 - `BRANCH_NAME` = ticket's `branch` (or `{TICKET_KEY}` if null)
 - `BASE_BRANCH` = ticket's `baseBranch`
 - `PR_TARGET` = ticket's `prTarget`
@@ -680,6 +701,14 @@ If the ticket's `eligible` is `false` and `unblockedBlockers` is non-empty:
 - Display: "Blocked: waiting on {unblockedBlockers[0]}" and **stop**.
 
 - **Ensure `ClaudeWork` label**: If the ticket does not already have the `ClaudeWork` label, add it using `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "ClaudeWork"}]}`.
+
+### S1d: Ensure Cleanup Prerequisites
+
+Run the **Ensure Cleanup Prerequisites** sub-procedure (defined above) with `STACK_ORDER` and `REPO_ROOT` from S1c and `RESOLVED_KEY={TICKET_KEY}`. Any predecessor already merged into the feature branch but missing its `merged/{KEY}` tag gets backfilled before this ticket's branch or rebase base is computed.
+
+This runs **before** S2 rather than after it because the sub-procedure's final step refreshes `STACK_ORDER`, which can shift `BASE_BRANCH`. `ensure-work-dir` (S2a/S2b) and the S2.5 rebase both consume `BASE_BRANCH`, so they must see the post-backfill value. Re-bind the S1c ticket-entry fields (`BRANCH_NAME`, `BASE_BRANCH`, `PR_TARGET`) from the refreshed stack before continuing.
+
+When no predecessor is missing a tag the sub-procedure short-circuits after a single `git ls-remote` and no refresh happens — the common case costs one network call.
 
 ## S2: Ensure Working Directory Ready
 

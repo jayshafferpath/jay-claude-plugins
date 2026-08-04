@@ -177,7 +177,7 @@ cd {REPO_ROOT} && git tag -f merged/{TICKET_KEY} {MERGE_SHA}
 cd {REPO_ROOT} && git push --force origin refs/tags/merged/{TICKET_KEY}
 ```
 
-`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`); commands that consume clean stack state (`/promote-to-main`, `/ticket-work` Q5/S2.5, `/stack-rebase`) refuse to run when this tag is missing on a `mergedIntoFeature` ticket.
+`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`); commands that consume clean stack state (`/promote-to-main` Step 1b-final, `/ticket-work` S1d and Q4.5, `/stack-rebase` Step 1.5) backfill via that sub-procedure when this tag is missing on a `mergedIntoFeature` ticket, and refuse only when the backfill itself cannot produce the tag.
 
 If the push fails (network, permissions): warn and continue. The local tag is in place; the remote can be re-pushed manually with `git push --force origin refs/tags/merged/{TICKET_KEY}`. The downstream gate will catch the missing remote tag and re-trigger cleanup.
 
