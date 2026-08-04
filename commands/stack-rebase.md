@@ -4,7 +4,9 @@ allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
   - mcp__atlassian__addCommentToJiraIssue
+  - Skill
   - Bash(git fetch *)
+  - Bash(git ls-remote *)
   - Bash(git branch *)
   - Bash(git checkout *)
   - Bash(git rebase *)
@@ -37,6 +39,14 @@ Stack detected ({CONTAINER_TYPE}: {CONTAINER_KEY}):
 
 Starting rebase from: {given_ticket_key}
 ```
+
+## Step 1.5: Ensure Cleanup Prerequisites
+
+Run the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`) with `STACK_CHAIN` as `STACK_ORDER`, plus `REPO_ROOT` and `RESOLVED_KEY={given_ticket_key}`. Cascade-rebasing a chain whose predecessor merges are untagged is the failure shape behind the NEV-863 data loss — the tag is what lets `feature-refresh.js` replay a squash merge whose branch is already gone.
+
+If the sub-procedure refreshes `STACK_CHAIN`, re-derive `ticketIndex` from the refreshed stack before Step 2 reads `mergedIntoMain` — a backfill can flip that flag, which selects the rebase scenario.
+
+> **Re-entrancy**: the sub-procedure inline-runs `/cleanup` with `--no-rebase`, so cleanup's Step 7 cascade does **not** fire and cannot recurse back into this command. That flag is load-bearing here; do not drop it from the sub-procedure's invocation.
 
 ## Step 2: Determine Rebase Scenario
 
