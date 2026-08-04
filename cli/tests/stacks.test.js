@@ -148,7 +148,26 @@ describe("buildStacks", () => {
     expect(t2.waitingOn).toBeNull();
   });
 
-  it("clears waitingOn when blocker has ClaudeNeedsReview label", () => {
+  it("clears waitingOn when blocker is in a review status", () => {
+    const issues = [
+      issue("T-1", {
+        status: { name: "In Review", statusCategory: { key: "indeterminate" } },
+      }),
+      issue("T-2", {
+        issuelinks: [
+          {
+            type: { inward: "is blocked by" },
+            inwardIssue: { key: "T-1" },
+          },
+        ],
+      }),
+    ];
+    const stacks = buildStacks(issues);
+    const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
+    expect(t2.waitingOn).toBeNull();
+  });
+
+  it("keeps waitingOn set when the blocker only carries a stale ClaudeNeedsReview label", () => {
     const issues = [
       issue("T-1", { labels: ["ClaudeNeedsReview"] }),
       issue("T-2", {
@@ -162,7 +181,7 @@ describe("buildStacks", () => {
     ];
     const stacks = buildStacks(issues);
     const t2 = stacks[0].tickets.find((t) => t.key === "T-2");
-    expect(t2.waitingOn).toBeNull();
+    expect(t2.waitingOn).toBe("T-1");
   });
 
   it("ignores blockers not in the issue set", () => {

@@ -14,6 +14,7 @@
     "append-activity": "./bin/append-activity.js",
     "cascade-rebase": "./bin/cascade-rebase.js",
     "set-ticket-state": "./bin/set-ticket-state.js",
+    "transition-jira": "./bin/transition-jira.js",
     "ensure-work-dir": "./bin/ensure-work-dir.js",
     "discover-queue": "./bin/discover-queue.js",
     "promote-downstream": "./bin/promote-downstream.js",

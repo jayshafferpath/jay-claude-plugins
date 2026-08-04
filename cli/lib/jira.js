@@ -1,5 +1,5 @@
 import { getJiraAuth } from "./config.js";
-import { LABEL_TO_STATUS_TRANSITIONS, PROGRESS_LABELS } from "./labels.js";
+import { PROGRESS_LABELS, STATUS_TRANSITIONS } from "./labels.js";
 
 function auth() {
   const creds = getJiraAuth();
@@ -158,13 +158,45 @@ export function pickTransition(transitions, candidateNames) {
   return null;
 }
 
+// Move a ticket's workflow status for a named lifecycle event (see
+// STATUS_TRANSITIONS). Best-effort: returns the transition that was applied,
+// or null when the workflow offers no match (logged, not thrown) — callers
+// treat status as advisory and probe the PR for ground truth.
+export async function transitionForEvent(key, event) {
+  const candidates = STATUS_TRANSITIONS[event];
+  if (!candidates) {
+    throw new Error(
+      `Unknown status event "${event}". Known: ${Object.keys(STATUS_TRANSITIONS).join(", ")}`,
+    );
+  }
+
+  try {
+    const transitions = await getTransitions(key);
+    const match = pickTransition(transitions, candidates);
+    if (!match) {
+      const available = transitions.map((t) => t.name).join(", ") || "(none)";
+      console.warn(
+        `transitionForEvent: no workflow transition matching [${candidates.join(", ")}] for ${key}. Available: ${available}. Status unchanged.`,
+      );
+      return null;
+    }
+    await transitionIssue(key, match.id);
+    return match;
+  } catch (err) {
+    console.warn(
+      `transitionForEvent: status transition for ${key} failed: ${err.message}. Status unchanged.`,
+    );
+    return null;
+  }
+}
+
 // Idempotent state transition: clears every PROGRESS_LABEL currently set,
 // then applies add/remove. `to` is sugar for "add this single state label and
-// clear the rest". When `to` is set and `LABEL_TO_STATUS_TRANSITIONS` defines
-// candidate workflow transitions for it, the matching Jira workflow status is
-// transitioned too (best-effort: missing transitions log a warning and the
-// label change still proceeds). Returns the operations that were applied (or
-// null when neither labels nor status would change).
+// clear the rest". Returns the operations that were applied, or null when
+// nothing would change.
+//
+// Workflow status is no longer coupled to labels — call transitionForEvent
+// explicitly when a lifecycle event should move the Jira status.
 export async function setTicketState(
   key,
   { to = null, add = [], remove = [] } = {},
@@ -183,26 +215,6 @@ export async function setTicketState(
 
   const patch = buildSetStatePatch(currentLabels, { add: additions, remove });
   if (patch) await editIssue(key, patch);
-
-  if (to && LABEL_TO_STATUS_TRANSITIONS[to]) {
-    const candidates = LABEL_TO_STATUS_TRANSITIONS[to];
-    try {
-      const transitions = await getTransitions(key);
-      const match = pickTransition(transitions, candidates);
-      if (match) {
-        await transitionIssue(key, match.id);
-      } else {
-        const available = transitions.map((t) => t.name).join(", ") || "(none)";
-        console.warn(
-          `setTicketState: no workflow transition matching [${candidates.join(", ")}] for ${key}. Available: ${available}. Label updated; status unchanged.`,
-        );
-      }
-    } catch (err) {
-      console.warn(
-        `setTicketState: status transition for ${key} failed: ${err.message}. Label updated; status unchanged.`,
-      );
-    }
-  }
 
   return patch ? patch.labels : null;
 }

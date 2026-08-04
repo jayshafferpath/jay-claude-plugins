@@ -18,7 +18,7 @@ if (args.includes("--help") || args.length === 0) {
       "                        Implicitly clears every other progress label.\n" +
       "  --clear-progress      Remove every progress label currently applied.\n" +
       "                        (--to already clears them; redundant when --to is set.)\n" +
-      "  --add <LABEL>         Add an arbitrary label (e.g. ClaudePruned).\n" +
+      "  --add <LABEL>         Add an arbitrary label (e.g. complexity:trivial).\n" +
       "  --remove <LABEL>      Remove an arbitrary label.\n" +
       "\n" +
       `Progress labels: ${PROGRESS_LABELS.join(", ")}\n`,

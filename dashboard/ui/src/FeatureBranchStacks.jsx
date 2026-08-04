@@ -18,10 +18,11 @@ export function FeatureBranchStacks({ stacks, jiraBaseUrl, onAction }) {
             acc[t.stateLabel] = (acc[t.stateLabel] || 0) + 1;
             return acc;
           }, {});
+          // "PR open" has no label — it's derived from the live PR / Jira status.
           const done =
             (counts.ClaudeStackReady || 0) +
             (counts.ClaudePRApproved || 0) +
-            (counts.ClaudeNeedsReview || 0);
+            stack.tickets.filter((t) => t.state === "PR open").length;
 
           return (
             <div className="feature-stack" key={stack.containerKey}>
@@ -149,11 +150,8 @@ function FeatureDag({ layers, tickets, jiraBaseUrl, featureBranch, mergeOrder, o
 function nodeColor(ticket) {
   if (ticket.stateLabel === "ClaudeFailed") return "failed";
   if (ticket.waitingOn) return "waiting";
-  if (
-    ["ClaudeStackReady", "ClaudePRApproved", "ClaudeNeedsReview"].includes(
-      ticket.stateLabel,
-    )
-  ) {
+  if (ticket.state === "PR open") return "done";
+  if (["ClaudeStackReady", "ClaudePRApproved"].includes(ticket.stateLabel)) {
     return "done";
   }
   if (["ClaudeExecuting", "ClaudePlanning"].includes(ticket.stateLabel)) {

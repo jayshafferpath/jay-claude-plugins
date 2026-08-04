@@ -170,6 +170,55 @@ export function getMergedPrMap(baseBranch, cwd) {
   return map;
 }
 
+// Every `merged/{KEY}` tag on origin, as a Set of ticket keys. One network
+// call for the whole stack. These tags are created by /cleanup Step 2d and are
+// the durable record that phase-1 cleanup ran — replacing the
+// ClaudePendingMainPromotion label, which only memoized the same fact.
+export function getMergedTagKeys(cwd) {
+  if (!cwd) return new Set();
+  const result = run("git ls-remote origin 'refs/tags/merged/*'", cwd);
+  if (!result) return new Set();
+  const keys = new Set();
+  for (const line of result.split("\n")) {
+    const match = line.match(/refs\/tags\/merged\/(\S+)$/);
+    if (match) keys.add(match[1]);
+  }
+  return keys;
+}
+
+// Bulk "is there an open PR for this branch" probe, keyed by head branch.
+// One `gh` call for the whole stack — the open-PR equivalent of
+// getMergedPrMap, and the replacement for the retired ClaudeNeedsReview
+// label. Returns an empty Map when gh is unavailable, so callers degrade to
+// "no known open PRs" rather than throwing.
+export function getOpenPrMap(cwd) {
+  if (!cwd) return new Map();
+  const result = run(
+    "gh pr list --state open --limit 200 --json headRefName,number,url,isDraft,reviewDecision,baseRefName",
+    cwd,
+  );
+  if (!result) return new Map();
+  let parsed;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return new Map();
+  }
+  const map = new Map();
+  for (const pr of parsed) {
+    const head = pr?.headRefName;
+    if (!head || map.has(head)) continue;
+    map.set(head, {
+      number: pr.number ?? null,
+      url: pr.url ?? null,
+      isDraft: pr.isDraft ?? false,
+      reviewDecision: pr.reviewDecision || null,
+      baseRefName: pr.baseRefName || null,
+    });
+  }
+  return map;
+}
+
 export function getWorktreeList(repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return [];
   const result = run("git worktree list --porcelain", repoRoot);

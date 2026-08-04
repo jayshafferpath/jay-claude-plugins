@@ -75,7 +75,7 @@ describe("classifyActions", () => {
     expect(out.queues.autoSafe).toHaveLength(0);
   });
 
-  it("rule 1a: ClaudePendingMainPromotion suppresses re-classification", () => {
+  it("rule 1a: phaseOneDone (merged/{KEY} tag) suppresses re-running phase-1 cleanup", () => {
     const branch = "feat/story-3";
     const out = classifyActions({
       stacks: [
@@ -85,8 +85,49 @@ describe("classifyActions", () => {
             featureBranch: branch,
             parentFeatureBranch: "feat/epic-99",
           },
+          tickets: [ticket("STORY-3", { branch, phaseOneDone: true })],
+        }),
+      ],
+      mergedToParentFeatureBranch: { [branch]: true },
+    });
+    expect(out.pendingProbes).toHaveLength(0);
+    // Phase-1 already ran, so the next step is main promotion — not a repeat.
+    expect(out.queues.autoSafe).toHaveLength(1);
+    expect(out.queues.autoSafe[0].nextAction).toBe("promote-to-main");
+  });
+
+  it("rule 1a: phaseOneDone skips the probe entirely", () => {
+    const branch = "feat/story-4";
+    const out = classifyActions({
+      stacks: [
+        stack({
+          container: {
+            key: "STORY-4",
+            featureBranch: branch,
+            parentFeatureBranch: "feat/epic-99",
+          },
+          tickets: [ticket("STORY-4", { branch, phaseOneDone: true })],
+        }),
+      ],
+      // No merge state supplied — would normally emit a pendingProbe.
+      mergedToParentFeatureBranch: {},
+    });
+    expect(out.pendingProbes).toHaveLength(0);
+    expect(out.queues.autoSafe[0].nextAction).toBe("promote-to-main");
+  });
+
+  it("rule 1a: a stale ClaudePendingMainPromotion label no longer suppresses anything", () => {
+    const branch = "feat/story-5";
+    const out = classifyActions({
+      stacks: [
+        stack({
+          container: {
+            key: "STORY-5",
+            featureBranch: branch,
+            parentFeatureBranch: "feat/epic-99",
+          },
           tickets: [
-            ticket("STORY-3", {
+            ticket("STORY-5", {
               branch,
               labels: ["ClaudePendingMainPromotion"],
             }),
@@ -95,9 +136,7 @@ describe("classifyActions", () => {
       ],
       mergedToParentFeatureBranch: { [branch]: true },
     });
-    expect(out.queues.autoSafe).toHaveLength(0);
-    expect(out.pendingProbes).toHaveLength(0);
-    expect(out.queues.idle).toHaveLength(1);
+    expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-phase-1");
   });
 
   it("rule 2: ClaudePRApproved → promote-to-main auto-safe", () => {

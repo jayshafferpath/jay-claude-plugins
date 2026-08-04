@@ -12,31 +12,28 @@ export const DURABLE_LABELS = Object.freeze(["ClaudeWork"]);
 // Per-ticket progress states. At most one of these is "active" at a time;
 // the lifecycle promotes through them in order. /rework and /prune both
 // remove every entry in this list before re-applying their own marker.
+//
+// Deliberately minimal: a state earns a label only when it must be visible
+// to *another process* (a peer agent, a JQL query, or a human handing work
+// back). Anything derivable from git, the GitHub PR, or the checklist is
+// read from that source instead — see isReviewOpen()/isFinished().
 export const PROGRESS_LABELS = Object.freeze([
   "ClaudeReady",
-  "ClaudeDriftChecked",
   "ClaudePlanning",
   "ClaudeExecuting",
   "ClaudeStackReady",
   "ClaudePRApproved",
-  "ClaudeNeedsReview",
-  "ClaudePendingMainPromotion",
-  "ClaudeMainPR",
   "ClaudeFailed",
 ]);
 
 // Container-level (Story/Epic) signals.
 export const CONTAINER_LABELS = Object.freeze(["ClaudeStackComplete"]);
 
-// Terminal abandonment marker applied by /prune.
-export const TERMINAL_LABELS = Object.freeze(["ClaudePruned"]);
-
 // Every Claude-prefixed label the lifecycle ever touches.
 export const ALL_LIFECYCLE_LABELS = Object.freeze([
   ...DURABLE_LABELS,
   ...PROGRESS_LABELS,
   ...CONTAINER_LABELS,
-  ...TERMINAL_LABELS,
 ]);
 
 // Labels that mean "another agent is mid-flight on this ticket". Used by
@@ -54,7 +51,6 @@ export const SUBTASK_EXCLUSION_LABELS = Object.freeze([
   "ClaudeExecuting",
   "ClaudeStackReady",
   "ClaudePRApproved",
-  "ClaudeNeedsReview",
   "ClaudeFailed",
 ]);
 
@@ -81,21 +77,38 @@ export function getComplexity(labels) {
   return COMPLEXITY_STANDARD;
 }
 
-// Optional Jira workflow status transitions triggered when a progress label
-// is set. Keys are PROGRESS_LABELS; values are candidate transition names
-// matched case-insensitively (first match wins). Used by setTicketState to
-// keep Jira status in sync with the lifecycle label. Tickets stuck in a
-// workflow without any matching transition fall through with a warning —
-// the label change still applies.
-export const LABEL_TO_STATUS_TRANSITIONS = Object.freeze({
-  ClaudeNeedsReview: Object.freeze(["In Review", "Code Review", "Review"]),
+// Named lifecycle events that move the Jira workflow status, mapped to
+// candidate transition names matched case-insensitively (first match wins).
+// These replace the old label-driven transitions: Jira *status* is now the
+// durable record of "in review", since an open PR is the real signal and a
+// label would only duplicate it.
+//
+// Best-effort by design — a workflow with no matching transition logs a
+// warning and leaves the status alone.
+export const STATUS_TRANSITIONS = Object.freeze({
+  review: Object.freeze(["In Review", "Code Review", "Review"]),
 });
 
+// Jira status names that mean "this ticket is out for review". Used as the
+// JQL-queryable stand-in for the retired ClaudeNeedsReview label.
+export const REVIEW_STATUS_NAMES = Object.freeze([
+  "In Review",
+  "Code Review",
+  "Review",
+]);
+
+// True when a Jira status name means "out for review".
+export function isReviewStatus(statusName) {
+  if (!statusName) return false;
+  const needle = statusName.toLowerCase();
+  return REVIEW_STATUS_NAMES.some((n) => n.toLowerCase() === needle);
+}
+
 // Display ordering for label-state classifiers. First match wins, so the
-// most-advanced state appears first.
+// most-advanced state appears first. "PR open" is no longer a label state —
+// callers that can probe the PR pass it in separately (see labelState).
 export const LABEL_DISPLAY_ORDER = Object.freeze([
   ["ClaudeFailed", "FAILED"],
-  ["ClaudeNeedsReview", "PR open"],
   ["ClaudePRApproved", "PR approved"],
   ["ClaudeStackReady", "stack ready"],
   ["ClaudeExecuting", "executing..."],

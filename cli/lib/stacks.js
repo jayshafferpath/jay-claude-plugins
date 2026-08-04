@@ -1,3 +1,4 @@
+import { isReviewStatus } from "./labels.js";
 import { topologicalSort } from "./util.js";
 
 export function featureBranchFromContainer(containerKey) {
@@ -96,13 +97,15 @@ export function buildStacks(issues) {
       blockingLinks.push({ from: blocker, to: key });
     }
 
+    // Jira-only view (no repo access here), so review state comes from the
+    // workflow status name rather than an open-PR probe.
     const isFinished = (k) =>
       issues.some(
         (i) =>
           i.key === k &&
           (i.fields.status?.statusCategory?.key === "done" ||
             i.fields.labels?.includes("ClaudeStackReady") ||
-            i.fields.labels?.includes("ClaudeNeedsReview")),
+            isReviewStatus(i.fields.status?.name)),
       );
 
     const unfinishedBlockers = blockers.filter(
@@ -113,6 +116,7 @@ export function buildStacks(issues) {
       key,
       summary: fields.summary,
       labels,
+      statusName: fields.status?.name || null,
       blockers,
       blocks,
       waitingOn: unfinishedBlockers.length ? unfinishedBlockers[0] : null,

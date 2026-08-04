@@ -182,9 +182,10 @@ Run **S3: Load or Resume Checklist** from `commands/ticket-work.md` verbatim. Af
 Run **S3.5: Drift Check** from `commands/ticket-work.md` verbatim, including its skip conditions:
 - No `h2. Implementation Notes` block on the ticket → skip
 - Checklist already shows step 2 (execute) as `[x]` → skip
-- `ClaudeDriftChecked` label present and added after the most recent push to `BASE_BRANCH` → skip
 
-If drift is detected, the sub-procedure refreshes Implementation Notes, posts a Jira comment with the drift report, and adds `ClaudeDriftChecked`. Otherwise it adds `ClaudeDriftChecked` and continues.
+There is nothing else to gate on: `drift-check` diffs the ticket's recorded research baseline SHA against the code at HEAD, so re-running it on an unchanged tree is a cheap no-op that returns `current`. Running it on every `/prework` is the correct behavior — it re-fires precisely when upstream has moved.
+
+If drift is detected, the sub-procedure refreshes Implementation Notes and posts a Jira comment with the drift report. Otherwise it reports `current` and continues.
 
 Do NOT proceed to S4 (the plan/execute lifecycle).
 
@@ -196,7 +197,7 @@ Pull design context from any Figma frames the ticket references and attach them 
 
 ### Skip conditions
 
-- `ClaudeDesignsCaptured` label is present on the ticket → skip.
+- The ticket's `h2. Implementation Notes` already contains an `h3. Designs` subsection **and** every screenshot it lists exists under `{WORK_DIR}/.designs/{TICKET_KEY}/` → skip (already captured). If the subsection is present but its screenshots are missing from disk (fresh worktree, cleaned machine), do not skip — re-capture so execute can `Read` them.
 - Checklist step 2 (execute) is `[x]` → skip (capture is pre-execute only; refresh manually if frames change later).
 - No Figma URLs surface in 4.5a → skip silently.
 
@@ -260,15 +261,17 @@ If `h3. Designs` already exists in Implementation Notes, replace it wholesale ra
 
 Use `mcp__atlassian__editJiraIssue` to write back. The screenshot path is relative to the working directory so `/ticket-work` execute can `Read` it.
 
-### 4.5e: Mark captured
+### 4.5e: Record the capture
 
-Add `ClaudeDesignsCaptured` label. Post an activity comment via `append-activity`:
+Post an activity comment via `append-activity`:
 
 ```
 Designs captured: {N} frame(s) from Figma. Screenshots in .designs/{TICKET_KEY}/.
 ```
 
-If the user skipped all frames, do NOT add the label — the next `/prework` re-run will re-prompt.
+The `h3. Designs` subsection written in 4.5d plus the `.designs/{TICKET_KEY}/*.png` files are the record that capture ran — that pair is what the skip condition above reads.
+
+If the user skipped every frame, do NOT write an `h3. Designs` subsection at all — leaving it absent is what makes the next `/prework` re-run re-prompt.
 
 Stop here. Do NOT proceed to S4 (the plan/execute lifecycle).
 

@@ -17,7 +17,7 @@ const ISSUES = {
     key: "SUB-1",
     fields: {
       summary: "First subtask",
-      labels: ["ClaudeWork", "ClaudeNeedsReview", "repo:my-backend"],
+      labels: ["ClaudeWork", "repo:my-backend"],
       parent: { key: "STORY-1", fields: { summary: "Parent Story" } },
       issuetype: { name: "Sub-task" },
       status: { statusCategory: { key: "done" } },

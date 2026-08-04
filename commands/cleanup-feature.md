@@ -12,7 +12,7 @@ Equivalent to `/cleanup {KEY} --require-phase=feature`. The wrapped command:
 - Verifies the PR merged into the parent Epic's feature branch.
 - Tags the merge commit as `merged/{KEY}` (load-bearing for `/promote-to-main`).
 - Retains the Story branch on disk + remote (it must survive for `/promote-to-main` to rebase it onto main).
-- Keeps the Jira ticket in its current in-progress status; applies `ClaudePendingMainPromotion`.
+- Keeps the Jira ticket in its current in-progress status, progress labels untouched (the `merged/{KEY}` tag records that phase 1 ran).
 - Cascade-rebases sibling Stories under the same Epic (if any) onto the refreshed Epic feature branch.
 - Refreshes the Epic feature branch by resetting to `origin/{EPIC_FEATURE_BRANCH}` and re-merging unmerged ticket branches.
 - Refuses if the detected merge target is `main` (wrong phase) and points you at `/cleanup-main`.

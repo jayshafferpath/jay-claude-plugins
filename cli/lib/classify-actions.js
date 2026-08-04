@@ -34,13 +34,19 @@ function classifyTicket(ticket, ctx) {
 
   // Rule 1a — Story-container merged to parent Epic feature branch.
   // Needs a runtime probe; only gate on it when the prefilter matches.
+  //
+  // Phase-1 cleanup used to be suppressed by a ClaudePendingMainPromotion
+  // label. That label only memoized "phase-1 already ran", which the
+  // merged/{KEY} tag records durably in git — so the caller passes
+  // `phaseOneDone` from the tag probe instead.
   const isFeatureContainer =
     branch && container?.featureBranch && branch === container.featureBranch;
   const hasParent = container?.parentFeatureBranch != null;
+  const phaseOneDone = ticket.phaseOneDone === true;
   const pendingProbe =
     isFeatureContainer &&
     hasParent &&
-    !hasLabel(ticket, "ClaudePendingMainPromotion") &&
+    !phaseOneDone &&
     mergedToParentFeatureBranch?.[branch] === undefined;
 
   if (pendingProbe) {
@@ -56,7 +62,7 @@ function classifyTicket(ticket, ctx) {
   if (
     isFeatureContainer &&
     hasParent &&
-    !hasLabel(ticket, "ClaudePendingMainPromotion") &&
+    !phaseOneDone &&
     mergedToParentFeatureBranch?.[branch] === true
   ) {
     return {
@@ -64,6 +70,17 @@ function classifyTicket(ticket, ctx) {
       nextAction: "cleanup-phase-1",
       autoSafe: true,
       reason: `merged into ${container.parentFeatureBranch}, mergedIntoMain=false`,
+    };
+  }
+
+  // Phase-1 already ran (merged/{KEY} tag present) but the main PR hasn't
+  // landed — the ticket is awaiting /promote-to-main.
+  if (isFeatureContainer && hasParent && phaseOneDone) {
+    return {
+      key: ticket.key,
+      nextAction: "promote-to-main",
+      autoSafe: true,
+      reason: "phase-1 cleanup done, awaiting main promotion",
     };
   }
 

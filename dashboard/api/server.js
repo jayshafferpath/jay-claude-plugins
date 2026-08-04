@@ -34,13 +34,6 @@ await app.register(cors, { origin: true });
 async function buildStacks(issues) {
   const stacks = buildStacksCore(issues);
 
-  for (const ticket of stacks.flatMap((s) => s.tickets)) {
-    const state = labelState(ticket.labels);
-    ticket.state = state.display;
-    ticket.stateLabel = state.label;
-    ticket.actionHint = actionHint(state.label);
-  }
-
   await attachFeatureBranches(stacks);
 
   for (const stack of stacks) {
@@ -65,6 +58,18 @@ async function buildStacks(issues) {
       ticket.pr = pr ? { url: pr.url, state: pr.state } : null;
     }),
   );
+
+  // Display state resolves after the PR fetch so "PR open" can come from the
+  // live PR rather than a label.
+  for (const ticket of allTickets) {
+    const state = labelState(ticket.labels, {
+      openPr: ticket.pr?.state === "OPEN" ? ticket.pr : null,
+      statusName: ticket.statusName,
+    });
+    ticket.state = state.display;
+    ticket.stateLabel = state.label;
+    ticket.actionHint = actionHint(state.label);
+  }
 
   return stacks;
 }
@@ -116,7 +121,10 @@ app.get("/api/tickets/:key", async (request) => {
   const checklist = await readChecklistFromJira(key);
   const execPlan = await readExecutionPlanFromJira(key);
   const reviewPlan = null;
-  const state = labelState(labels);
+  const state = labelState(labels, {
+    openPr: pr?.state === "OPEN" ? pr : null,
+    statusName: status,
+  });
 
   return {
     key,
