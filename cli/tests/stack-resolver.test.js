@@ -10,6 +10,8 @@ vi.mock("../lib/git.js", () => ({
   isAncestor: vi.fn(),
   isMergedInto: vi.fn(),
   getMergedPrMap: vi.fn(() => new Map()),
+  resolveMergedTag: vi.fn(() => null),
+  isShaAncestorOf: vi.fn(() => false),
 }));
 
 vi.mock("../lib/config.js", () => ({
@@ -17,9 +19,14 @@ vi.mock("../lib/config.js", () => ({
 }));
 
 const { getIssue, searchIssues } = await import("../lib/jira.js");
-const { findBranch, isAncestor, isMergedInto, getMergedPrMap } = await import(
-  "../lib/git.js"
-);
+const {
+  findBranch,
+  isAncestor,
+  isMergedInto,
+  getMergedPrMap,
+  resolveMergedTag,
+  isShaAncestorOf,
+} = await import("../lib/git.js");
 const { loadDevRoot } = await import("../lib/config.js");
 const {
   resolveContainer,
@@ -528,6 +535,128 @@ describe("resolveStack", () => {
     const sub1 = result.stack.find((t) => t.key === "SUB-1");
     expect(sub1.mergedIntoFeature).toBe(true);
     expect(sub1.mergedIntoMain).toBe(false);
+  });
+
+  // Regression for issue #32, reproducing the NEV-1441 shape: the branch is
+  // gone, and the feature branch was rewritten after the merge so the PR's
+  // recorded mergeCommit is orphaned. Only the merged/{KEY} tag still proves
+  // the work shipped. Before the fix this reported eligible: true on a ticket
+  // whose code was already on the Epic branch, so queue mode would re-run it.
+  it("flags mergedIntoFeature from the merged/{KEY} tag when the branch is gone and the PR record is orphaned", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork", "ClaudePendingMainPromotion"],
+          issuelinks: [],
+        }),
+      },
+    ]);
+
+    // Branch deleted by cleanup; no merged-PR record matches; nothing is an
+    // ancestor. Every pre-existing signal says "not merged".
+    findBranch.mockReturnValue(null);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockReturnValue(new Map());
+
+    // The tag survives and is reachable from the feature branch but not main —
+    // exactly the ClaudePendingMainPromotion state.
+    resolveMergedTag.mockImplementation((key) =>
+      key === "SUB-1" ? "deadbee" : null,
+    );
+    isShaAncestorOf.mockImplementation(
+      (sha, target) => sha === "deadbee" && target === "STORY-1",
+    );
+
+    const result = await resolveStack("SUB-1", { repoRoot: "/dev/backend" });
+    const sub1 = result.stack.find((t) => t.key === "SUB-1");
+    expect(sub1.mergedIntoFeature).toBe(true);
+    expect(sub1.mergedIntoMain).toBe(false);
+  });
+
+  it("unblocks a downstream ticket whose blocker is proven merged only by its tag", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-2") {
+        return {
+          key: "SUB-2",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["ClaudeWork", "repo:backend"],
+          }),
+        };
+      }
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({ labels: ["repo:backend"] }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          // Not "finished" by label — the label path won't rescue this.
+          labels: ["ClaudeWork", "ClaudePendingMainPromotion"],
+          issuelinks: [],
+        }),
+      },
+      {
+        key: "SUB-2",
+        fields: issueFields({
+          issuetype: "Sub-task",
+          labels: ["ClaudeWork"],
+          issuelinks: [
+            {
+              type: { name: "Blocks", inward: "is blocked by" },
+              inwardIssue: { key: "SUB-1", fields: issueFields() },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isAncestor.mockReturnValue(false);
+    isMergedInto.mockReturnValue(false);
+    getMergedPrMap.mockReturnValue(new Map());
+    resolveMergedTag.mockImplementation((key) =>
+      key === "SUB-1" ? "deadbee" : null,
+    );
+    isShaAncestorOf.mockImplementation(
+      (sha, target) => sha === "deadbee" && target === "STORY-1",
+    );
+
+    const result = await resolveStack("SUB-2", { repoRoot: "/dev/backend" });
+    const sub2 = result.stack.find((t) => t.key === "SUB-2");
+    expect(sub2.unblockedBlockers).toEqual([]);
+    expect(sub2.eligible).toBe(true);
   });
 
   it("flags mergedIntoMain when branch tip is not in merged list but a merged PR to main exists (squash merge)", async () => {

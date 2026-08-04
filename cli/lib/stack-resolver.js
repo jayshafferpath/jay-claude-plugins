@@ -1,5 +1,12 @@
 import { loadDevRoot } from "./config.js";
-import { findBranch, getMergedPrMap, isAncestor, isMergedInto } from "./git.js";
+import {
+  findBranch,
+  getMergedPrMap,
+  isAncestor,
+  isMergedInto,
+  isShaAncestorOf,
+  resolveMergedTag,
+} from "./git.js";
 import { getIssue, searchIssues } from "./jira.js";
 import { featureBranchFromContainer } from "./stacks.js";
 import { resolveRepoRoot, topologicalSort } from "./util.js";
@@ -343,16 +350,50 @@ export async function resolveStack(ticketKey, opts = {}) {
       mergedIntoMain = isMergedInto(branch, "main", repoRoot);
     }
 
+    // Final fallback: the merged/{KEY} tag written by /cleanup Step 2d. It
+    // survives both branch deletion and feature-branch rewrites, either of
+    // which defeats the branch- and PR-record checks above — a rewritten
+    // feature branch leaves the original merge commit unreachable, so the PR's
+    // recorded mergeCommit no longer proves anything. /promote-to-main already
+    // treats this tag as authoritative, so agreeing with it keeps the two from
+    // disagreeing about what has shipped (issue #32).
+    if (repoRoot && !(mergedIntoFeature && mergedIntoMain)) {
+      const taggedSha = resolveMergedTag(key, repoRoot);
+      if (taggedSha) {
+        if (!mergedIntoFeature && featureBranch) {
+          mergedIntoFeature = isShaAncestorOf(
+            taggedSha,
+            featureBranch,
+            repoRoot,
+          );
+          if (mergedIntoFeature && !featureMergeSha)
+            featureMergeSha = taggedSha;
+        }
+        if (!mergedIntoMain) {
+          mergedIntoMain = isShaAncestorOf(taggedSha, "main", repoRoot);
+          if (mergedIntoMain && !mainMergeSha) mainMergeSha = taggedSha;
+        }
+      }
+    }
+
     const unblockedBlockers = ticket.blockers.filter((bKey) => {
       const blocker = ticketMap.get(bKey);
       if (!blocker) return false;
 
       const blockerBranch =
         featureBranch && repoRoot ? findBranch(bKey, repoRoot) : null;
+      // The blocker's own merged/{KEY} tag is checked alongside the branch, so
+      // a blocker whose branch was deleted (or whose merge commit was orphaned
+      // by a feature-branch rewrite) still counts as shipped rather than
+      // silently blocking everything downstream of it (issue #32).
+      const blockerTagSha =
+        featureBranch && repoRoot ? resolveMergedTag(bKey, repoRoot) : null;
       const branchInFeature =
-        blockerBranch &&
-        (isAncestor(blockerBranch, featureBranch, repoRoot) ||
-          featureMergedPrs.has(blockerBranch));
+        (blockerBranch &&
+          (isAncestor(blockerBranch, featureBranch, repoRoot) ||
+            featureMergedPrs.has(blockerBranch))) ||
+        (blockerTagSha &&
+          isShaAncestorOf(blockerTagSha, featureBranch, repoRoot));
 
       // Branch-level merge truth wins over Jira/label state: if the blocker's
       // branch is already in the feature branch, downstream is unblocked even

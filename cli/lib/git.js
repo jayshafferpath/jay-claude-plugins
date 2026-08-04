@@ -14,15 +14,39 @@ function run(cmd, cwd) {
   }
 }
 
+// Locate a ticket's branch by key prefix. Checks local branches first, then
+// falls back to remote-tracking branches.
+//
+// The remote fallback matters because terminal cleanup deletes the local
+// branch: without it, a ticket whose work is merged and pushed looks like it
+// has no branch at all, which disables every downstream merge check and makes
+// shipped work read as unstarted (issue #32).
+//
+// Returns a bare branch name with no `origin/` prefix — callers such as
+// isAncestor and isMergedInto add the remote prefix themselves.
 export function findBranch(ticketKey, repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return null;
-  const result = run(`git branch --list '${ticketKey}*'`, repoRoot);
-  if (!result) return null;
-  const branches = result
+
+  const local = run(`git branch --list '${ticketKey}*'`, repoRoot);
+  const localMatch = firstBranchName(local);
+  if (localMatch) return localMatch;
+
+  const remote = run(`git branch -r --list 'origin/${ticketKey}*'`, repoRoot);
+  return firstBranchName(remote, { stripRemote: true });
+}
+
+// Parse `git branch` output into the first usable branch name. Drops the
+// current-branch/worktree markers (`*`, `+`) and skips symbolic refs such as
+// `origin/HEAD -> origin/main`, which are not branches we can reason about.
+function firstBranchName(raw, { stripRemote = false } = {}) {
+  if (!raw) return null;
+  const names = raw
     .split("\n")
     .map((b) => b.replace(/^[*+]?\s+/, "").trim())
-    .filter(Boolean);
-  return branches[0] || null;
+    .filter(Boolean)
+    .filter((b) => !b.includes("->"))
+    .map((b) => (stripRemote ? b.replace(/^origin\//, "") : b));
+  return names[0] || null;
 }
 
 export function findWorktree(ticketKey, repoRoot) {
@@ -94,6 +118,33 @@ export function isMergedInto(branch, target, cwd) {
   const result = run(`git branch -r --merged origin/${target}`, cwd);
   if (!result) return false;
   return result.split("\n").some((line) => line.trim() === `origin/${branch}`);
+}
+
+// Resolve the `merged/{TICKET_KEY}` tag written by /cleanup Step 2d to the
+// commit it points at, or null when the tag does not exist.
+//
+// This tag is the durable phase-1 merge marker: it survives branch deletion,
+// which branch-based merge inference does not. /promote-to-main already treats
+// it as authoritative when picking the next ticket, so the resolver consults
+// it too rather than inferring merge state from branches alone (issue #32).
+export function resolveMergedTag(ticketKey, cwd) {
+  if (!ticketKey || !cwd) return null;
+  return run(
+    `git rev-parse --verify refs/tags/merged/${ticketKey}^{commit}`,
+    cwd,
+  );
+}
+
+// Whether a commit SHA is reachable from origin/{target}. Unlike isAncestor
+// this takes a raw SHA rather than a branch name, so it works for commits
+// whose branch has already been deleted.
+export function isShaAncestorOf(sha, target, cwd) {
+  if (!sha || !target || !cwd) return false;
+  const result = run(
+    `git merge-base --is-ancestor ${sha} origin/${target}`,
+    cwd,
+  );
+  return result !== null;
 }
 
 export function getMergedPrMap(baseBranch, cwd) {

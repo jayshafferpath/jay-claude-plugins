@@ -36,13 +36,18 @@ Use the Skill tool to run skill `pr-description` with args `{BASE_BRANCH}`.
 
 After it completes, read the generated `./pr.md` file. The first line is the title, the rest is the body.
 
-Update the existing PR:
+Update the existing PR. Split `./pr.md` into its title line and body, write the body to a temp file, then PATCH both fields:
 
 ```bash
-gh pr edit {PR_NUMBER} --title "{NEW_TITLE}" --body "{NEW_BODY}"
+gh api --method PATCH repos/{owner}/{repo}/pulls/{PR_NUMBER} -f title="{NEW_TITLE}" -F body=@{BODY_FILE}
 ```
 
-Use a HEREDOC for the body to preserve formatting.
+Two reasons this uses the REST endpoint instead of `gh pr edit`:
+
+- **Scope.** `gh pr edit` issues a GraphQL query that reads org-level fields (`login`, `name`, `slug`) to resolve reviewers, even when only `--title`/`--body` were passed. On a token without `read:org` it fails outright with a scopes error that looks like a permissions problem on the PR but isn't. REST PATCH needs only `repo`.
+- **Quoting.** `-F body=@{file}` reads the body from a file, so backticks, `$`, and newlines in the generated description reach GitHub intact. Passing the body inline (or via `-f body="$(cat …)"`) re-introduces shell interpolation bugs.
+
+The `{owner}`/`{repo}` placeholders are literal — `gh` resolves them from the local remote, so no slug lookup is needed.
 
 ## Step 3: Build Finalization Comment
 

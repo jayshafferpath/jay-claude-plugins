@@ -224,8 +224,14 @@ async function runCascade({
           prNumber = null;
         }
         if (prNumber) {
+          // Retarget via the REST endpoint rather than `gh pr edit`. The
+          // latter issues a GraphQL query that reads org-level fields
+          // (login/name/slug) for reviewer resolution even when only --base
+          // was passed, so it hard-fails on a token without read:org. REST
+          // PATCH needs only `repo`. The {owner}/{repo} placeholders are
+          // resolved by gh from the local remote (issue #35).
           const edit = runCapture(
-            `gh pr edit ${prNumber} --base ${retargetFirstPr.newBase}`,
+            `gh api --method PATCH repos/{owner}/{repo}/pulls/${prNumber} -f base=${retargetFirstPr.newBase}`,
             repoRoot,
           );
           if (edit.ok) {
@@ -235,7 +241,7 @@ async function runCascade({
             };
           } else {
             head.pr_retarget_warning =
-              edit.stderr.trim() || `gh pr edit exit ${edit.code}`;
+              edit.stderr.trim() || `gh api pulls PATCH exit ${edit.code}`;
           }
         } else {
           head.pr_retarget_warning = "no open PR found for head-of-chain";
