@@ -139,20 +139,32 @@ export function parseCitations(notesBlock) {
   return citations;
 }
 
+// Matches any subsection heading, in either Jira emphasis form. Used to find
+// where the current subsection ends. Kept in sync with SUBSECTION_HEADER_FORMS
+// below — if one accepts a delimiter the other must too, or a heading in the
+// unmatched form would be swallowed into the previous subsection's body.
+const ANY_SUBSECTION_HEADER = /^(?:\*[^*\n]+:\*|_[^_\n]+:_)\s*$/m;
+
+// Build a matcher for one labelled subsection heading. Both Jira emphasis
+// forms are accepted: the planner templates the bold `*Label:*` form, but
+// Jira's editor round-trips emphasis inconsistently and landed tickets carry
+// the italic `_Label:_` form too. Matching only one silently yields an empty
+// subsection — see issue #34, where that skipped the constraints pass.
+function subsectionHeaderRe(label) {
+  const esc = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^(?:\\*${esc}:\\*|_${esc}:_)\\s*$`, "m");
+}
+
 // Pull a labelled subsection out of the Implementation Notes block. The
 // planner emits sections as `*Existing patterns to extend:*` followed by a
 // bulleted list, terminated by the next `*…:*` heading or end-of-block.
 function extractSubsection(notesBlock, label) {
   if (!notesBlock) return null;
-  const headerRe = new RegExp(
-    `^\\*${label.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\$&")}:\\*\\s*$`,
-    "m",
-  );
-  const match = notesBlock.match(headerRe);
+  const match = notesBlock.match(subsectionHeaderRe(label));
   if (!match) return null;
   const start = match.index + match[0].length;
   const remainder = notesBlock.slice(start);
-  const nextHeader = remainder.match(/^\*[^*\n]+:\*\s*$/m);
+  const nextHeader = remainder.match(ANY_SUBSECTION_HEADER);
   return nextHeader ? remainder.slice(0, nextHeader.index) : remainder;
 }
 
@@ -534,7 +546,13 @@ export function verifySidecars(tddRef, baseline, repoRoot) {
   const tddSlug = tddRef.path.split("/").pop().replace(/\.md$/, "");
   const out = [];
   for (const repo of Object.keys(baseline || {})) {
-    const sidecarPath = join(tddDir, tddSlug, `${repo}.research.md`);
+    // Baseline keys are GitHub slugs (`org/repo`), but the planner names
+    // sidecars after the repo portion only — `{repo-name}.research.md` per
+    // planner Init Phase 4. Interpolating the full slug both looks in a
+    // phantom `{org}/` subdirectory and mangles the filename, making every
+    // check a false negative (issue #33).
+    const repoName = repo.includes("/") ? repo.split("/").pop() : repo;
+    const sidecarPath = join(tddDir, tddSlug, `${repoName}.research.md`);
     const lsTree = run(
       `git ls-tree HEAD -- ${shellQuote(sidecarPath)}`,
       repoRoot,
@@ -545,7 +563,7 @@ export function verifySidecars(tddRef, baseline, repoRoot) {
       status: lsTree ? "current" : "unknown",
       reason: lsTree
         ? null
-        : "sidecar not in this repo (may live in owner repo) or has been removed",
+        : "sidecar has been removed, or lives in the owner repo (consumer-mode TDD)",
     });
   }
   return out;
@@ -597,6 +615,15 @@ export async function driftCheck(ticketKey, { repoRoot, lite = false } = {}) {
   const testsParsed = parseTestsLikelyToExtend(notes);
   const constraintsRaw = parseConstraints(notes);
   const tddRef = parseTddRef(text);
+
+  // Tripwire for a parse failure that would otherwise be invisible. The
+  // constraints pass is agent-side (S3.5b.i), and a null constraintsRaw is
+  // indistinguishable from "no constraints listed" — so an unrecognized
+  // heading form silently skips a safety check. If the Notes block mentions
+  // Constraints but nothing parsed, say so loudly instead.
+  const constraintsParsed = !(
+    constraintsRaw === null && /Constraints/.test(notes || "")
+  );
 
   // Citation pass: structural well-formedness folds into the same diff result.
   // If well-formedness is drifted, we surface that reason and skip the
@@ -703,6 +730,7 @@ export async function driftCheck(ticketKey, { repoRoot, lite = false } = {}) {
     tddRef: tddRefResult,
     sidecars: sidecarResults,
     constraintsRaw,
+    constraintsParsed,
     drifted: driftedCount,
     unknown: unknownCount,
     total,

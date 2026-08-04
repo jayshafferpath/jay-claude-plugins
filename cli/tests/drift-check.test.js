@@ -398,6 +398,57 @@ describe("parseConstraints", () => {
   it("returns null when constraints subsection is missing", () => {
     expect(parseConstraints("Research baseline: r@abc")).toBeNull();
   });
+
+  // Jira's editor round-trips emphasis inconsistently, so landed tickets carry
+  // the italic form even though the planner templates the bold one. Matching
+  // only bold silently skipped the constraints pass entirely (issue #34).
+  it("parses the italic _Constraints:_ heading form", () => {
+    const block = `_Constraints:_
+* in-flight migration to async handlers
+* avoid sync DB calls`;
+    const c = parseConstraints(block);
+    expect(c).toContain("in-flight migration");
+    expect(c).toContain("avoid sync DB calls");
+  });
+
+  it("stops an italic subsection at the next heading in either form", () => {
+    const italicThenBold = `_Constraints:_
+* keep this
+*Files likely to change:*
+* \`not-this.ts\``;
+    expect(parseConstraints(italicThenBold)).toBe("* keep this");
+
+    const boldThenItalic = `*Constraints:*
+* keep this
+_Files likely to change:_
+* \`not-this.ts\``;
+    expect(parseConstraints(boldThenItalic)).toBe("* keep this");
+  });
+});
+
+describe("subsection heading emphasis forms", () => {
+  // extractSubsection is shared by every subsection parser, so the italic form
+  // has to work for all of them — not just Constraints.
+  it("parses patterns, files, and tests under italic headings", () => {
+    const block = `_Existing patterns to extend:_
+* *Factory shape* — \`createThing\` in [src/a.ts#L1-L5|https://github.com/o/r/blob/abc/src/a.ts#L1-L5] — mirror this
+
+_Files likely to change:_
+* \`src/b.ts\` — new module
+
+_Tests likely to extend:_
+* \`src/__tests__/b.test.ts\` — follow this`;
+
+    const patterns = parsePatterns(block);
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].symbol).toBe("createThing");
+
+    const files = parseFilesLikelyToChange(block);
+    expect(files.map((f) => f.path)).toEqual(["src/b.ts"]);
+
+    const tests = parseTestsLikelyToExtend(block);
+    expect(tests.map((t) => t.path)).toEqual(["src/__tests__/b.test.ts"]);
+  });
 });
 
 describe("parseTddRef", () => {
@@ -829,6 +880,34 @@ describe("verifySidecars", () => {
     expect(platform.status).toBe("current");
     expect(missing.status).toBe("unknown");
   });
+
+  // Baseline keys are GitHub slugs in practice; sidecars are named after the
+  // repo portion only. Interpolating the whole slug looked in a phantom
+  // `{org}/` directory, so every check was a false negative (issue #33).
+  it("derives the sidecar filename from the repo portion of an org/repo slug", () => {
+    const repo = makeRepo("sidecars-slug");
+    mkdirSync(join(repo, "docs/tdds/auth"), { recursive: true });
+    writeFileSync(join(repo, "docs/tdds/auth.md"), "# Auth\n");
+    writeFileSync(
+      join(repo, "docs/tdds/auth/platform.research.md"),
+      "# platform\n",
+    );
+    git("add .", repo);
+    git('commit -m "init"', repo);
+
+    const sidecars = verifySidecars(
+      { path: "docs/tdds/auth.md" },
+      { "my-org/platform": "abc1234" },
+      repo,
+    );
+
+    expect(sidecars).toHaveLength(1);
+    // Reported key keeps the full slug; the resolved path does not.
+    expect(sidecars[0].repo).toBe("my-org/platform");
+    expect(sidecars[0].path).toBe("docs/tdds/auth/platform.research.md");
+    expect(sidecars[0].path).not.toContain("my-org/");
+    expect(sidecars[0].status).toBe("current");
+  });
 });
 
 describe("driftCheck (full mode)", () => {
@@ -890,6 +969,37 @@ Research baseline: my-repo@${baseline}
     expect(result.tddRef.status).toBe("current");
     expect(result.sidecars[0].status).toBe("current");
     expect(result.constraintsRaw).toContain("none surfaced");
+    expect(result.constraintsParsed).toBe(true);
+  });
+
+  // The constraints pass is agent-side, so a null constraintsRaw is
+  // indistinguishable from "no constraints listed" and skips a safety check
+  // silently. This flag makes an unparseable heading form visible (issue #34).
+  it("sets constraintsParsed false when Constraints is present but unparseable", async () => {
+    const repo = makeRepo("constraints-tripwire");
+    writeFileSync(join(repo, "auth.ts"), "export function a() {}\n");
+    git("add .", repo);
+    git('commit -m "init"', repo);
+    const baseline = git("rev-parse HEAD", repo);
+
+    // A third emphasis form we deliberately do not support — stands in for
+    // whatever Jira starts emitting next.
+    getIssue.mockResolvedValue({
+      key: "X-TRIP",
+      fields: {
+        description: [
+          "h2. Implementation Notes",
+          `Research baseline: my-repo@${baseline}`,
+          "",
+          "==Constraints:==",
+          "* something that will not parse",
+        ].join("\n"),
+      },
+    });
+
+    const result = await driftCheck("X-TRIP", { repoRoot: repo });
+    expect(result.constraintsRaw).toBeNull();
+    expect(result.constraintsParsed).toBe(false);
   });
 
   it("flags drift when a pattern's symbol has been removed", async () => {
