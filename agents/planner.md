@@ -96,7 +96,7 @@ Determine what the user provided:
 - Set `TDD_TITLE` from the file's first H1, and `TDD_BODY` to the file contents.
 - Resolve the GitHub origin and pin a SHA so links are immutable. Run in `TDD_REPO`:
   - `git config --get remote.origin.url` → parse `{org}/{repo}`. Store as `TDD_GITHUB_SLUG`.
-  - **Auto-commit the TDD body and any dirty sidecars** (so `TDD_SHA` matches the bodies that decomposition reads and that ticket URLs cite). Run `git -C {TDD_REPO} status --porcelain -- {TDD_PATH} docs/tdds/{TDD_SLUG}/`. If the output is non-empty, the TDD file and/or one or more sidecars under `docs/tdds/{TDD_SLUG}/` have uncommitted changes — every ticket would otherwise cite a SHA whose blobs do not contain those edits (TDD anchors won't match; per-Epic variant sidecar URLs would 404). Resolve before pinning:
+  - **Auto-commit the TDD body and any dirty sidecars** (so `TDD_SHA` matches the bodies that decomposition reads and that ticket URLs cite). Run `git -C {TDD_REPO} status --porcelain -- {TDD_PATH} docs/tdds/{TDD_SLUG}/`. If the output is non-empty, the TDD file and/or one or more sidecars under `docs/tdds/{TDD_SLUG}/` have uncommitted changes — every ticket would otherwise cite a SHA whose blobs do not contain those edits (TDD anchors won't match; sidecar URLs would 404). Resolve before pinning:
     1. `git -C {TDD_REPO} add -- {TDD_PATH} docs/tdds/{TDD_SLUG}/` (only the TDD file and its sidecar directory; do not stage other dirty paths).
     2. `git -C {TDD_REPO} commit -m "docs(tdd): snapshot {TDD_SLUG} for planner decomposition"`.
     3. Tell the user inline, listing the staged paths: `Auto-committed pending edits to {paths} so ticket URLs pin to the current bodies.`
@@ -205,12 +205,9 @@ Init has already run codebase pattern research per (capability, repo) pair and w
 For the first Epic:
 
 1. Look up its `repos` from Phase 2a.
-2. For each repo (keyed by `github_slug`) in that list, locate the sidecar. **Resolution order**:
-   1. **Per-Epic variant** at `{TDD_REPO}/docs/tdds/{TDD_SLUG}/{repo-name}.{EPIC_KEY}.research.md` — written by re-entry against a blocker's feature branch (see Phase 2c.5). Only applies when this Epic already has a Jira key (re-entry path); skipped on first decomposition. If present, prefer it over the init baseline.
-   2. **Init baseline** at `{TDD_REPO}/{REPO_MAP[github_slug].sidecar}` — the always-on fallback. **Owner mode, or consumer mode where the repo is in the consumer's `REPO_MAP`**: `Read` the local file. **Consumer mode, repo is *not* in the consumer's `REPO_MAP`**: the sidecar lives in the owner repo. Compose `OWNER_SIDECAR_URL = https://github.com/{OWNER_REPO}/blob/{OWNER_SHA}/docs/tdds/{TDD_SLUG}/{repo-name}.research.md` and fetch it via `gh api repos/{OWNER_REPO}/contents/docs/tdds/{TDD_SLUG}/{repo-name}.research.md?ref={OWNER_SHA} --jq .content | base64 -d`. Cache the body in memory for the run; do **not** write it to the consumer's working tree.
-   3. If neither lookup resolves, surface a research gap as described below.
+2. For each repo (keyed by `github_slug`) in that list, locate the sidecar at `{TDD_REPO}/{REPO_MAP[github_slug].sidecar}`. **Owner mode, or consumer mode where the repo is in the consumer's `REPO_MAP`**: `Read` the local file. **Consumer mode, repo is *not* in the consumer's `REPO_MAP`**: the sidecar lives in the owner repo. Compose `OWNER_SIDECAR_URL = https://github.com/{OWNER_REPO}/blob/{OWNER_SHA}/docs/tdds/{TDD_SLUG}/{repo-name}.research.md` and fetch it via `gh api repos/{OWNER_REPO}/contents/docs/tdds/{TDD_SLUG}/{repo-name}.research.md?ref={OWNER_SHA} --jq .content | base64 -d`. Cache the body in memory for the run; do **not** write it to the consumer's working tree. If the lookup doesn't resolve, surface a research gap as described below.
 3. Within the sidecar body, locate the H2 whose heading matches the first Epic's TDD section heading. Parse its `### Patterns to Follow` and `### Constraints` H3 subsections.
-4. Build `EPIC_PATTERNS` as a per-repo map: `{ github_slug → { patterns: [...], constraints: [...], sidecar_url: <permalink-or-local-path>, source: "init" | "epic-variant", base_sha: <sha-the-sidecar-pins-to> } }`. The `sidecar_url` is later used by Phase 5.0 when composing Implementation Notes for cross-repo citations — for owner-side sidecars fetched via `gh api`, every pattern citation in a consumer ticket should link to the owner's sidecar URL rather than embed the citation inline. `source` distinguishes the init baseline from a re-entry-time per-Epic variant; `base_sha` is what permalinks in this sidecar are pinned to (the repo's `initialized_sha` for init baselines; the blocker-branch SHA recorded in the variant's frontmatter for variants). Used in 2d, 2f, Phase 3, and Phase 5.0.
+4. Build `EPIC_PATTERNS` as a per-repo map: `{ github_slug → { patterns: [...], constraints: [...], sidecar_url: <permalink-or-local-path>, source: "init" | "blocker", base_sha: <sha-the-patterns-pin-to> } }`. The `sidecar_url` is later used by Phase 5.0 when composing Implementation Notes for cross-repo citations — for owner-side sidecars fetched via `gh api`, every pattern citation in a consumer ticket should link to the owner's sidecar URL rather than embed the citation inline. `source` is `"init"` here; Phase 2c.6 overwrites it with `"blocker"` for repos it re-researches against a blocker branch. `base_sha` is what permalinks in these patterns pin to (the repo's `initialized_sha` for init baselines; the blocker-branch SHA for blocker-grounded patterns). Used in 2d, 2f, Phase 3, and Phase 5.0.
 
 **If a sidecar lacks the Epic's H2** (or the H3 subsections are empty), that's a research gap: surface it to the user and recommend re-running `@planner init {slug}` to refresh that repo's sidecar. Do not proceed to write Gherkin or subtasks without grounding patterns from at least one repo — the per-ticket research in Phase 5.0 covers narrow, ticket-specific scope but relies on Epic-level patterns for context.
 
@@ -261,61 +258,21 @@ For each `github_slug` in the Epic's (or Story's parent Epic's) `**Repos**:` set
 
 Surface the resolution to the user during Phase 3 approval — they should know which repos are reading from a blocker branch vs. main, because the blocker branch is mutable until `/cleanup` runs and the Implementation Notes citations will need a `/refresh-research` pass after the blocker squash-merges.
 
-This `RESEARCH_BASE` map drives both 2c.6 (per-Epic sidecar variants) and Phase 5.0 (per-ticket Implementation Notes baseline).
+This `RESEARCH_BASE` map drives both 2c.6 (re-grounding Epic patterns) and Phase 5.0 (per-ticket Implementation Notes baseline).
 
 ---
 
-### 2c.6: Write Per-Epic Sidecar Variants (Re-entry Only)
+### 2c.6: Re-ground Epic Patterns on the Blocker Branch (Re-entry Only)
 
 **Skipped on first decomposition.** Only fires for re-entry where at least one repo's `RESEARCH_BASE[github_slug].blocker_key` is non-null.
 
-The intent: when re-entry retargets research to a blocker branch, the Epic-level patterns derived from that branch's code can differ meaningfully from the init baseline. We don't want to overwrite the init sidecar (other Epics in the same TDD share it and pin to its `initialized_sha`), so we write a **per-Epic variant file** alongside the init baseline.
-
-#### 2c.6a: Run Epic-scoped research against the retargeted cache
+The intent: when re-entry retargets research to a blocker branch, the Epic-level patterns derived from that branch's code can differ meaningfully from the init baseline. The init sidecar is left untouched — other Epics in the same TDD share it and pin to its `initialized_sha` — so the fresher patterns are held **in memory for this run only**. Nothing is written to disk: these patterns are design context for Gherkin and subtask shaping, and every durable citation a ticket carries is minted independently by Phase 5.0 against the same retargeted cache.
 
 For each `github_slug` whose `RESEARCH_BASE[github_slug].blocker_key` is non-null, re-run the Epic-level research protocol from Init Phase 3 — Explore subagent for breadth, Glob/Grep for targeted lookups — inside the cache directory now checked out at `RESEARCH_BASE[github_slug].sha`. Scope to the H2 capability sections of `TDD_BODY` whose `**Repos**:` declarations include this `github_slug` AND that are in scope for the current re-entry (just this Epic's section for Epic re-entry; the parent Epic's section for Story re-entry).
 
-Output is a narrower `REENTRY_RESEARCH: { capability_name → { github_slug → { patterns: [...], constraints: [...] } } }` keyed only by the retargeted repos. Repos that fell through to `origin/HEAD` use the init baseline as-is — no variant is written for them.
+Overwrite that repo's entry in `EPIC_PATTERNS` with the result, setting `source: "blocker"` and `base_sha: RESEARCH_BASE[github_slug].sha` so any permalink composed from these patterns pins to the blocker branch. Repos that fell through to `origin/HEAD` keep their init-baseline entry (`source: "init"`) untouched. Phase 2d / 2f / Phase 5.0 then read the blocker-grounded patterns automatically.
 
-#### 2c.6b: Compose and write the variant sidecar
-
-For each retargeted repo, compose the variant file with this shape:
-
-```markdown
----
-planner_variant:
-  source_epic: {EPIC_KEY}
-  base_repo: {github_slug}
-  base_ref: {RESEARCH_BASE[github_slug].ref}
-  base_sha: {RESEARCH_BASE[github_slug].sha}
-  blocker_key: {RESEARCH_BASE[github_slug].blocker_key}
-  generated_at: {ISO8601}
----
-
-# Research: {TDD_TITLE} ({github_slug}) — variant for {EPIC_KEY}
-
-> Companion variant to `{TDD_PATH}` for Epic `{EPIC_KEY}`, pinned to `{base_ref}@{base_sha}` ({blocker_key} feature branch).
-> The init baseline at `{repo_name}.research.md` remains the canonical reference for other Epics that share this repo.
-> Re-run `@planner {EPIC_KEY}` (or the relevant Story re-entry) to refresh after `{blocker_key}` lands on main and `/cleanup` runs.
-
-## {Capability Heading}
-
-### Patterns to Follow
-
-- **{Pattern}** — `{symbol}` in [{path}#L{start}-L{end}](https://github.com/{github_slug}/blob/{base_sha}/{path}#L{start}-L{end}) — {why}
-
-### Constraints
-
-- {anti-pattern or in-flight migration} — {permalink if anchored}
-```
-
-Write to `{TDD_REPO}/docs/tdds/{TDD_SLUG}/{repo_name}.{EPIC_KEY}.research.md` via `Write`. If a variant for this `(repo, EPIC_KEY)` already exists (re-entry of a re-entry), show the diff and prompt to overwrite — same pattern as the init sidecar overwrite prompt.
-
-The variant is **per-Epic, not per-Story**: a Story re-entry that walks up to its parent Epic's blocker writes the variant under the parent Epic's key, not the Story's. This keeps the variant count proportional to Epics-with-blockers, not Stories-with-blockers, and lets multiple Stories under the same parent Epic share the variant.
-
-After writing, refresh `EPIC_PATTERNS` in memory by re-running Phase 2c's resolution order — the variant now wins for retargeted repos. Phase 2d / 2f / Phase 5.0 then use the variant-grounded patterns automatically.
-
-**Auto-commit and re-pin `TDD_SHA`.** The variant files are new on disk but not yet in git, so any `sidecar_url` minted off the current `TDD_SHA` would 404. Run `git -C {TDD_REPO} add -- docs/tdds/{TDD_SLUG}/`, then `git -C {TDD_REPO} commit -m "docs(tdd): variant sidecars for {EPIC_KEY}"` covering only the variants just written (and any concurrent dirty paths under `docs/tdds/{TDD_SLUG}/` — same scope as Phase 1b/re-entry's auto-commit). Then re-resolve `TDD_SHA = git rev-parse HEAD` and rebuild `TDD_BLOB_BASE`. Tell the user inline what was committed. Phase 2c's `EPIC_PATTERNS[github_slug].sidecar_url` for each retargeted repo must be regenerated against the new `TDD_BLOB_BASE` so Phase 5.0's cross-repo `*See owner sidecar*` lines and Phase 3's "sidecars referenced" list resolve to live blobs.
+Because nothing is written, there is no artifact to commit and `TDD_SHA` does not move. Note in Phase 3's approval output which repos were re-grounded and against which blocker, so the user knows those patterns came from a branch that stays mutable until `/cleanup` runs.
 
 ---
 
@@ -447,9 +404,9 @@ A ticket is also stale if its referenced TDD section/heading no longer exists in
 
 Not every unmatched ticket should be pruned. Apply these rules:
 
-- **Skip if status category is "done"**: shipped work stays in history. Note it as "obsolete but shipped" — the user may want to /prune just to update labels, but no merge revert is needed.
-- **Skip if `ClaudeNeedsReview` or `ClaudePRApproved`**: ticket is mid-flight to merge. Flag for user judgment, don't recommend prune.
-- **Skip if `ClaudePruned` already present**: already pruned, ignore.
+- **Skip if status category is "done"**: shipped work stays in history. Note it as "obsolete but shipped" — the user may want to /prune just to update its state, but no merge revert is needed.
+- **Skip if the ticket is mid-flight to merge**: it has an open PR, its status is review-flavored (`In Review`, `Code Review`, `Review`), or it carries `ClaudePRApproved`. Flag for user judgment, don't recommend prune. To check for an open PR, run `gh pr list --state open --head {KEY} --json number,url` in the ticket's repo (feature branches are named after the ticket key per `commands/ticket-work.md`); treat a `gh` failure as "unknown, no open PR".
+- **Skip if status is `Cancelled`**: already pruned (`/prune` transitions the ticket to Cancelled), ignore.
 - **Otherwise** (no progress / planning / executing / stack-ready / failed): candidate for `/prune`.
 
 #### 2.5d: Surface Stale Tickets in Phase 3
@@ -570,9 +527,9 @@ These tickets are obsolete in the current TDD but already shipped — no action 
 
 ### In-Flight, Manual Judgment Needed
 
-These tickets are mid-merge (`ClaudeNeedsReview` / `ClaudePRApproved`). Decide before pruning:
+These tickets are mid-merge (open PR, review status, or `ClaudePRApproved`). Decide before pruning:
 
-- **{KEY}**: {summary} — {label} — {reason}
+- **{KEY}**: {summary} — {open PR #N | status | ClaudePRApproved} — {reason}
 ```
 
 Ask the user: "Does this decomposition look right? I can adjust Epics, Stories, dependencies, or subtasks. The patterns and constraints summarized above live in each repo's sidecar (written by init); if any look stale or wrong, run `@planner init {slug}` again to refresh the affected repo sidecars before I create tickets. Stale Jira tickets are surfaced for `/prune` — I won't touch them automatically."
@@ -641,7 +598,7 @@ For each ticket about to be created:
 
 1. Identify the ticket's specific scope — the Story's Gherkin scenario, or the Subtask's single layer/concern. Determine its primary repo (a `github_slug` from `REPO_MAP`) and any secondary repos if the work is genuinely cross-repo. Skeleton Epics skip per-ticket research (they get re-researched on re-entry).
 2. Form 2–4 narrow research questions targeting *this* slice (e.g., "where do similar mutations live?", "what's the existing validation pattern for this kind of input?", "what tests would I extend?"). Scope each question to the relevant repo.
-3. Run the research using the same toolchain as Phase 2c (Explore subagent for breadth, Glob/Grep for targeted lookups), running the searches inside each touched repo's **clone cache directory** (`{REPO_MAP[github_slug].cache_dir}`). The cache may already be checked out at a blocker-branch SHA from Phase 2c.5 (re-entry path) — research reads whatever is on disk, so retargeted repos automatically ground their per-ticket research in the blocker's code. Reuse insights from `EPIC_PATTERNS[github_slug]` (which now reflects the per-Epic variant for retargeted repos, per Phase 2c.6) where applicable; don't redo identical work.
+3. Run the research using the same toolchain as Phase 2c (Explore subagent for breadth, Glob/Grep for targeted lookups), running the searches inside each touched repo's **clone cache directory** (`{REPO_MAP[github_slug].cache_dir}`). The cache may already be checked out at a blocker-branch SHA from Phase 2c.5 (re-entry path) — research reads whatever is on disk, so retargeted repos automatically ground their per-ticket research in the blocker's code. Reuse insights from `EPIC_PATTERNS[github_slug]` (which for retargeted repos is already blocker-grounded, per Phase 2c.6) where applicable; don't redo identical work.
    - **Cross-repo cited from a non-cached repo (consumer mode only)**: if a ticket needs to reference a pattern in a repo the consumer didn't research locally (no entry in the consumer's `REPO_MAP`), do **not** clone that repo. Instead, link to the owner's sidecar URL recorded in `EPIC_PATTERNS[github_slug].sidecar_url` (resolved in Phase 2c). The Implementation Notes block uses a single `*See owner sidecar:* [{repo}]({sidecar_url})` line for that repo and skips per-pattern permalinks for it; the consumer is not expected to ground research it didn't run.
 
 #### 5.0b: Capture the Research SHA
@@ -1400,17 +1357,16 @@ When invoked with a Jira Epic key (instead of a TDD path):
 1. Fetch the Epic via `mcp__atlassian__getJiraIssue`. Set `EPIC_KEY` from the input.
 2. Extract the TDD reference from its description (look for `Repo path: {TDD_PATH}#{anchor}` first, fall back to parsing the linked URL). Set `TDD_PATH`, `TDD_REPO`, `TDD_GITHUB_SLUG`.
 3. Use `Read` to load the TDD; locate the section by anchor or heading. Set `TDD_BODY`, `TDD_TITLE`, `TDD_SLUG`. Run **Init Gate** (Phase 1b.i): the TDD frontmatter must have a non-empty `repos:` array. Parse it into `REPO_MAP` (slug-keyed, with `cache_dir` resolved per Phase 1b).
-3a. Auto-commit the TDD body and any dirty sidecars (same protocol as Phase 1b owner mode, so per-Epic variant URLs minted later in this run resolve cleanly): `git -C {TDD_REPO} status --porcelain -- {TDD_PATH} docs/tdds/{TDD_SLUG}/`; if non-empty, `git add -- {TDD_PATH} docs/tdds/{TDD_SLUG}/` then `git commit -m "docs(tdd): snapshot {TDD_SLUG} for planner re-entry on {EPIC_KEY}"` and tell the user inline (listing staged paths). Then re-resolve `TDD_SHA = git rev-parse HEAD` in `TDD_REPO` and rebuild `TDD_BLOB_BASE`. For each repo in `REPO_MAP`, run `git -C {cache_dir} fetch --quiet origin` to refresh the cache. Don't check out `origin/HEAD` yet — the next step may retarget the cache to a blocker branch instead.
+3a. Auto-commit the TDD body and any dirty sidecars (same protocol as Phase 1b owner mode, so sidecar URLs minted later in this run resolve cleanly): `git -C {TDD_REPO} status --porcelain -- {TDD_PATH} docs/tdds/{TDD_SLUG}/`; if non-empty, `git add -- {TDD_PATH} docs/tdds/{TDD_SLUG}/` then `git commit -m "docs(tdd): snapshot {TDD_SLUG} for planner re-entry on {EPIC_KEY}"` and tell the user inline (listing staged paths). Then re-resolve `TDD_SHA = git rev-parse HEAD` in `TDD_REPO` and rebuild `TDD_BLOB_BASE`. For each repo in `REPO_MAP`, run `git -C {cache_dir} fetch --quiet origin` to refresh the cache. Don't check out `origin/HEAD` yet — the next step may retarget the cache to a blocker branch instead.
 3b. Run **Phase 2c.5** (Resolve Research Base from Blocker) scoped to `EPIC_KEY`. This identifies the closest stack-container blocker (if any), per-repo retargets each cache to `origin/{BLOCKER_BRANCH}` where it exists, and falls back to `origin/HEAD` otherwise. Output is `RESEARCH_BASE: { github_slug → { ref, sha, blocker_key } }`. Caches are now checked out at the resolved SHA per repo.
-3c. If any repo's `RESEARCH_BASE[github_slug].blocker_key` is non-null, run **Phase 2c.6** (Write Per-Epic Sidecar Variants) scoped to `EPIC_KEY`. This runs Epic-level research against the retargeted caches and writes `{TDD_REPO}/docs/tdds/{TDD_SLUG}/{repo_name}.{EPIC_KEY}.research.md` for each retargeted repo. The init baseline sidecar is **not** modified.
-4. Run Phase 2c (read patterns from sidecars) scoped to this Epic. Use the Epic's TDD section to find its `**Repos**:` GitHub slugs; for each slug, apply the Phase 2c resolution order (per-Epic variant for `EPIC_KEY` first, init baseline second). Build `EPIC_PATTERNS` as a per-repo map keyed by `github_slug` — for retargeted repos, patterns are sourced from the variant written in step 3c; for fall-through repos, from the init baseline.
+4. Run Phase 2c (read patterns from sidecars) scoped to this Epic. Use the Epic's TDD section to find its `**Repos**:` GitHub slugs. Build `EPIC_PATTERNS` as a per-repo map keyed by `github_slug` from each repo's init-baseline sidecar. Then, if any repo's `RESEARCH_BASE[github_slug].blocker_key` is non-null, run **Phase 2c.6** to re-ground those repos' entries against the blocker branch in memory — the init baseline sidecar is **not** modified and nothing is written to disk.
 5. Run Phase 2d-2f (write Gherkin, determine Story dependencies, assess complexity with pattern citations) scoped to just this Epic. **Lazy rule still applies**: within this Epic, only the parallel-startable Stories are fleshed; downstream Stories are created as skeletons and re-entered later via `@planner STORY-KEY`. Phase 2f's repo-seam guidance applies: prefer subtasks scoped to a single `github_slug` where possible.
 6. Run **Phase 2.5: Stale Ticket Detection** scoped to existing children of this Epic — anything that doesn't map to a scenario in the new decomposition is surfaced for `/prune`
 7. Run Phase 3 (present for approval) showing only this Epic's decomposition with dependency graph, sidecars-referenced section (per-repo, all under `{TDD_REPO}/docs/tdds/{TDD_SLUG}/`), the resolved `RESEARCH_BASE` (so the user sees which repos pin to a blocker branch vs. main), and any stale-ticket recommendations.
 8. Run Phase 4 (compute anchors for any new Stories)
 9. Run Phase 5c-5f (create Full Stories with subtasks + Implementation Notes; create Skeleton Stories without; link dependencies under the existing Epic). Phase 5.0's per-ticket research uses the already-retargeted caches automatically; the Implementation Notes baseline line records each repo's `blocker_key` provenance.
 10. Update the Epic description to replace the "Skeleton" status with the full Gherkin and story list. The Epic's description does **not** carry a "Patterns" section — those live in the per-repo sidecars and feed each ticket's Implementation Notes via Phase 5.0.
-11. Display summary with dependency info (parallel width, sequential chains), the `RESEARCH_BASE` resolution per repo, the variant sidecars written (if any), and stale-ticket recommendations. If any variant sidecars were written, prompt the user to commit them in `TDD_REPO` (alongside any other re-entry deliverables).
+11. Display summary with dependency info (parallel width, sequential chains), the `RESEARCH_BASE` resolution per repo (noting which repos were re-grounded on a blocker branch), and stale-ticket recommendations.
 
 ---
 
@@ -1428,14 +1384,13 @@ When invoked with a Jira Story key (the Story was created as a skeleton in a pri
    Default to abort.
 3. Extract the TDD reference from the Story description. Set `TDD_PATH`, `TDD_REPO`, `TDD_GITHUB_SLUG`.
 4. Use `Read` to load the TDD. Set `TDD_BODY`, `TDD_TITLE`, `TDD_SLUG`. Run **Init Gate** (Phase 1b.i): the TDD frontmatter must have a non-empty `repos:` array. Parse it into `REPO_MAP` (slug-keyed, with `cache_dir` resolved per Phase 1b).
-5. Auto-commit the TDD body and any dirty sidecars (same protocol as Phase 1b owner mode, so per-Epic variant URLs minted later in this run resolve cleanly): `git -C {TDD_REPO} status --porcelain -- {TDD_PATH} docs/tdds/{TDD_SLUG}/`; if non-empty, `git add -- {TDD_PATH} docs/tdds/{TDD_SLUG}/` then `git commit -m "docs(tdd): snapshot {TDD_SLUG} for planner re-entry on {STORY_KEY}"` and tell the user inline (listing staged paths). Then re-resolve `TDD_SHA = git rev-parse HEAD` in `TDD_REPO` and rebuild `TDD_BLOB_BASE`. For each repo in `REPO_MAP`, run `git -C {cache_dir} fetch --quiet origin`. Don't check out yet — Phase 2c.5 may retarget per-repo to a blocker branch.
+5. Auto-commit the TDD body and any dirty sidecars (same protocol as Phase 1b owner mode, so sidecar URLs minted later in this run resolve cleanly): `git -C {TDD_REPO} status --porcelain -- {TDD_PATH} docs/tdds/{TDD_SLUG}/`; if non-empty, `git add -- {TDD_PATH} docs/tdds/{TDD_SLUG}/` then `git commit -m "docs(tdd): snapshot {TDD_SLUG} for planner re-entry on {STORY_KEY}"` and tell the user inline (listing staged paths). Then re-resolve `TDD_SHA = git rev-parse HEAD` in `TDD_REPO` and rebuild `TDD_BLOB_BASE`. For each repo in `REPO_MAP`, run `git -C {cache_dir} fetch --quiet origin`. Don't check out yet — Phase 2c.5 may retarget per-repo to a blocker branch.
 6. Fetch the parent Epic via `mcp__atlassian__getJiraIssue` (read the Epic Link field on the Story). Set `EPIC_KEY` from the parent. The Epic's TDD section carries the `**Repos**:` declaration (GitHub slugs) that determines which sidecars apply to this Story. If the Story's actual scope only touches a subset of the Epic's repos, scope subsequent steps to that subset.
 6a. Run **Phase 2c.5** (Resolve Research Base from Blocker) using the **parent Epic's** `is blocked by` graph (per Phase 2c.5a's Story-re-entry rule, which walks up to the parent Epic). Output is `RESEARCH_BASE: { github_slug → { ref, sha, blocker_key } }` scoped to the touched repos. Caches are now checked out at the resolved SHA per repo.
-6b. If any repo's `RESEARCH_BASE[github_slug].blocker_key` is non-null AND a per-Epic variant for `EPIC_KEY` does not already exist at `{TDD_REPO}/docs/tdds/{TDD_SLUG}/{repo_name}.{EPIC_KEY}.research.md`, run **Phase 2c.6** (Write Per-Epic Sidecar Variants) scoped to `EPIC_KEY`. The variant is keyed by the parent Epic, so multiple Story re-entries under the same parent share it — if the variant already exists from a prior Epic re-entry or sibling Story re-entry, **skip the write** and proceed (the existing variant is still valid as long as the same blocker is in flight). If the existing variant's frontmatter `blocker_key` differs from the current `RESEARCH_BASE[github_slug].blocker_key`, that's a sign the blocker context shifted — show the diff and prompt to overwrite.
-7. Run Phase 2c (read patterns from sidecars) using the resolution order (per-Epic variant for `EPIC_KEY` first, init baseline second). Build `EPIC_PATTERNS` per repo. Treat sidecar entries as background context; per-ticket research will re-pin permalinks to the retargeted SHA in step 9.
+7. Run Phase 2c (read patterns from sidecars) to build `EPIC_PATTERNS` per repo from each repo's init-baseline sidecar. Then, if any repo's `RESEARCH_BASE[github_slug].blocker_key` is non-null, run **Phase 2c.6** to re-ground those entries against the blocker branch in memory (scoped to the parent Epic's capability sections). Treat sidecar entries as background context; per-ticket research will re-pin permalinks to the retargeted SHA in step 9.
 8. Run Phase 2d (write full Gherkin) scoped to **just this Story's scenario**. Don't extend the Gherkin to other Stories of the parent Epic — they may already be Full or are someone else's job to flesh later.
 9. Run Phase 2f (assess subtasks for this single Story). Apply the repo-seam guidance: split subtasks along single-`github_slug` boundaries where possible.
 10. Run Phase 5.0 (per-ticket research) to produce the Story's Implementation Notes block. Research runs in each touched repo's `cache_dir` (now at the retargeted SHA). The block's `Research baseline:` line lists each touched `github_slug`, its current SHA, and the `blocker_key` provenance per Phase 5.0c.
 11. Run Phase 5.0 per subtask (each subtask scoped to its primary `github_slug`'s cache), then create the subtasks via Phase 5e and link their dependencies via Phase 5f.
 12. Update the Story description: replace the `h2. Status: Skeleton` block with the full `h2. Acceptance Criteria` (Gherkin), `h2. Implementation Notes`, and any other sections from the Full Story template. Preserve the existing TDD Reference and Epic link.
-13. Display a summary: the new full Story key, its created subtasks, dependency graph among subtasks, the Implementation Notes baseline (per-repo SHAs + `blocker_key` provenance), and — if a variant sidecar was written or an existing variant was reused — the variant's path. Note that any *downstream* skeleton Stories in the Epic are still skeletons and will be re-entered when their own blockers close. If a new variant was written, prompt the user to commit it in `TDD_REPO`.
+13. Display a summary: the new full Story key, its created subtasks, dependency graph among subtasks, and the Implementation Notes baseline (per-repo SHAs + `blocker_key` provenance, noting which repos were re-grounded on a blocker branch). Note that any *downstream* skeleton Stories in the Epic are still skeletons and will be re-entered when their own blockers close.

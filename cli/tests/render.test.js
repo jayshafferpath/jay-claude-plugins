@@ -193,7 +193,7 @@ describe("renderVerbose", () => {
     const output = renderVerbose(ticket);
     expect(output).toContain("PR:         —");
     expect(output).toContain("Blocked by: T-0");
-    expect(output).toContain("state inferred from Jira labels");
+    expect(output).toContain("state inferred from Jira + PR state");
   });
 
   it("renders execPlan and reviewPlan extras", () => {

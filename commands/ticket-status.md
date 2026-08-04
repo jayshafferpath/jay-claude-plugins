@@ -12,7 +12,7 @@ Show the full lifecycle state of a single Jira ticket managed through the Claude
 
 `$ARGUMENTS`
 
-Required: a Jira ticket key (e.g., `PROJ-123`). The ticket does not need to be in your active queue — terminal states (Done, ClaudePruned, ClaudeStackComplete) are reported too.
+Required: a Jira ticket key (e.g., `PROJ-123`). The ticket does not need to be in your active queue — terminal states (Done, Cancelled, ClaudeStackComplete) are reported too.
 
 ## Step 1: Validate
 

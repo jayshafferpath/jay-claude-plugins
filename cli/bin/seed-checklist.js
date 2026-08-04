@@ -78,11 +78,10 @@ async function seedSteps() {
   const prExists = prInfo !== null && prInfo.state === "OPEN";
 
   const hasLabel = (l) => labels.includes(l);
-  const hasAny = (...ls) => ls.some(hasLabel);
 
   if (prExists) {
     for (let i = 0; i < 9; i++) steps[i] = true;
-  } else if (hasAny("ClaudePRApproved", "ClaudeNeedsReview")) {
+  } else if (hasLabel("ClaudePRApproved")) {
     for (let i = 0; i < 7; i++) steps[i] = true;
   } else if (hasLabel("ClaudeStackReady")) {
     for (let i = 0; i < 6; i++) steps[i] = true;

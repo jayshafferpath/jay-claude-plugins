@@ -17,13 +17,18 @@ const FIELDS = [
 
 // JQL queries that drive the eligible-tickets discovery (Q2 in ticket-work).
 // Kept as pure constants so they can be inspected/tested without hitting Jira.
+//
+// The old `NOT IN ("ClaudeNeedsReview", ...)` clauses are gone: progress
+// labels are mutually exclusive (setTicketState clears the others), so a
+// ticket selected by ClaudeReady/ClaudeExecuting/ClaudePRApproved could never
+// also carry the excluded label. Review state is read from the PR, not JQL.
 export const QUEUE_QUERIES = Object.freeze({
   readyForPlanning:
-    'labels = "ClaudeReady" AND labels NOT IN ("ClaudeExecuting", "ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()',
+    'labels = "ClaudeReady" AND statusCategory != Done AND assignee = currentUser()',
   readyParents:
     'labels = "ClaudeReady" AND issueType IN (Story, Task) AND assignee = currentUser()',
   inFlight:
-    'labels IN ("ClaudeExecuting", "ClaudePRApproved") AND labels NOT IN ("ClaudeNeedsReview", "ClaudeFailed") AND assignee = currentUser()',
+    'labels IN ("ClaudeExecuting", "ClaudePRApproved") AND statusCategory != Done AND assignee = currentUser()',
 });
 
 // Pure helper. Given a parent issue and its subtask issue, build the labels
@@ -151,7 +156,7 @@ export async function promoteDownstream({ repoRoot } = {}) {
       const labels = entry.labels || [];
       // Don't re-promote tickets already in motion or finished.
       if (PROGRESS_LABELS.some((l) => labels.includes(l))) continue;
-      if (isFinished(labels, undefined)) continue;
+      if (isFinished(labels, undefined, { inReview: entry.inReview })) continue;
       if (entry.key === ticket.key) continue;
       try {
         await editIssue(entry.key, { labels: [{ add: "ClaudeReady" }] });
@@ -167,7 +172,7 @@ export async function promoteDownstream({ repoRoot } = {}) {
 
     // Detect stack completion (Q7c). isFinished is the gate.
     const allFinished = stack.stack.every((s) =>
-      isFinished(s.labels, undefined),
+      isFinished(s.labels, undefined, { inReview: s.inReview }),
     );
     if (
       allFinished &&

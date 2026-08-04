@@ -21,7 +21,10 @@ const {
   getMergedPrMap,
   isAncestor,
   isMergedInto,
+  isRevertedOn,
+  isSameCommit,
   isShaAncestorOf,
+  isTicketMergeRevertedOn,
   resolveMergedTag,
   getStageCommits,
   hasStageCommit,
@@ -387,6 +390,137 @@ describe("isShaAncestorOf", () => {
     // The sha must NOT be origin/-prefixed (it isn't a branch), but the target
     // must be — that asymmetry is the whole point of this helper.
     expect(cmd).toContain("--is-ancestor abc123 origin/NEV-1352");
+  });
+});
+
+describe("isSameCommit", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when any argument is falsy", () => {
+    expect(isSameCommit(null, "main", "/repo")).toBe(false);
+    expect(isSameCommit("NEV-1", null, "/repo")).toBe(false);
+    expect(isSameCommit("NEV-1", "main", null)).toBe(false);
+  });
+
+  it("returns true when both branches resolve to the same commit", () => {
+    execSync.mockReturnValue("abc123\n");
+    expect(isSameCommit("NEV-1441", "NEV-1352", "/repo")).toBe(true);
+  });
+
+  it("returns false when the tips differ", () => {
+    execSync.mockReturnValueOnce("abc123\n").mockReturnValueOnce("def456\n");
+    expect(isSameCommit("NEV-1441", "NEV-1352", "/repo")).toBe(false);
+  });
+
+  it("returns false when either rev-parse fails", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("unknown revision");
+    });
+    expect(isSameCommit("NEV-1441", "NEV-1352", "/repo")).toBe(false);
+  });
+
+  it("compares both refs origin-prefixed", () => {
+    execSync.mockReturnValue("abc123\n");
+    isSameCommit("NEV-1441", "NEV-1352", "/repo");
+    expect(execSync.mock.calls[0][0]).toContain("origin/NEV-1441^{commit}");
+    expect(execSync.mock.calls[1][0]).toContain("origin/NEV-1352^{commit}");
+  });
+});
+
+describe("isRevertedOn", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when any argument is falsy", () => {
+    expect(isRevertedOn(null, "main", "/repo")).toBe(false);
+    expect(isRevertedOn("abc123", null, "/repo")).toBe(false);
+    expect(isRevertedOn("abc123", "main", null)).toBe(false);
+  });
+
+  it("returns false when no revert commit references the sha", () => {
+    execSync.mockReturnValue("");
+    expect(isRevertedOn("abc123", "NEV-1352", "/repo")).toBe(false);
+  });
+
+  it("returns true when a revert of the sha is on the target branch", () => {
+    // First call finds the revert; the recursive check for a re-land finds none.
+    execSync.mockReturnValueOnce("revert1\n").mockReturnValueOnce("");
+    expect(isRevertedOn("abc123", "NEV-1352", "/repo")).toBe(true);
+  });
+
+  it("returns false when the revert was itself reverted (re-landed)", () => {
+    execSync
+      .mockReturnValueOnce("revert1\n") // abc123 was reverted by revert1
+      .mockReturnValueOnce("revert2\n") // ...but revert1 was reverted by revert2
+      .mockReturnValueOnce(""); // revert2 still stands
+    expect(isRevertedOn("abc123", "NEV-1352", "/repo")).toBe(false);
+  });
+
+  it("greps the target branch for git's revert trailer", () => {
+    execSync.mockReturnValue("");
+    isRevertedOn("abc123", "NEV-1352", "/repo");
+    const cmd = execSync.mock.calls[0][0];
+    expect(cmd).toContain("git log origin/NEV-1352");
+    expect(cmd).toContain('--grep="This reverts commit abc123"');
+  });
+
+  it("terminates on a pathological revert chain instead of recursing without bound", () => {
+    // Every lookup reports another revert. Real history can't do this (a commit
+    // cannot revert itself), but a rewritten history could, and without the
+    // depth guard this would recurse until the stack blew. The guard bounds the
+    // walk; the boolean it settles on is parity-dependent and not meaningful
+    // here, so this asserts termination rather than a specific verdict.
+    execSync.mockReturnValue("revert-loop\n");
+    expect(() => isRevertedOn("abc123", "NEV-1352", "/repo")).not.toThrow();
+    expect(execSync.mock.calls.length).toBeLessThan(20);
+  });
+});
+
+describe("isTicketMergeRevertedOn", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when any argument is falsy", () => {
+    expect(isTicketMergeRevertedOn(null, "main", "/repo")).toBe(false);
+    expect(isTicketMergeRevertedOn("NEV-1", null, "/repo")).toBe(false);
+    expect(isTicketMergeRevertedOn("NEV-1", "main", null)).toBe(false);
+  });
+
+  it("returns false when no revert mentions the ticket", () => {
+    execSync.mockReturnValue("");
+    expect(isTicketMergeRevertedOn("NEV-1441", "NEV-1352", "/repo")).toBe(
+      false,
+    );
+  });
+
+  it("returns true when a standing revert names the ticket", () => {
+    execSync.mockReturnValueOnce("d932d73\n").mockReturnValueOnce("");
+    expect(isTicketMergeRevertedOn("NEV-1441", "NEV-1352", "/repo")).toBe(true);
+  });
+
+  it("returns false when the revert was itself reverted (re-landed)", () => {
+    execSync
+      .mockReturnValueOnce("d932d73\n") // the revert of NEV-1441
+      .mockReturnValueOnce("relanded\n"); // ...which was itself reverted
+    expect(isTicketMergeRevertedOn("NEV-1441", "NEV-1352", "/repo")).toBe(
+      false,
+    );
+  });
+
+  it("requires both the revert trailer and the ticket key", () => {
+    execSync.mockReturnValue("");
+    isTicketMergeRevertedOn("NEV-1441", "NEV-1352", "/repo");
+    const cmd = execSync.mock.calls[0][0];
+    expect(cmd).toContain("git log origin/NEV-1352");
+    expect(cmd).toContain('--grep="This reverts commit"');
+    expect(cmd).toContain('--grep="NEV-1441"');
+    // Without --all-match, git ORs the greps and an ordinary commit merely
+    // mentioning the ticket would read as a revert.
+    expect(cmd).toContain("--all-match");
   });
 });
 

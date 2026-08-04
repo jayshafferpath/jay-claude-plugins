@@ -18,6 +18,8 @@ allowed-tools:
   - Bash(post-review-summary *)
   - Bash(seed-checklist *)
   - Bash(append-activity *)
+  - Bash(set-ticket-state *)
+  - Bash(transition-jira *)
   - Read
   - Write
   - Skill
@@ -34,9 +36,24 @@ Idempotent — reads checklist state and resumes from wherever it left off.
 - **With arguments**: Run a single ticket (or expand a Story to its subtasks and run them in parallel).
 - **Without arguments**: Discover all eligible tickets from Jira and process them (queue mode).
 
+## Shell command shape
+
+Every command block in this skill is one Bash tool call. Never chain with `&&`, `||`, or `;`. The permission engine can't statically match compound commands, so chaining breaks per-tool allowlist rules (e.g. `Bash(stage-squash:*)`) and forces prompts.
+
+- For git operations that need a specific directory, use `git -C {DIR} <cmd>` — never `cd {DIR} && git <cmd>`.
+- A standalone `cd {WORK_DIR}` step is one call; do not append the next step onto it with `&&`. Bash cwd persists across tool calls in a session, so subsequent commands run in `{WORK_DIR}` without any further cd.
+- For non-git CLIs (e.g. `stage-squash`, `append-activity`, `ensure-pr`) that must run inside a repo, do the `cd {WORK_DIR}` once as its own step (or rely on the session's persistent cwd) and invoke the CLI on its own line.
+
 ## Label Reference
 
-The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`, `TERMINAL_LABELS`). Progress flow is roughly: `ClaudeReady` → `ClaudeDriftChecked` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → `ClaudePRApproved` → `ClaudeNeedsReview` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every transition — it consults `PROGRESS_LABELS` to clear the previous state automatically, and `LABEL_TO_STATUS_TRANSITIONS` to move the Jira workflow status when applicable (currently: `ClaudeNeedsReview` → "In Review"). When no matching workflow transition exists the label change still applies and the CLI emits a warning.
+The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`). Progress flow is: `ClaudeReady` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → `ClaudePRApproved` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every progress transition — it consults `PROGRESS_LABELS` to clear the previous state automatically. It does **not** touch the Jira workflow status.
+
+A state earns a label only when another process (a peer agent, a JQL query, a human handing work back) has no cheaper way to see it. Anything derivable from git, the GitHub PR, or the checklist is read from that source instead:
+
+- **"Out for review"** is not a label — an open PR is the signal, and the Jira *status* is its JQL-queryable stand-in. On PR push run `transition-jira {KEY} --event review`; it is best-effort, so a workflow with no matching transition leaves the status alone and still succeeds. `resolve-stack` surfaces `entry.inReview` / `entry.openPr` for readers, and `isReviewStatus(statusName)` is the Jira-only fallback.
+- **"Drift checked"** is not a label — `drift-check` compares the research baseline SHA against the code at HEAD, so re-running it is idempotent and cheap.
+- **"Phase-1 cleanup ran"** is not a label — the `merged/{KEY}` git tag created by `/cleanup` Step 2d is the durable record.
+- **"Cancelled"** is not a label — `/prune` moves the Jira status instead.
 
 ### Complexity Tiers
 
@@ -115,7 +132,8 @@ If the issue type is `Epic` (and Mode C did not trigger above), do **not** expan
 1. Run the **Stack Context Resolution** sub-procedure with `KEY={EPIC_KEY}` and `FETCH=true`. This produces `STACK_ORDER` (topologically sorted) and the container fields.
 2. Walk `STACK_ORDER` in order and pick the **first** entry where:
    - `entry.eligible === true`, AND
-   - the entry does not already carry any progress label from `PROGRESS_LABELS` (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`).
+   - the entry does not already carry any progress label from `PROGRESS_LABELS` (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeFailed`), AND
+   - `entry.inReview !== true` — `resolve-stack` sets this (and populates `entry.openPr`) when the ticket has an open PR or a review-state Jira status. Those tickets are out for review, not waiting for work.
    Call this `NEXT_KEY`.
 3. If no entry qualifies:
    - If every entry is finished (per `isFinished()` — i.e. `mergedIntoFeature` or `mergedIntoMain` for each), the Epic is effectively complete. Display "Epic {EPIC_KEY} has no unblocked work — all tickets finished. Run `/ticket-work {EPIC_KEY}` again once `ClaudeStackComplete` is set, or apply the label manually to trigger Mode C." and **stop**.
@@ -127,7 +145,7 @@ If the issue type is `Epic` (and Mode C did not trigger above), do **not** expan
 
 ### Standard ticket resolution
 
-If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, or `ClaudeFailed`). If not a parent, use the ticket directly.
+If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, or `ClaudeFailed` — this is `SUBTASK_EXCLUSION_LABELS` in `cli/lib/labels.js`). If not a parent, use the ticket directly.
 
 ### Inherit from Parent (subtasks only)
 
@@ -199,7 +217,7 @@ The gate is self-healing: if a ticket is merged-into-feature but lacks its tag, 
 
 1. **Bulk-fetch existing tags** in one network round trip:
    ```bash
-   cd {REPO_ROOT} && git ls-remote origin 'refs/tags/merged/*'
+   git -C {REPO_ROOT} ls-remote origin 'refs/tags/merged/*'
    ```
    Parse each line `<sha>\trefs/tags/merged/{KEY}` into a set `EXISTING_TAGS = { KEY, ... }`. If the command fails (network), display the error and **stop** — we cannot reason about prerequisites without the tag list.
 
@@ -215,7 +233,7 @@ The gate is self-healing: if a ticket is merged-into-feature but lacks its tag, 
    - Use the `Skill` tool to run skill `cleanup` with args `{entry.key} --yes --no-rebase --no-refresh-feature`.
      - `--yes` skips the confirmation prompt.
      - `--no-rebase --no-refresh-feature` keep the cleanup focused on tag creation. Cascade work is the calling command's responsibility (or `/orchestrate`'s) — this sub-procedure just unblocks the stack gate.
-   - Re-probe the tag: `cd {REPO_ROOT} && git ls-remote origin refs/tags/merged/{entry.key}`.
+   - Re-probe the tag: `git -C {REPO_ROOT} ls-remote origin refs/tags/merged/{entry.key}`.
    - If still empty, `/cleanup` refused to create the tag (typically because its own Step 2 verification failed — no merged PR found, or MERGE_SHA not reachable from `origin/{MERGE_TARGET}`). Display:
 
      ```
@@ -264,7 +282,7 @@ This sub-procedure is parameterized and called from both **S4.8–S4.10** (per-t
 | `JIRA_KEY` | `TICKET_KEY` | `CONTAINER_KEY` |
 | `STORAGE` | Jira checklist via `sync-checklist` | local file `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md` |
 | `MARK_READY` | `false` (PR stays draft until human marks ready) | `true` (run `gh pr ready {BRANCH}` at the end) |
-| `LABEL_FLIP` | on push, `set-ticket-state {JIRA_KEY} --to ClaudeNeedsReview` | none (Mode C does not touch ticket labels — the container's `ClaudeStackComplete` is independent) |
+| `REVIEW_TRANSITION` | `true` — on push, move `{JIRA_KEY}`'s Jira status to "In Review" | `false` (Mode C does not touch the ticket's Jira state — the container's `ClaudeStackComplete` is independent) |
 | `DRAFT` | `true` (per-ticket PRs open as draft) | `true` (Mode C feature-branch PRs also open as draft, then P5 flips to ready) |
 
 > **Storage divergence note**: the per-ticket flow's resume state lives in Jira (the checklist on the ticket itself, accessed via `sync-checklist`). Mode C's resume state lives in a local file because the container itself doesn't have a per-step checklist of its own — its checklist is the *roll-up* of its subtasks. The intent is for both flows to converge on Jira-comment storage in the future; for now, treat `STORAGE` as a black box: each step ends with "mark step N done in `STORAGE`".
@@ -284,7 +302,13 @@ This sub-procedure is parameterized and called from both **S4.8–S4.10** (per-t
 
 1. `cd {WORK_DIR}`
 2. Run `ensure-pr {BRANCH} --base {BASE} --body-file ./pr.md`, appending `--draft` when `DRAFT` is true. Parse the JSON output, store `pr.url` as `PR_URL`.
-3. If this flow has a `LABEL_FLIP`: run the supplied `set-ticket-state` command.
+3. If `REVIEW_TRANSITION` is true, move the ticket's Jira workflow status to "In Review" — the open PR is the review signal, and the status is its JQL-queryable stand-in (there is no review label):
+
+   ```bash
+   transition-jira {JIRA_KEY} --event review
+   ```
+
+   Best-effort by design: when the workflow offers no matching transition the CLI says so and exits 0 — the PR itself remains the ground truth. Do **not** change progress labels here; the ticket keeps whichever `PROGRESS_LABELS` state it already carries.
 4. Append to the activity log: `append-activity {JIRA_KEY} --heading "Draft PR opened" --body "{BRANCH} → {BASE}: {PR_URL}"`.
 5. Mark step P2 done in `STORAGE`.
 
@@ -343,15 +367,22 @@ Triggered when a stack container key is passed that has `ClaudeStackComplete`. T
    - When `PR_BASE` is the parent's feature branch, this Story's PR will target the Epic's branch and merge into it. The Epic's own Mode C run will eventually PR the accumulated work to `main`.
 4. Fetch latest:
    ```bash
-   cd {REPO_ROOT} && git fetch origin
+   git -C {REPO_ROOT} fetch origin
    ```
-5. Checkout the feature branch:
+5. Checkout the feature branch (two calls — never chain):
    ```bash
-   cd {REPO_ROOT} && git checkout {FEATURE_BRANCH} && git pull origin {FEATURE_BRANCH}
+   git -C {REPO_ROOT} checkout {FEATURE_BRANCH}
    ```
-6. If `PR_BASE` is not `main`, ensure the parent feature branch exists locally and is up to date:
    ```bash
-   cd {REPO_ROOT} && git fetch origin {PR_BASE}:{PR_BASE} 2>/dev/null || git fetch origin {PR_BASE}
+   git -C {REPO_ROOT} pull origin {FEATURE_BRANCH}
+   ```
+6. If `PR_BASE` is not `main`, ensure the parent feature branch exists locally and is up to date. Try the fast path first; if it fails, fall back:
+   ```bash
+   git -C {REPO_ROOT} fetch origin {PR_BASE}:{PR_BASE}
+   ```
+   If that call errors (parent branch not on origin as a fast-forwardable ref), retry:
+   ```bash
+   git -C {REPO_ROOT} fetch origin {PR_BASE}
    ```
    If that fails (parent branch not on origin), display: "Parent container {PARENT_CONTAINER_KEY} has no branch on origin. Run /ticket-work against {PARENT_CONTAINER_KEY}'s first ticket to bootstrap it." and **stop**.
 
@@ -401,9 +432,9 @@ Run the **Shared sub-procedure: PR Push & Review** (defined above) with these bi
 - `JIRA_KEY` = `CONTAINER_KEY`
 - `STORAGE` = the local checklist file at `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md` (read/update with checkbox edits)
 - `MARK_READY` = true
-- `LABEL_FLIP` = none
+- `REVIEW_TRANSITION` = false
 
-Sub-procedure steps map onto the C-flow's local checklist file (it lives outside the per-ticket checklist, so slot numbers don't apply). All five steps P1 ↔ "PR description generated" through P5 ↔ "PR marked ready for review" run. Before starting P1, ensure we are on `{FEATURE_BRANCH}`: `cd {REPO_ROOT} && git checkout {FEATURE_BRANCH}`. The sub-procedure handles the rest.
+Sub-procedure steps map onto the C-flow's local checklist file (it lives outside the per-ticket checklist, so slot numbers don't apply). All five steps P1 ↔ "PR description generated" through P5 ↔ "PR marked ready for review" run. Before starting P1, ensure we are on `{FEATURE_BRANCH}`: `git -C {REPO_ROOT} checkout {FEATURE_BRANCH}`. The sub-procedure handles the rest.
 
 ---
 
@@ -531,7 +562,7 @@ For each eligible ticket, **in order**:
 
 1. Checkout the ticket's branch:
    ```bash
-   cd {REPO_ROOT} && git checkout {BRANCH_NAME}
+   git -C {REPO_ROOT} checkout {BRANCH_NAME}
    ```
 2. Display: "Working ticket {KEY}: {SUMMARY} (branch: {BRANCH_NAME}, base: {BASE_BRANCH})"
 3. Use the Skill tool to run skill `ticket-work` with args `{KEY} --serial`
@@ -782,7 +813,8 @@ Before executing the checklist, verify that the ticket's `Implementation Notes` 
 **Skip entirely if:**
 - The ticket has no `h2. Implementation Notes` block (e.g., older tickets created before this protocol). Continue to S4.
 - The checklist already shows step 2 (S4.2 execute) as `[x]`. Drift detection is moot once implementation has started.
-- The Jira label `ClaudeDriftChecked` is present AND was added after the most recent push to `BASE_BRANCH`. (This makes drift checks idempotent within a session but re-runs if upstream has moved.)
+
+There is no "already drift-checked" label and none is needed: `drift-check` compares the ticket's recorded research baseline SHA against the code at HEAD, so re-running it on an unchanged tree is a cheap no-op that returns `current`. Running it on every resume is the correct behavior — it re-fires precisely when upstream has moved.
 
 ### S3.5a/b: Parse + Verify Implementation Notes
 
@@ -808,7 +840,7 @@ Parse the JSON output. The CLI runs the **full** check battery by default and em
 
 The CLI extracts the `h2. Implementation Notes` block, parses each subsection (`Research baseline`, `*Existing patterns to extend:*`, `*Files likely to change:*`, `*Tests likely to extend:*`, `*Constraints:*`) plus the upstream `h2. TDD Reference`, and runs all structural verifiers in one pass. Top-level `status` is `"drifted"` if **any** sub-check drifted.
 
-If `status` is `no-notes`, this protocol is moot — set `ClaudeDriftChecked` and continue to S4.
+If `status` is `no-notes`, this protocol is moot — continue to S4.
 
 ### S3.5b.i: Constraints pass (LLM verification)
 
@@ -821,7 +853,6 @@ The CLI cannot tell whether listed constraints are still applicable. After parsi
 ### S3.5c: Decide
 
 **No drift** (`status === "current"` AND constraints pass found nothing):
-- Add `ClaudeDriftChecked`: `set-ticket-state {TICKET_KEY} --add ClaudeDriftChecked`.
 - Append a brief activity log entry: `Drift check passed — research baseline {sha} still current.` Continue to S4.
 
 **Drift detected**:
@@ -864,7 +895,7 @@ The CLI cannot tell whether listed constraints are still applicable. After parsi
   ```
   Omit any subsection whose list is empty.
 - If the ticket already has `ClaudeExecuting` or later (plan was generated against stale notes), warn in the comment: `Plan was generated against the prior baseline. Consider re-reviewing the plan against the new Implementation Notes; if the plan needs to change, run /rework.`
-- Add `ClaudeDriftChecked`: `set-ticket-state {TICKET_KEY} --add ClaudeDriftChecked`.
+- Leave the ticket's progress label as it is. The refreshed `Research baseline` SHA in the Implementation Notes is the record that this refresh happened — a subsequent `drift-check` against that new baseline returns `current`.
 
 If the agent cannot confidently produce a replacement citation for a drifted entry (e.g., the pattern was removed and there's no obvious successor), include it as `*Citations dropped (no clear replacement):*` and surface a question to the user in the activity log so they can decide whether to proceed.
 
@@ -1199,7 +1230,7 @@ The plan written to `{PLANS_DIR}/pr-review-{TICKET_KEY}*.md` is a sanity check b
 
 ### Step S4.6: Stack ready
 
-S4.6 has two sub-steps. S4.6a always runs and is the only thing that "marks the ticket as stack-ready". S4.6b only runs when the ticket sits inside a Story/Epic stack with a `FEATURE_BRANCH` — it merges the reviewed branch into that feature branch and shifts the label from `ClaudeStackReady` to `ClaudeNeedsReview`.
+S4.6 has two sub-steps. S4.6a always runs and is the only thing that "marks the ticket as stack-ready". S4.6b only runs when the ticket sits inside a Story/Epic stack with a `FEATURE_BRANCH` — it opens the integration PR into that feature branch and moves the ticket's Jira status to "In Review". The ticket keeps `ClaudeStackReady`; the open PR is what records that it is out for review.
 
 #### Step S4.6a: Mark stack ready
 
@@ -1245,7 +1276,7 @@ After S4.6a:
    - `JIRA_KEY` = `TICKET_KEY`
    - `STORAGE` = the Jira checklist on `{TICKET_KEY}` (use `sync-checklist {TICKET_KEY}` to read/write)
    - `MARK_READY` = true (the integration PR opens ready-for-review; the user will run `/cop-fight` on demand after the PR is open if CI fixes or Copilot review handling is needed)
-   - `LABEL_FLIP` = `set-ticket-state {TICKET_KEY} --to ClaudeNeedsReview` applied at P2
+   - `REVIEW_TRANSITION` = true (P2 moves `{TICKET_KEY}`'s Jira status to "In Review"; `ClaudeStackReady` stays put)
 
    Run sub-procedure steps **P1, P2, P4, P5** (skip P3 — review work was owned by S4.5 against this same ticket diff). The mapping reuses the per-ticket checklist's existing PR-related slots; rather than introducing new steps, the existing 8–10 slots are repurposed for the feature-branch PR:
    - S4.8 (PR description) ↔ P1
@@ -1307,7 +1338,7 @@ S4.8 through S4.10 are an instance of the **Shared sub-procedure: PR Push & Revi
 - `JIRA_KEY` = `TICKET_KEY`
 - `STORAGE` = the Jira checklist on `{TICKET_KEY}` (use `sync-checklist {TICKET_KEY}` to read/write)
 - `MARK_READY` = false (per-ticket PRs stay draft until the human marks them ready)
-- `LABEL_FLIP` = `set-ticket-state {TICKET_KEY} --to ClaudeNeedsReview` applied at P2 (creates draft PR)
+- `REVIEW_TRANSITION` = true (P2 creates the draft PR and moves `{TICKET_KEY}`'s Jira status to "In Review"; the `ClaudePRApproved` label from S4.7 stays put)
 
 The mapping is:
 - S4.8 ↔ P1 (PR description)
@@ -1352,7 +1383,8 @@ From the `stack` array, find tickets that come after the current ticket and have
 
 Filter out:
 - Tickets not assigned to the current user
-- Tickets that already have any progress label (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeNeedsReview`, `ClaudeFailed`)
+- Tickets that already have any progress label (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeFailed`)
+- Tickets already out for review (an open PR, or a review-state Jira status per `isReviewStatus()`)
 
 ### S6b: Promote and Run Next Ticket
 
