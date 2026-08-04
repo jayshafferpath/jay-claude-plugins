@@ -303,6 +303,83 @@ export function getOpenPrMap(cwd) {
   return map;
 }
 
+// Committer date of a branch's tip, as an ISO 8601 string, or null when the
+// branch is unknown. Prefers the remote ref: an abandoned agent may have left
+// local commits, but a branch nobody pushed is exactly the stalled case the
+// stagnation rules want to catch, so the local ref is only a fallback.
+export function getBranchLastCommitAt(branch, cwd) {
+  if (!branch || !cwd) return null;
+  const remote = run(
+    `git log -1 --format=%cI 'refs/remotes/origin/${branch}'`,
+    cwd,
+  );
+  if (remote) return remote;
+  return run(`git log -1 --format=%cI 'refs/heads/${branch}'`, cwd);
+}
+
+// Open PRs with the timestamps the stagnation rules need, keyed by head branch.
+// One `gh` call for the whole repo, mirroring getOpenPrMap — that map is
+// intentionally left alone because its callers only need existence, and adding
+// review/commit payloads to it would slow every /ticket-status run.
+//
+// `behindBy` is not a field `gh pr list` exposes, so callers that need the
+// base-moved rule compute it via countCommitsBehind below.
+export function getOpenPrActivityMap(cwd) {
+  if (!cwd) return new Map();
+  const result = run(
+    "gh pr list --state open --limit 200 --json " +
+      "headRefName,number,url,updatedAt,baseRefName,commits,reviews,comments",
+    cwd,
+  );
+  if (!result) return new Map();
+  let parsed;
+  try {
+    parsed = JSON.parse(result);
+  } catch {
+    return new Map();
+  }
+
+  // ISO 8601 sorts lexicographically, so the last entry is the newest.
+  const newest = (items, field) => {
+    const stamps = (items || [])
+      .map((i) => i?.[field])
+      .filter(Boolean)
+      .sort();
+    return stamps.length ? stamps[stamps.length - 1] : null;
+  };
+
+  const map = new Map();
+  for (const pr of parsed) {
+    const head = pr?.headRefName;
+    if (!head || map.has(head)) continue;
+    map.set(head, {
+      number: pr.number ?? null,
+      url: pr.url ?? null,
+      state: "OPEN",
+      baseRefName: pr.baseRefName || null,
+      updatedAt: pr.updatedAt || null,
+      lastCommitAt: newest(pr.commits, "committedDate"),
+      lastReviewAt: newest(pr.reviews, "submittedAt"),
+      lastCommentAt: newest(pr.comments, "createdAt"),
+    });
+  }
+  return map;
+}
+
+// How many commits `base` is ahead of `branch` — i.e. how far the PR's diff has
+// fallen behind what merging would actually produce. Returns null when either
+// ref is unresolvable, which callers treat as "cannot judge".
+export function countCommitsBehind(branch, base, cwd) {
+  if (!branch || !base || !cwd) return null;
+  const result = run(
+    `git rev-list --count 'origin/${branch}..origin/${base}'`,
+    cwd,
+  );
+  if (result === null) return null;
+  const n = Number.parseInt(result, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 export function getWorktreeList(repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return [];
   const result = run("git worktree list --porcelain", repoRoot);

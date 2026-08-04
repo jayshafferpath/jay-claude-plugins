@@ -19,6 +19,9 @@ const {
   getPrDiffStat,
   getWorktreeList,
   getMergedPrMap,
+  getBranchLastCommitAt,
+  getOpenPrActivityMap,
+  countCommitsBehind,
   isAncestor,
   isMergedInto,
   isRevertedOn,
@@ -564,6 +567,158 @@ describe("getMergedPrMap", () => {
   it("returns empty map when output is unparseable", () => {
     execSync.mockReturnValue("not json");
     expect(getMergedPrMap("main", "/repo").size).toBe(0);
+  });
+});
+
+describe("getBranchLastCommitAt", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when branch or cwd is falsy", () => {
+    expect(getBranchLastCommitAt(null, "/repo")).toBeNull();
+    expect(getBranchLastCommitAt("TICK-1", null)).toBeNull();
+  });
+
+  it("prefers the remote ref", () => {
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("refs/remotes/origin/")) return "2026-08-01T10:00:00Z\n";
+      return "2026-07-01T10:00:00Z\n";
+    });
+    expect(getBranchLastCommitAt("TICK-1", "/repo")).toBe(
+      "2026-08-01T10:00:00Z",
+    );
+  });
+
+  // An unpushed branch is exactly the stalled case worth catching, so the
+  // local ref is consulted only when the remote ref is absent.
+  it("falls back to the local ref when the branch was never pushed", () => {
+    execSync.mockImplementation((cmd) => {
+      if (cmd.includes("refs/remotes/origin/")) throw new Error("unknown ref");
+      return "2026-07-01T10:00:00Z\n";
+    });
+    expect(getBranchLastCommitAt("TICK-1", "/repo")).toBe(
+      "2026-07-01T10:00:00Z",
+    );
+  });
+
+  it("returns null when neither ref resolves", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("unknown ref");
+    });
+    expect(getBranchLastCommitAt("TICK-1", "/repo")).toBeNull();
+  });
+});
+
+describe("getOpenPrActivityMap", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns an empty map when cwd is falsy", () => {
+    expect(getOpenPrActivityMap(null).size).toBe(0);
+  });
+
+  it("picks the newest commit, review, and comment timestamps", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([
+        {
+          headRefName: "TICK-1",
+          number: 7,
+          url: "https://example.test/pr/7",
+          updatedAt: "2026-08-01T00:00:00Z",
+          baseRefName: "main",
+          commits: [
+            { committedDate: "2026-07-01T00:00:00Z" },
+            { committedDate: "2026-07-20T00:00:00Z" },
+          ],
+          reviews: [{ submittedAt: "2026-07-25T00:00:00Z" }],
+          comments: [
+            { createdAt: "2026-07-10T00:00:00Z" },
+            { createdAt: "2026-07-30T00:00:00Z" },
+          ],
+        },
+      ]),
+    );
+    const pr = getOpenPrActivityMap("/repo").get("TICK-1");
+    expect(pr).toMatchObject({
+      number: 7,
+      state: "OPEN",
+      baseRefName: "main",
+      lastCommitAt: "2026-07-20T00:00:00Z",
+      lastReviewAt: "2026-07-25T00:00:00Z",
+      lastCommentAt: "2026-07-30T00:00:00Z",
+    });
+  });
+
+  it("nulls timestamps for a PR with no commits, reviews, or comments", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([{ headRefName: "TICK-2", number: 8 }]),
+    );
+    const pr = getOpenPrActivityMap("/repo").get("TICK-2");
+    expect(pr.lastCommitAt).toBeNull();
+    expect(pr.lastReviewAt).toBeNull();
+    expect(pr.lastCommentAt).toBeNull();
+    expect(pr.url).toBeNull();
+    expect(pr.baseRefName).toBeNull();
+  });
+
+  it("keeps the first PR when two share a head branch, and skips headless entries", () => {
+    execSync.mockReturnValue(
+      JSON.stringify([
+        { headRefName: "TICK-3", number: 9 },
+        { headRefName: "TICK-3", number: 10 },
+        { number: 11 },
+      ]),
+    );
+    const map = getOpenPrActivityMap("/repo");
+    expect(map.size).toBe(1);
+    expect(map.get("TICK-3").number).toBe(9);
+  });
+
+  it("returns an empty map when gh fails or emits unparseable output", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("fail");
+    });
+    expect(getOpenPrActivityMap("/repo").size).toBe(0);
+
+    vi.resetAllMocks();
+    execSync.mockReturnValue("not json");
+    expect(getOpenPrActivityMap("/repo").size).toBe(0);
+  });
+});
+
+describe("countCommitsBehind", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns null when any argument is falsy", () => {
+    expect(countCommitsBehind(null, "main", "/repo")).toBeNull();
+    expect(countCommitsBehind("TICK-1", null, "/repo")).toBeNull();
+    expect(countCommitsBehind("TICK-1", "main", null)).toBeNull();
+  });
+
+  it("parses the rev-list count", () => {
+    execSync.mockReturnValue("42\n");
+    expect(countCommitsBehind("TICK-1", "main", "/repo")).toBe(42);
+  });
+
+  it("returns 0 for an up-to-date branch", () => {
+    execSync.mockReturnValue("0\n");
+    expect(countCommitsBehind("TICK-1", "main", "/repo")).toBe(0);
+  });
+
+  it("returns null when the refs are unresolvable", () => {
+    execSync.mockImplementation(() => {
+      throw new Error("bad revision");
+    });
+    expect(countCommitsBehind("TICK-1", "main", "/repo")).toBeNull();
+  });
+
+  it("returns null when the count is not a number", () => {
+    execSync.mockReturnValue("garbage");
+    expect(countCommitsBehind("TICK-1", "main", "/repo")).toBeNull();
   });
 });
 

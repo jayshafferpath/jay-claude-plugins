@@ -23,7 +23,8 @@
     "pr-state": "./bin/pr-state.js",
     "verify-merge": "./bin/verify-merge.js",
     "classify-actions": "./bin/classify-actions.js",
-    "cleanup-feature-refresh": "./bin/cleanup-feature-refresh.js"
+    "cleanup-feature-refresh": "./bin/cleanup-feature-refresh.js",
+    "detect-stagnation": "./bin/detect-stagnation.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",
