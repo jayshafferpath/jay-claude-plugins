@@ -1,5 +1,5 @@
 import { execSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -178,7 +178,9 @@ describe("cascadeRebase activityLog side effect", () => {
     git("push origin main", repo);
 
     // Drop a fake `gh` shim into a tmp PATH that returns a number for `pr list`
-    // and succeeds for `pr edit`. This drives the retarget success branch.
+    // and succeeds for the REST retarget. Retargeting goes through
+    // `gh api --method PATCH …/pulls/{n}` rather than `gh pr edit`, which
+    // needs read:org and fails on a repo-scoped token (issue #35).
     const shimDir = join(ROOT, "shims-ok");
     mkdirSync(shimDir, { recursive: true });
     writeFileSync(
@@ -186,7 +188,7 @@ describe("cascadeRebase activityLog side effect", () => {
       `#!/bin/bash
 case "$*" in
   *"pr list"*) echo '[{"number":42}]' ;;
-  *"pr edit"*) echo "ok" ;;
+  *"--method PATCH"*) echo "ok" ;;
 esac
 `,
       { mode: 0o755 },
@@ -212,7 +214,58 @@ esac
     }
   });
 
-  it("records a pr_retarget_warning when the fake gh's pr edit fails", async () => {
+  it("retargets via gh api REST PATCH, never gh pr edit", async () => {
+    const repo = setupRepo("retarget-uses-rest");
+    makeBranch(repo, "RS-1", "main", "a.txt", "A\n");
+    makeBranch(repo, "RS-2", "RS-1", "b.txt", "B\n");
+    git("checkout main", repo);
+    git("merge --squash RS-1", repo);
+    git('commit -m "squash"', repo);
+    git("push origin main", repo);
+
+    // Record every gh invocation so we can assert on the command shape. `pr
+    // edit` deliberately exits non-zero: if the implementation regresses to it,
+    // the retarget fails and the assertions below catch it.
+    const shimDir = join(ROOT, "shims-record");
+    const logFile = join(ROOT, "gh-calls.log");
+    mkdirSync(shimDir, { recursive: true });
+    writeFileSync(
+      join(shimDir, "gh"),
+      `#!/bin/bash
+echo "$*" >> ${logFile}
+case "$*" in
+  *"pr list"*) echo '[{"number":99}]' ;;
+  *"--method PATCH"*) echo "ok" ;;
+  *"pr edit"*) echo "should not be called" >&2; exit 1 ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${shimDir}:${originalPath}`;
+    appendActivityLog.mockResolvedValue();
+
+    try {
+      const out = await cascadeRebase({
+        repoRoot: repo,
+        originBranch: "RS-1",
+        newRoot: "main",
+        downstreams: [{ ticket: "RS-2", branch: "RS-2" }],
+        retargetFirstPr: { newBase: "main" },
+      });
+      expect(out.results[0].pr_retargeted).toMatchObject({ number: 99 });
+
+      const calls = readFileSync(logFile, "utf-8");
+      expect(calls).toContain("--method PATCH");
+      expect(calls).toContain("repos/{owner}/{repo}/pulls/99");
+      expect(calls).toContain("base=main");
+      expect(calls).not.toContain("pr edit");
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("records a pr_retarget_warning when the fake gh's REST retarget fails", async () => {
     const repo = setupRepo("retarget-edit-fail");
     makeBranch(repo, "RF-1", "main", "a.txt", "A\n");
     makeBranch(repo, "RF-2", "RF-1", "b.txt", "B\n");
@@ -228,7 +281,7 @@ esac
       `#!/bin/bash
 case "$*" in
   *"pr list"*) echo '[{"number":7}]' ;;
-  *"pr edit"*) echo "edit failed" >&2; exit 1 ;;
+  *"--method PATCH"*) echo "edit failed" >&2; exit 1 ;;
 esac
 `,
       { mode: 0o755 },
