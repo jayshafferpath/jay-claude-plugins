@@ -121,6 +121,8 @@ If `REQUIRE_PHASE` is non-null, validate against the detected phase before doing
 
 Otherwise (phase matches, or `REQUIRE_PHASE` is null) continue.
 
+> **`main` here means "terminal", not "merged into `main`".** The detected phase is derived from `DEFER_DESTRUCTIVE`, which is false for every non-container ticket — so `--require-phase=main` also accepts a leaf ticket whose `MERGE_TARGET` is its container's feature branch. That is intended: terminal cleanup *is* the right phase for a leaf, since it never goes through `/promote-to-main`. Don't read the guard as having verified a main merge; only Step 2's `verify-merge` against `MERGE_TARGET` establishes what the PR actually landed on, and Step 4d keys its tag retirement on `MERGE_TARGET` for exactly that reason.
+
 ### 1c: Identify Downstream Stack
 
 From `STACK_ORDER`, find every entry whose position is **after** this ticket's index AND whose `mergedIntoMain` is `false`. Store the keys (in stack order) as `DOWNSTREAM_KEYS`.
@@ -168,16 +170,18 @@ Otherwise, store `PR_NUMBER` = `prNumber`, `PR_URL` = `prUrl`, `MERGE_SHA` = `me
 
 ### 2d: Tag the Merge Commit on Feature Branch
 
-**Skip if** `MERGE_TARGET == "main"` — terminal cleanup deletes the tag in Step 4d instead.
+**Skip if** `MERGE_TARGET == "main"` — the ticket has reached main, so the tag has nothing left to record and Step 4d retires any stale one.
 
-When the cleaned ticket merged into a feature branch (Phase-1 cleanup), tag the squash commit so downstream commands can locate the merge without parsing commit messages. The tag name encodes the ticket key. The tag is also the durable record that Phase-1 cleanup ran for this ticket: `/orchestrate` and a re-invoked `/cleanup` read it to tell "shipped to the Epic, awaiting main promotion" apart from "not yet cleaned at all".
+Whenever the cleaned ticket merged into a feature branch rather than main — Phase-1 cleanup of a Story-container, *and* terminal cleanup of a leaf ticket that shipped into its container's feature branch — tag the squash commit so downstream commands can locate the merge without parsing commit messages. The tag name encodes the ticket key. The tag is also the durable record that the ticket shipped to the feature branch: `/orchestrate` and a re-invoked `/cleanup` read it to tell "shipped to the feature branch, awaiting main" apart from "not yet cleaned at all".
+
+Note that this step is **not** Phase-1-only: a leaf ticket runs terminal cleanup immediately yet still merged into a feature branch, so it gets the tag too — and Step 4d does not take it back.
 
 ```bash
 cd {REPO_ROOT} && git tag -f merged/{TICKET_KEY} {MERGE_SHA}
 cd {REPO_ROOT} && git push --force origin refs/tags/merged/{TICKET_KEY}
 ```
 
-`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`); commands that consume clean stack state (`/promote-to-main` Step 1b-final, `/ticket-work` S1d and Q4.5, `/stack-rebase` Step 1.5) backfill via that sub-procedure when this tag is missing on a `mergedIntoFeature` ticket, and refuse only when the backfill itself cannot produce the tag.
+`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is retired only by Step 4d's main-merge pass, so a terminal-cleaned leaf keeps it. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`); commands that consume clean stack state (`/promote-to-main` Step 1b-final, `/ticket-work` S1d and Q4.5, `/stack-rebase` Step 1.5) backfill via that sub-procedure when this tag is missing on a `mergedIntoFeature` ticket, and refuse only when the backfill itself cannot produce the tag.
 
 If the push fails (network, permissions): warn and continue. The local tag is in place; the remote can be re-pushed manually with `git push --force origin refs/tags/merged/{TICKET_KEY}`. The downstream gate will catch the missing remote tag and re-trigger cleanup.
 
@@ -205,6 +209,10 @@ Actions:
   3. Transition {TICKET_KEY} in Jira to Done
   4. Remove every progress label currently set on the ticket (the canonical list lives at `cli/lib/labels.js` `PROGRESS_LABELS`; the JSON patch in Step 5b enumerates them explicitly so the API call is unambiguous)
   5. Append \"Shipped\" entry to {TICKET_KEY} activity log"
+  + (if MERGE_TARGET == "main":
+       "\n     (also retires the merged/{TICKET_KEY} tag — the ticket has reached main)"
+     else:
+       "\n     (also tags the merge commit merged/{TICKET_KEY} and KEEPS it — {TICKET_KEY} shipped to " + MERGE_TARGET + ", not main, so the tag stays as its durable ship record and Step 8 replay source)")
 else:
   "  1. (deferred) Branch {BRANCH_NAME} kept alive — needed for /promote-to-main onto main
   2. (deferred) {TICKET_KEY} stays In Progress — Done transition runs after main-merge cleanup
@@ -279,14 +287,21 @@ Display: "Deleted branch {BRANCH_NAME} (local + remote)."
 
 ### 4d: Delete merged/{TICKET_KEY} Tag
 
-Terminal cleanup retires the tag created in Step 2d during Phase-1. Once the ticket is on main, the tag is no longer load-bearing — and leaving stale `merged/*` tags around clutters `git tag --points-at` lookups elsewhere.
+**Skip this step unless `MERGE_TARGET == "main"`.** The tag is retired only once the ticket has actually reached main — that is the condition under which it stops being load-bearing, and it is not the same condition as "terminal cleanup is running".
+
+Retiring the tag on any run that reached this step would be wrong for a **leaf ticket that merged into its container's feature branch**: it has `DEFER_DESTRUCTIVE = false` (Step 1b — it is not a stack-container, so it is not subject to `/promote-to-main`) and so runs terminal cleanup immediately, but its `MERGE_TARGET` is the feature branch and it has *not* reached main. Deleting the tag there breaks two things:
+
+1. **The prerequisite gate never converges.** The **Ensure Cleanup Prerequisites** sub-procedure (`commands/ticket-work.md`) wants a tag for exactly `mergedIntoFeature === true AND mergedIntoMain === false` — which is this ticket. Step 2d creates the tag, Step 4d deletes it, and the gate's backfill re-runs `/cleanup` forever without ever satisfying itself.
+2. **It destroys the Step 8 replay source.** `resolveMergedTag` (`cli/lib/git.js`) makes this tag the fallback that populates `featureMergeSha` (`cli/lib/stack-resolver.js`), which Step 8a calls the load-bearing input for replaying a squash merge whose branch is gone — the NEV-863 failure shape. Step 4b/4c just deleted the branch, so tag plus branch going together in one run leaves only the GitHub PR record; and because Step 8 rewrites the feature branch, that record's `mergeCommit` can become unreachable and prove nothing (see the comment at `cli/lib/stack-resolver.js` on the tag fallback). The ticket's ship record is then unrecoverable.
+
+So: keep the tag whenever the merge target was a feature branch, and retire it only on the main-merge pass.
 
 ```bash
 cd {REPO_ROOT} && git push origin :refs/tags/merged/{TICKET_KEY} 2>/dev/null
 cd {REPO_ROOT} && git tag -d merged/{TICKET_KEY} 2>/dev/null
 ```
 
-Both fail silently if the tag is absent (e.g. ticket never went through Phase-1 cleanup, or terminal cleanup is being re-run). Either failure mode is fine — continue.
+Both fail silently if the tag is absent (e.g. the ticket went straight to main and never had one, or terminal cleanup is being re-run). Either failure mode is fine — continue.
 
 ---
 
@@ -345,6 +360,8 @@ Shipped to {MERGE_TARGET}.
 - Merge commit: `{MERGE_SHA}`
 - Branch deleted: `{BRANCH_NAME}` (local + remote)
 - Status: transitioned to {transition name} {or "(no transition applied — labels only)"}
+{if MERGE_TARGET ≠ "main":
+"- Merge tagged: `merged/{TICKET_KEY}` — retained; the branch is gone, so this tag is the ticket's durable ship record and the replay source for feature-branch refreshes"}
 ```
 
 Write to a temp file and run:
@@ -546,7 +563,11 @@ Branch:         {if DEFER_DESTRUCTIVE: BRANCH_NAME + " — retained (needed by /
 PR:             {PR_URL} (merged at {MERGE_SHA})
 Jira:           {if DEFER_DESTRUCTIVE: "unchanged — still in progress, awaiting main promotion" else: transition name or "labels updated only"}
 {if DEFER_DESTRUCTIVE:
-"Merge tag:      merged/" + TICKET_KEY + " — phase 1 recorded"}
+"Merge tag:      merged/" + TICKET_KEY + " — phase 1 recorded"
+else if MERGE_TARGET ≠ "main":
+"Merge tag:      merged/" + TICKET_KEY + " — retained (shipped to " + MERGE_TARGET + ", not main)"
+else:
+"Merge tag:      retired (ticket reached main)"}
 {if container note appended:
 "Container:      " + CONTAINER_KEY + " — stack complete note appended"}
 {if REBASE_RESULTS is non-empty:
@@ -589,6 +610,7 @@ Field rules:
 ## Error Handling
 
 - If repo root cannot be resolved: refuse to run.
+- The `merged/{TICKET_KEY}` tag's lifecycle keys on **whether the ticket has reached main**, not on which phase is running: Step 2d writes it whenever `MERGE_TARGET ≠ "main"`, and only Step 4d's `MERGE_TARGET == "main"` pass retires it. A leaf ticket that merged into its container's feature branch runs terminal cleanup but keeps its tag — it has not reached main, and once Step 4b/4c delete its branch the tag is the only durable record that it shipped. Retiring the tag in that case both starves the **Ensure Cleanup Prerequisites** gate (which would re-trigger `/cleanup` indefinitely) and destroys `featureMergeSha`, the Step 8 squash-replay source implicated in NEV-863.
 - When `DEFER_DESTRUCTIVE` is true: Steps 4 (branch delete), 5b (label clear), and 5c (Jira transition) are skipped; the ticket keeps its current status and progress labels, and the `merged/{TICKET_KEY}` tag from Step 2d records that phase 1 ran. The branch must remain on disk and on the remote because `/promote-to-main` rebases it onto main next. After the main-targeting PR merges, re-run `/cleanup {TICKET_KEY}` — the second invocation will detect the merged main PR via Step 1b's probe and run terminal cleanup.
 - If no merged PR to `MERGE_TARGET` is found: refuse to run — direct the user to `/prune` (abandon) or wait for merge.
 - If the merge SHA is not reachable from `origin/{MERGE_TARGET}`: refuse — `MERGE_TARGET` may have been rewritten, or the merge isn't local yet.
