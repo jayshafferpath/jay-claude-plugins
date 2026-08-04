@@ -241,6 +241,29 @@ Two entry paths:
 
 Uses `classify-actions` to bucket tickets into safe-to-auto-run vs needs-human.
 
+#### `/triage-tickets`
+
+One triage pass over every active stack, built for unattended polling. Two halves:
+
+- **Promotion** — delegates to `/orchestrate --no-loop`, which owns the label/merge decision table.
+- **Stagnation** — the time dimension `/orchestrate` lacks. `classify-actions` reads labels and merge state only, so a ticket whose agent died in `ClaudeExecuting` nine days ago looks identical to one that entered the state a minute ago.
+
+Three stagnation rules, from the `detect-stagnation` CLI:
+
+| Rule | Fires when | Nudge |
+|---|---|---|
+| `abandoned-in-flight` | `ClaudePlanning`/`ClaudeExecuting` with no activity-log append, branch commit, or Jira update for `--in-flight-hours` (default 12) | Clears the stale label back to `ClaudeReady` and logs why, so the queue can pick it up again |
+| `unattended-failure` | `ClaudeFailed` untouched for `--failed-days` (default 3) | Escalated in the digest — never auto-fixed, since `/fix-drift` and `/rework` both mutate the branch |
+| `rotting-pr` | Open PR untouched for `--pr-days` (default 5), or its base moved `--behind-commits` ahead (default 25) | Runs `/stack-rebase` when the base moved; reports only when it just needs a reviewer |
+
+Single-pass by design — wrap it in `/loop` for polling:
+
+```
+/loop 15m /triage-tickets
+```
+
+Start with `/triage-tickets --status` to see the digest without acting. `--no-promote` / `--no-nudge` narrow it to one half.
+
 #### `/pr-chat KEY`
 
 Loads full PR context (Jira ticket + linked TDD + PR metadata + diff + full contents of every changed file) into the conversation, then hands control back to you for free-form discussion. Useful for pre-review self-check, drafting PR copy, or reasoning about review comments.
@@ -278,6 +301,7 @@ Post-PR-push helper. Drives CI to green, then evaluates each Copilot review comm
 | `stage-squash` | Squash commits into a single `[{KEY}] {label}` commit and force-with-lease push. |
 | `verify-merge` | Verify a PR merged and the merge commit is reachable from the expected target. |
 | `classify-actions` | Bucket tickets into safe-to-auto-run vs needs-human for `/orchestrate`. |
+| `detect-stagnation` | Add the time dimension `classify-actions` lacks: flag abandoned in-flight agents, unattended failures, and rotting PRs. Exits 2 when it finds something. Used by `/triage-tickets`. |
 | `post-review-summary` | Post a PR review summary as a Jira comment. |
 | `cleanup-feature-refresh` | Refresh an Epic feature branch by resetting to base + re-merging unmerged ticket branches. |
 
@@ -436,6 +460,19 @@ Morning:
 
 Address the list, then:
   /ticket-work         (queue mode picks up freshly-Ready work)
+```
+
+Unattended variant — polls instead of waiting for you to run it:
+
+```
+/loop 15m /triage-tickets
+  ↳ each pass:
+     - delegates promotion to /orchestrate --no-loop
+     - detects stagnation the label table can't see:
+        · agents that died mid-run (label cleared, work re-queued)
+        · ClaudeFailed tickets nobody has addressed in days
+        · open PRs gone quiet, or whose base has moved far ahead
+     - prints one digest; stays quiet when everything is healthy
 ```
 
 ## Dashboard
