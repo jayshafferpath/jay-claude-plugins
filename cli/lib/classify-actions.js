@@ -128,10 +128,27 @@ function classifyTicket(ticket, ctx) {
   // exactly the fact resolve-stack already establishes (and already backs with
   // the merged/{KEY} tag).
   //
-  // `cleanup-terminal` is the right action for a leaf. /cleanup derives
-  // DEFER_DESTRUCTIVE = false for it — it isn't a stack-container, so it never
-  // goes through /promote-to-main — and its Step 4d retains the merged/{KEY} tag
-  // because MERGE_TARGET !== "main".
+  // The action is `cleanup-phase-1`, NOT `cleanup-terminal`. This rule used to
+  // emit terminal on the premise that a leaf "never goes through
+  // /promote-to-main" and reaches main implicitly when the Epic branch does.
+  // That premise is false: /promote-to-main Step 1c takes a *leaf* ticket key
+  // as its argument ("If {RESOLVED_KEY} matches a ticket key in STACK_ORDER
+  // (i.e. a leaf, not the container)"), and its container-key path promotes
+  // leaves one at a time off GIT_MERGE_ORDER. Leaves are the ordinary unit of
+  // promotion, so a leaf merged only into a feature branch has NOT shipped.
+  //
+  // Terminal cleanup on that state did two irreversible things too early:
+  // transitioned the ticket to Done while its code sat on an unmerged feature
+  // branch, and deleted the branch that Step 2a's rebase fallback still needs
+  // as an UPSTREAM_BRANCH for its successor. It was also self-defeating —
+  // deleting the branch makes the next classify pass hit rule 0 (`cleaned`,
+  // `autoSafe: false`), so nothing ever revisits the ticket to mark it Done for
+  // real once the work does land on main.
+  //
+  // Phase-1 is exactly the right shape: retain branch + Jira state, cascade
+  // rebase siblings, refresh the Epic branch, and leave the merged/{KEY} tag in
+  // place. Rule 1 then fires on the same ticket once mergedIntoMain flips,
+  // running terminal cleanup when it is actually true.
   if (
     ticket.mergedIntoFeature === true &&
     ticket.mergedIntoMain !== true &&
@@ -139,9 +156,9 @@ function classifyTicket(ticket, ctx) {
   ) {
     return {
       key: ticket.key,
-      nextAction: "cleanup-terminal",
+      nextAction: "cleanup-phase-1",
       autoSafe: true,
-      reason: "merged into feature branch, not a stack-container",
+      reason: "merged into feature branch, awaiting main promotion",
     };
   }
 

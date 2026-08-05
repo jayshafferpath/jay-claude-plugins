@@ -144,7 +144,7 @@ describe("classifyActions", () => {
   // feature branch, a Story-container merged into a parent Epic's branch, and a
   // ticket merged to main.
   describe("merge-shape discrimination", () => {
-    it("rule 1c: leaf merged into the container's feature branch → cleanup-terminal", () => {
+    it("rule 1c: leaf merged into the container's feature branch → cleanup-phase-1", () => {
       const out = classifyActions({
         stacks: [
           stack({
@@ -163,8 +163,55 @@ describe("classifyActions", () => {
         ],
       });
       expect(out.queues.autoSafe).toHaveLength(1);
-      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-terminal");
+      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-phase-1");
       expect(out.queues.manual).toHaveLength(0);
+    });
+
+    // Regression: NEV-1446 shipped to Epic branch NEV-1352 and was classified
+    // cleanup-terminal, which transitioned the Story to Done and would have
+    // deleted a branch /promote-to-main still needs. A feature-branch merge is
+    // never terminal — /promote-to-main promotes leaves individually (Step 1c
+    // takes a leaf ticket key), so the branch and Jira state must survive.
+    it("a leaf merged only into the feature branch is never terminal", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "NEV-1352", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1446", {
+                branch: "NEV-1446",
+                mergedIntoFeature: true,
+                mergedIntoMain: false,
+                labels: ["ClaudeStackReady"],
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe[0].nextAction).not.toBe("cleanup-terminal");
+      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-phase-1");
+      expect(out.queues.autoSafe[0].reason).toBe(
+        "merged into feature branch, awaiting main promotion",
+      );
+    });
+
+    it("the same leaf becomes terminal once it reaches main", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "NEV-1352", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1446", {
+                branch: "NEV-1446",
+                mergedIntoFeature: true,
+                mergedIntoMain: true,
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-terminal");
+      expect(out.queues.autoSafe[0].reason).toBe("mergedIntoMain=true");
     });
 
     it("rule 1a still wins for a Story-container merged into the parent Epic branch", () => {
