@@ -8,6 +8,7 @@
 // ticket on the board.
 
 import { useCallback, useState } from "react";
+import { fetchPanel } from "./fetchPanel.js";
 
 export function TimelinePanel({ jiraBaseUrl }) {
   const [timeline, setTimeline] = useState(null);
@@ -19,9 +20,7 @@ export function TimelinePanel({ jiraBaseUrl }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/timeline");
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      setTimeline(await res.json());
+      setTimeline(await fetchPanel("/api/timeline"));
     } catch (err) {
       setError(err.message);
     } finally {
