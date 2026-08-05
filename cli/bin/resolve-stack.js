@@ -4,7 +4,6 @@ import { loadEnv } from "../lib/env.js";
 
 loadEnv();
 
-import { execSync } from "node:child_process";
 import { resolveStack } from "../lib/stack-resolver.js";
 
 const args = process.argv.slice(2);
@@ -26,14 +25,12 @@ const repoRoot =
 const shouldFetch = flags.includes("--fetch");
 
 try {
-  if (shouldFetch && repoRoot) {
-    execSync("git fetch origin", {
-      cwd: repoRoot,
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-  }
-
-  const result = await resolveStack(ticketKey, { repoRoot });
+  // The fetch is the resolver's job: it knows the repo root even when the caller
+  // did not pass --repo-root, and it prunes (see fetchPrune in lib/git.js).
+  const result = await resolveStack(ticketKey, {
+    repoRoot,
+    fetch: shouldFetch,
+  });
   console.log(JSON.stringify(result, null, 2));
 } catch (err) {
   console.error(`Error: ${err.message}`);

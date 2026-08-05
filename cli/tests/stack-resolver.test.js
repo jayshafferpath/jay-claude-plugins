@@ -6,6 +6,7 @@ vi.mock("../lib/jira.js", () => ({
 }));
 
 vi.mock("../lib/git.js", () => ({
+  fetchPrune: vi.fn(() => true),
   findBranch: vi.fn(),
   isAncestor: vi.fn(),
   isMergedInto: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("../lib/config.js", () => ({
 
 const { getIssue, searchIssues } = await import("../lib/jira.js");
 const {
+  fetchPrune,
   findBranch,
   isAncestor,
   isMergedInto,
@@ -2039,5 +2041,96 @@ describe("resolveStack", () => {
     const sub2 = result.stack.find((t) => t.key === "SUB-2");
     expect(sub2.baseBranch).toBe("STORY-1");
     expect(sub2.prTarget).toBe("STORY-1");
+  });
+});
+
+// The prune has to happen here rather than in bin/resolve-stack.js: the repo root
+// is resolved inside resolveStack from the ticket's labels, so a CLI-level fetch
+// gated on --repo-root silently skipped the refresh for every label-resolved
+// caller and read stale refs anyway.
+describe("resolveStack fetch", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    getMergedPrMap.mockReturnValue(new Map());
+    getOpenPrMap.mockReturnValue(new Map());
+    resolveMergedTag.mockReturnValue(null);
+    isShaAncestorOf.mockReturnValue(false);
+    isSameCommit.mockReturnValue(false);
+    isRevertedOn.mockReturnValue(false);
+    isTicketMergeRevertedOn.mockReturnValue(false);
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+    loadDevRoot.mockReturnValue("/dev");
+  });
+
+  it("does not fetch when fetch is not requested", async () => {
+    getIssue.mockResolvedValue({ key: "T-1", fields: issueFields() });
+
+    await resolveStack("T-1", { repoRoot: "/dev/backend" });
+    expect(fetchPrune).not.toHaveBeenCalled();
+  });
+
+  it("prunes before reading branch state on a standalone ticket", async () => {
+    getIssue.mockResolvedValue({ key: "T-1", fields: issueFields() });
+
+    await resolveStack("T-1", { repoRoot: "/dev/backend", fetch: true });
+    expect(fetchPrune).toHaveBeenCalledWith("/dev/backend");
+    // Ordering is the substance of the fix: a prune after the branch lookup
+    // would still hand callers the phantom branch it was meant to clear.
+    expect(fetchPrune.mock.invocationCallOrder[0]).toBeLessThan(
+      findBranch.mock.invocationCallOrder[0],
+    );
+  });
+
+  // This is the case a CLI-level fetch missed entirely.
+  //
+  // resolveRepoRoot stats the candidate path, so the label has to point at a
+  // directory that really exists for the root to resolve at all.
+  it("prunes a label-resolved root when no repoRoot is passed", async () => {
+    loadDevRoot.mockReturnValue("/");
+    getIssue.mockResolvedValue({
+      key: "T-1",
+      fields: issueFields({ labels: ["repo:tmp"] }),
+    });
+
+    await resolveStack("T-1", { fetch: true });
+    expect(fetchPrune).toHaveBeenCalledWith("/tmp");
+  });
+
+  it("skips the prune when no repo root resolves", async () => {
+    loadDevRoot.mockReturnValue(null);
+    getIssue.mockResolvedValue({ key: "T-1", fields: issueFields() });
+
+    await resolveStack("T-1", { fetch: true });
+    expect(fetchPrune).not.toHaveBeenCalled();
+  });
+
+  it("prunes before container base resolution on a containered ticket", async () => {
+    loadDevRoot.mockReturnValue("/");
+    getIssue.mockImplementation(async (key) => {
+      if (key === "SUB-1") {
+        return {
+          key: "SUB-1",
+          fields: issueFields({
+            issuetype: "Sub-task",
+            parent: { key: "STORY-1", fields: { summary: "P" } },
+            labels: ["repo:tmp"],
+          }),
+        };
+      }
+      return {
+        key: "STORY-1",
+        fields: issueFields({ issuetype: "Story", labels: ["repo:tmp"] }),
+      };
+    });
+    searchIssues.mockResolvedValue([
+      { key: "SUB-1", fields: issueFields({ issuetype: "Sub-task" }) },
+    ]);
+
+    await resolveStack("SUB-1", { fetch: true });
+    expect(fetchPrune).toHaveBeenCalledWith("/tmp");
+    expect(fetchPrune.mock.invocationCallOrder[0]).toBeLessThan(
+      findBranch.mock.invocationCallOrder[0],
+    );
   });
 });

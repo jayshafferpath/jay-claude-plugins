@@ -142,7 +142,7 @@ When `MERGE_TARGET ≠ main` *and* the cleaned ticket is itself a stack-containe
 
 This step is **strict** — refuse to clean up unless we can prove the ticket actually shipped to its `MERGE_TARGET`.
 
-`resolve-stack {TICKET_KEY} --fetch` from Step 1b already ran `git fetch origin` for this repo. Treat origin refs as fresh — only refetch if Step 1b reported the fetch as failed.
+`resolve-stack {TICKET_KEY} --fetch` from Step 1b already ran `git fetch --prune origin` for this repo. Treat origin refs as fresh — only refetch if Step 1b reported the fetch as failed.
 
 ```bash
 verify-merge {BRANCH_NAME} --base {MERGE_TARGET} --cwd {REPO_ROOT} --strict
