@@ -7,7 +7,7 @@ import { loadEnv } from "../lib/env.js";
 loadEnv();
 
 import { classifyActions, extractFailedStep } from "../lib/classify-actions.js";
-import { getMergedTagKeys } from "../lib/git.js";
+import { countCommitsAhead, getMergedTagKeys } from "../lib/git.js";
 
 const args = process.argv.slice(2);
 
@@ -29,8 +29,11 @@ if (args.includes("--help") || args.length === 0) {
       "the PR state and re-run.\n" +
       "\n" +
       "--repo-root <path> lets rule 1a read `merged/{KEY}` tags from origin to\n" +
-      "decide whether phase-1 cleanup already ran. Without it, pass\n" +
-      "phaseOneDone per ticket in the stacks JSON.\n" +
+      "decide whether phase-1 cleanup already ran, and lets the stack-level\n" +
+      "needsStackRebase flag compare each unmerged branch against its base so a\n" +
+      "freshly-cut branch with no unique commits isn't reported as stale.\n" +
+      "Without it, pass phaseOneDone and hasUniqueCommits per ticket in the\n" +
+      "stacks JSON.\n" +
       "\n" +
       "--extract-failed-step is a separate one-shot mode: scan an activity-log\n" +
       "file body for the latest reference to a ticket-work step (S4.2/S4.3/S4.6)\n" +
@@ -120,14 +123,29 @@ for (const [branch, value] of Object.entries(prStateMap)) {
 
 const stackList = Array.isArray(stacks) ? stacks : stacks.stacks;
 
-// Resolve phaseOneDone from `merged/{KEY}` tags when a repo root is supplied.
-// Tickets that already carry the flag in the snapshot keep their value.
+// Resolve phaseOneDone from `merged/{KEY}` tags when a repo root is supplied,
+// and probe whether each unmerged branch has actually diverged from its base.
+// Tickets that already carry either flag in the snapshot keep their value.
 if (repoRoot) {
   const mergedTags = getMergedTagKeys(repoRoot);
   for (const stack of stackList || []) {
+    const base = stack?.container?.featureBranch || "main";
     for (const ticket of stack?.tickets || []) {
       if (ticket.phaseOneDone === undefined) {
         ticket.phaseOneDone = mergedTags.has(ticket.key);
+      }
+      // Only unmerged tickets feed the needsStackRebase check, so that's the
+      // only place the probe is worth a git call.
+      if (
+        ticket.hasUniqueCommits === undefined &&
+        ticket.branch &&
+        ticket.mergedIntoFeature === false &&
+        ticket.branch !== base
+      ) {
+        const ahead = countCommitsAhead(ticket.branch, base, repoRoot);
+        // null means a ref wouldn't resolve — leave the flag unset so the
+        // classifier stays permissive rather than silently clearing the flag.
+        if (ahead !== null) ticket.hasUniqueCommits = ahead > 0;
       }
     }
   }

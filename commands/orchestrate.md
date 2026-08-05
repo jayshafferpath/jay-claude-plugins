@@ -114,7 +114,9 @@ Append the parsed result to `STACKS`.
 
 The decision table is implemented in `cli/lib/classify-actions.js` and exposed as the `classify-actions` CLI. Pass the resolved `STACKS` snapshot to it; it applies the 9-rule first-match table, surfaces stack-level flags (`needsStackRebase`, `blockedOnContainer`), and emits `pendingProbes` for any rule-1a candidate whose parent-feature-branch merge state is unknown.
 
-> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch, phase-1 not yet run → `cleanup-phase-1`; rule 1b = same shape but `phaseOneDone` → `promote-to-main` (phase-1 cleanup already ran, the main PR hasn't landed); rule 2 = `ClaudeStackReady` → `awaiting-review`; rule 3 = `ClaudeFailed` → `failed`; rule 4 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 5 = `ClaudeReady && eligible` → `ticket-work`; rule 6 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 7 = idle. Container-blocked overrides every rule.
+> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 0 = merged with no branch on record → `cleaned` (cleanup already ran; dispatching `/cleanup` again would only hit its "No branch on record" refusal); rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch, phase-1 not yet run → `cleanup-phase-1`; rule 1b = same shape but `phaseOneDone` → `promote-to-main` (phase-1 cleanup already ran, the main PR hasn't landed); rule 1c = **leaf** ticket merged into its container's feature branch → `cleanup-terminal`; rule 2 = `ClaudeStackReady` → `awaiting-review`; rule 3 = `ClaudeFailed` → `failed`; rule 4 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 5 = `ClaudeReady && eligible` → `ticket-work`; rule 6 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 7 = idle. Container-blocked overrides every rule.
+
+> **Why rules 1a/1b and 1c are separate**: 1a/1b gate on the ticket's branch *being* the container's feature branch, which describes a stack-container — a Story whose own feature branch was PR'd into a parent Epic's. A leaf (a Story with no children, or a subtask) whose ticket branch merged into its container's feature branch has `branch !== container.featureBranch` and a null `parentFeatureBranch`, so neither fires, and `mergedIntoMain` is false so rule 1 doesn't either. Rule 1c catches that shape — the common one for every child of an Epic — off `mergedIntoFeature` rather than a branch-name comparison. `cleanup-terminal` is correct there: `/cleanup` derives `DEFER_DESTRUCTIVE = false` for a leaf (it never goes through `/promote-to-main`) and its Step 4d retains the `merged/{KEY}` tag because `MERGE_TARGET ≠ "main"`.
 
 ### 3a: Probe rule-1a candidates
 
@@ -142,7 +144,9 @@ Write the `STACKS` array (using the JSON shape `{ container: { key, featureBranc
 classify-actions --stacks-file <tmp-stacks.json> --pr-state-file <tmp-pr-state.json> --repo-root {REPO_ROOT}
 ```
 
-`--repo-root` lets the CLI resolve `phaseOneDone` itself from the `merged/{KEY}` tags on origin, so it stays correct even if Step 3a's annotation was skipped. Pass it whenever `REPO_ROOT` resolved; a ticket that already carries an explicit `phaseOneDone` in the stacks JSON is left as-is.
+`--repo-root` lets the CLI resolve `phaseOneDone` itself from the `merged/{KEY}` tags on origin, so it stays correct even if Step 3a's annotation was skipped. It also lets the CLI probe `hasUniqueCommits` per unmerged ticket (`git rev-list --count origin/{base}..origin/{branch}`), which the stack-level `needsStackRebase` flag needs in order to distinguish a genuinely stale branch from one freshly cut off its base. Pass it whenever `REPO_ROOT` resolved; a ticket that already carries an explicit `phaseOneDone` or `hasUniqueCommits` in the stacks JSON is left as-is.
+
+Without `--repo-root` (or an explicit `hasUniqueCommits`), `needsStackRebase` stays permissive and reports any unmerged ticket whose blocker has merged — it would rather over-report than hide real staleness, but expect no-op `/stack-rebase` suggestions in that mode.
 
 Parse stdout as JSON. The output has:
 - `stacks` — per-stack array with `classifications` (ticket-level) and `stackFlags` (`needsStackRebase`, `blockedOnContainer`).
@@ -183,7 +187,8 @@ Print one section per stack, in order. Use a tree layout that mirrors `ticket-st
 ```
 
 Annotate each ticket's `→ {next_action}` line with one of:
-- `✓ auto: cleanup-terminal` — safe, will run (PR merged to main; full teardown).
+- `✓ auto: cleanup-terminal` — safe, will run (PR merged to main, or a leaf ticket's PR merged into its container's feature branch; full teardown either way).
+- `· cleaned` — merged with no branch left on record; cleanup already ran. Nothing to do.
 - `✓ auto: cleanup-phase-1` — safe, will run (Story-container PR merged into parent Epic feature branch; branch retained for /promote-to-main, sibling rebase + Epic-feature-branch refresh only).
 - `✓ auto: promote-to-main` — safe, will run.
 - `? ask: rework or fix-drift` — failed, will prompt.

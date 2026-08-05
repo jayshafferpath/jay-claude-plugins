@@ -139,6 +139,146 @@ describe("classifyActions", () => {
     expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-phase-1");
   });
 
+  // The three merge shapes differ only in fields the rest of these tests hold
+  // constant, so each gets its own case: a leaf merged into its container's
+  // feature branch, a Story-container merged into a parent Epic's branch, and a
+  // ticket merged to main.
+  describe("merge-shape discrimination", () => {
+    it("rule 1c: leaf merged into the container's feature branch → cleanup-terminal", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1616", {
+                branch: "NEV-1616",
+                mergedIntoFeature: true,
+                mergedIntoMain: false,
+                // The label survives until cleanup clears it — the whole point
+                // is that it must not win over the merge state.
+                labels: ["ClaudeStackReady"],
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe).toHaveLength(1);
+      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-terminal");
+      expect(out.queues.manual).toHaveLength(0);
+    });
+
+    it("rule 1a still wins for a Story-container merged into the parent Epic branch", () => {
+      const branch = "feat/story-container";
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: {
+              key: "STORY-1",
+              featureBranch: branch,
+              parentFeatureBranch: "feat/epic-99",
+            },
+            tickets: [
+              ticket("STORY-1", {
+                branch,
+                mergedIntoFeature: true,
+                mergedIntoMain: false,
+              }),
+            ],
+          }),
+        ],
+        mergedToParentFeatureBranch: { [branch]: true },
+      });
+      // Not cleanup-terminal: a stack-container defers destructive cleanup so
+      // /promote-to-main can still rebase its branch onto main.
+      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-phase-1");
+    });
+
+    it("rule 1 still wins for a ticket merged to main", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1440", {
+                branch: "NEV-1440",
+                mergedIntoFeature: true,
+                mergedIntoMain: true,
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-terminal");
+      expect(out.queues.autoSafe[0].reason).toBe("mergedIntoMain=true");
+    });
+
+    it("a leaf that has not merged anywhere is untouched by rule 1c", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1446", {
+                mergedIntoFeature: false,
+                labels: ["ClaudeStackReady"],
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe).toHaveLength(0);
+      expect(out.queues.manual[0].nextAction).toBe("awaiting-review");
+    });
+  });
+
+  describe("already-cleaned tickets", () => {
+    it("merged to main with no branch → cleaned, not a doomed cleanup dispatch", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1440", { branch: null, mergedIntoMain: true }),
+            ],
+          }),
+        ],
+      });
+      // /cleanup Step 1b refuses on a null branch, so queueing it auto-safe
+      // guarantees a refusal every round.
+      expect(out.queues.autoSafe).toHaveLength(0);
+      expect(out.queues.idle[0].nextAction).toBe("cleaned");
+    });
+
+    it("merged into the feature branch with no branch → cleaned", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1616", { branch: null, mergedIntoFeature: true }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe).toHaveLength(0);
+      expect(out.queues.idle[0].nextAction).toBe("cleaned");
+    });
+
+    it("an unmerged ticket with no branch is not treated as cleaned", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-9999", { branch: null, labels: ["ClaudeReady"] }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.asks[0].nextAction).toBe("ticket-work");
+    });
+  });
+
   it("rule 2: ClaudeStackReady → awaiting-review manual", () => {
     const out = classifyActions({
       stacks: [
@@ -261,6 +401,66 @@ describe("classifyActions", () => {
             ticket("PROJ-B", {
               mergedIntoFeature: false,
               blockers: ["PROJ-A"],
+            }),
+          ],
+        }),
+      ],
+    });
+    expect(out.stacks[0].stackFlags.needsStackRebase).toBe(true);
+  });
+
+  it("needs_stack_rebase: false when the branch has no unique commits", () => {
+    const out = classifyActions({
+      stacks: [
+        stack({
+          container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+          tickets: [
+            ticket("NEV-1616", { mergedIntoFeature: true }),
+            // Branch tip is byte-identical to the Epic branch: cut fresh from it
+            // after its blocker merged, so a rebase would move nothing.
+            ticket("NEV-1446", {
+              mergedIntoFeature: false,
+              blockers: ["NEV-1616"],
+              hasUniqueCommits: false,
+            }),
+          ],
+        }),
+      ],
+    });
+    expect(out.stacks[0].stackFlags.needsStackRebase).toBe(false);
+  });
+
+  it("needs_stack_rebase: true when the branch has diverged from its base", () => {
+    const out = classifyActions({
+      stacks: [
+        stack({
+          container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+          tickets: [
+            ticket("NEV-1616", { mergedIntoFeature: true }),
+            ticket("NEV-1446", {
+              mergedIntoFeature: false,
+              blockers: ["NEV-1616"],
+              hasUniqueCommits: true,
+            }),
+          ],
+        }),
+      ],
+    });
+    expect(out.stacks[0].stackFlags.needsStackRebase).toBe(true);
+  });
+
+  it("needs_stack_rebase: stays permissive when the probe is unavailable", () => {
+    const out = classifyActions({
+      stacks: [
+        stack({
+          container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+          tickets: [
+            ticket("NEV-1616", { mergedIntoFeature: true }),
+            // No hasUniqueCommits — repo root unresolved, or a ref wouldn't
+            // resolve. Better to over-report than hide real staleness.
+            ticket("NEV-1446", {
+              mergedIntoFeature: false,
+              blockers: ["NEV-1616"],
             }),
           ],
         }),

@@ -60,6 +60,9 @@ const SUGGESTED_COMMANDS = Object.freeze({
   "blocked-on-container": null,
   "in-flight": null,
   unknown: null,
+  // Cleanup already ran — re-running /cleanup would refuse on the deleted
+  // branch, so there is deliberately nothing to offer or copy.
+  cleaned: null,
   idle: null,
 });
 
