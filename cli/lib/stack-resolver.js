@@ -18,9 +18,29 @@ import { resolveRepoRoot, topologicalSort } from "./util.js";
 
 export { featureBranchFromContainer };
 
-export function resolveContainer(fields) {
+export function resolveContainer(fields, ticketKey = null) {
   const issuetype = fields.issuetype?.name || "";
   const parent = fields.parent;
+
+  // A container key passed directly is its own container. Checked first: an
+  // Epic's `parent` is an Initiative and its issuelinks routinely point at
+  // Stories and sibling Epics, so every branch below would either miss it
+  // (falling through to the standalone shape, collapsing a whole Epic stack to
+  // one bogus single-ticket entry) or mistake a linked Epic for its parent.
+  //
+  // The Story self-container case is handled last, after the Epic lookups
+  // below: a Story under an Epic resolves to that Epic even when it has
+  // subtasks of its own. That nested-container case is what callers
+  // disambiguate by comparing `container.key` against the key they passed
+  // (see commands/_container-flows.md).
+  if (ticketKey && issuetype === "Epic") {
+    return {
+      key: ticketKey,
+      type: "Epic",
+      summary: fields.summary || "",
+      isSelf: true,
+    };
+  }
 
   if (parent && ["Sub-task", "Subtask"].includes(issuetype)) {
     return {
@@ -54,6 +74,17 @@ export function resolveContainer(fields) {
         summary: link.inwardIssue.fields?.summary || "",
       };
     }
+  }
+
+  // A Story with no enclosing Epic is its own container — its subtasks are the
+  // stack. Last, so an Epic parent or Epic link still wins above.
+  if (ticketKey && issuetype === "Story") {
+    return {
+      key: ticketKey,
+      type: "Story",
+      summary: fields.summary || "",
+      isSelf: true,
+    };
   }
 
   return null;
@@ -157,7 +188,7 @@ export async function resolveStack(ticketKey, opts = {}) {
   const fields = issue.fields;
   const labels = fields.labels || [];
 
-  const container = resolveContainer(fields);
+  const container = resolveContainer(fields, ticketKey);
 
   if (!container) {
     const devRoot = loadDevRoot();
@@ -224,7 +255,10 @@ export async function resolveStack(ticketKey, opts = {}) {
     };
   }
 
-  const containerIssue = await getIssue(container.key);
+  // Self-containers are the issue we already fetched — don't pay for it twice.
+  const containerIssue = container.isSelf
+    ? issue
+    : await getIssue(container.key);
   const containerLabels = containerIssue.fields.labels || [];
   const containerSummary = container.summary || containerIssue.fields.summary;
   const branchLabel = containerLabels.find((l) => l.startsWith("branch:"));

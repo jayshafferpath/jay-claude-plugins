@@ -112,6 +112,94 @@ describe("resolveContainer", () => {
     const fields = issueFields();
     expect(resolveContainer(fields)).toBeNull();
   });
+
+  it("treats an Epic key as its own container", () => {
+    const fields = issueFields({ issuetype: "Epic", summary: "M2 Send" });
+    expect(resolveContainer(fields, "EPIC-1")).toEqual({
+      key: "EPIC-1",
+      type: "Epic",
+      summary: "M2 Send",
+      isSelf: true,
+    });
+  });
+
+  it("self-containers an Epic even when it has an Initiative parent and Story links", () => {
+    const fields = issueFields({
+      issuetype: "Epic",
+      summary: "M2 Send",
+      parent: {
+        key: "INIT-1",
+        fields: { summary: "Init", issuetype: { name: "Initiative" } },
+      },
+      issuelinks: [
+        {
+          type: { name: "Blocks", inward: "is blocked by" },
+          outwardIssue: {
+            key: "EPIC-9",
+            fields: { summary: "Other epic", issuetype: { name: "Epic" } },
+          },
+        },
+      ],
+    });
+    expect(resolveContainer(fields, "EPIC-1")).toEqual({
+      key: "EPIC-1",
+      type: "Epic",
+      summary: "M2 Send",
+      isSelf: true,
+    });
+  });
+
+  it("treats a Story key with no enclosing Epic as its own container", () => {
+    const fields = issueFields({ issuetype: "Story", summary: "Lone story" });
+    expect(resolveContainer(fields, "STORY-1")).toEqual({
+      key: "STORY-1",
+      type: "Story",
+      summary: "Lone story",
+      isSelf: true,
+    });
+  });
+
+  it("resolves a Story under an Epic to the Epic, not to itself", () => {
+    const fields = issueFields({
+      issuetype: "Story",
+      summary: "Child story",
+      parent: {
+        key: "EPIC-1",
+        fields: { summary: "My Epic", issuetype: { name: "Epic" } },
+      },
+    });
+    expect(resolveContainer(fields, "STORY-1")).toEqual({
+      key: "EPIC-1",
+      type: "Epic",
+      summary: "My Epic",
+    });
+  });
+
+  it("resolves a Story linked to an Epic to the Epic, not to itself", () => {
+    const fields = issueFields({
+      issuetype: "Story",
+      summary: "Linked story",
+      issuelinks: [
+        {
+          type: { name: "Epic" },
+          outwardIssue: {
+            key: "EPIC-2",
+            fields: { summary: "Linked Epic", issuetype: { name: "Epic" } },
+          },
+        },
+      ],
+    });
+    expect(resolveContainer(fields, "STORY-1")).toEqual({
+      key: "EPIC-2",
+      type: "Epic",
+      summary: "Linked Epic",
+    });
+  });
+
+  it("still returns null for a Task key with no container", () => {
+    const fields = issueFields({ issuetype: "Task" });
+    expect(resolveContainer(fields, "T-1")).toBeNull();
+  });
 });
 
 describe("featureBranchFromContainer", () => {
@@ -1605,6 +1693,124 @@ describe("resolveStack", () => {
     const result = await resolveStack("T-1", { repoRoot: "/dev/backend" });
     expect(result.container.parentContainerKey).toBeNull();
     expect(result.container.parentFeatureBranch).toBeNull();
+  });
+
+  // Regression: an Epic key passed directly used to fall through resolveContainer
+  // to the standalone shape, returning container: null and a one-entry stack made
+  // of the Epic itself — so a whole Epic's Stories were invisible to every
+  // lifecycle command that resolves by container key.
+  it("resolves an Epic key to its own stack of child Stories", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            summary: "M2 Send",
+            labels: ["branch:EPIC-1", "repo:backend"],
+            parent: {
+              key: "INIT-1",
+              fields: { summary: "Init", issuetype: { name: "Initiative" } },
+            },
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "STORY-1",
+        fields: issueFields({ issuetype: "Story", summary: "First" }),
+      },
+      {
+        key: "STORY-2",
+        fields: issueFields({
+          issuetype: "Story",
+          summary: "Second",
+          issuelinks: [
+            {
+              type: { inward: "is blocked by" },
+              inwardIssue: { key: "STORY-1" },
+            },
+          ],
+        }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("EPIC-1", { repoRoot: "/dev/backend" });
+
+    expect(result.container).not.toBeNull();
+    expect(result.container.key).toBe("EPIC-1");
+    expect(result.container.type).toBe("Epic");
+    expect(result.container.featureBranch).toBe("EPIC-1");
+    expect(result.stack.map((s) => s.key)).toEqual(["STORY-1", "STORY-2"]);
+    // The Epic is a container, not a member of its own stack.
+    expect(result.stack.some((s) => s.key === "EPIC-1")).toBe(false);
+    // No stack entry matches the input key, so ticketIndex falls back to 0.
+    expect(result.ticketIndex).toBe(0);
+    // The Epic issue is fetched once, not twice.
+    expect(getIssue).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the Epic's own branch label as the feature branch when resolved by Epic key", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "EPIC-1") {
+        return {
+          key: "EPIC-1",
+          fields: issueFields({
+            issuetype: "Epic",
+            labels: ["branch:custom-epic-branch", "repo:backend"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      { key: "STORY-1", fields: issueFields({ issuetype: "Story" }) },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("EPIC-1", { repoRoot: "/dev/backend" });
+    expect(result.container.featureBranch).toBe("custom-epic-branch");
+    expect(result.stack[0].prTarget).toBe("custom-epic-branch");
+  });
+
+  it("resolves a Story key with subtasks to its own stack", async () => {
+    getIssue.mockImplementation(async (key) => {
+      if (key === "STORY-1") {
+        return {
+          key: "STORY-1",
+          fields: issueFields({
+            issuetype: "Story",
+            summary: "Lone story",
+            labels: ["repo:backend"],
+          }),
+        };
+      }
+      return { key, fields: issueFields() };
+    });
+
+    searchIssues.mockResolvedValue([
+      {
+        key: "SUB-1",
+        fields: issueFields({ issuetype: "Sub-task", summary: "s1" }),
+      },
+    ]);
+
+    findBranch.mockReturnValue(null);
+    isMergedInto.mockReturnValue(false);
+
+    const result = await resolveStack("STORY-1", { repoRoot: "/dev/backend" });
+    expect(result.container.key).toBe("STORY-1");
+    expect(result.container.type).toBe("Story");
+    expect(result.stack.map((s) => s.key)).toEqual(["SUB-1"]);
   });
 
   it("treats an awaiting-main-promotion blocker as unblocking when its branch is merged into the feature branch", async () => {
