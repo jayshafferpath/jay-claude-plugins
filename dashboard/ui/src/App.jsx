@@ -34,7 +34,6 @@ export function App() {
   const handleAction = async (action, key) => {
     const endpoints = {
       "approve-plan": `/api/tickets/${key}/approve-plan`,
-      "approve-pr": `/api/tickets/${key}/approve-pr`,
     };
     await fetch(endpoints[action], { method: "POST" });
     await fetchStacks();

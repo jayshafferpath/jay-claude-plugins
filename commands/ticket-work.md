@@ -1,5 +1,5 @@
 ---
-description: "Run Jira tickets through plan, execute, and code review to stack-ready. Feature branches merge locally after review passes. Without feature branch, PR push requires ClaudePRApproved. With args: single ticket. Without args: discover and process queue."
+description: "Run Jira tickets through plan, execute, and code review to stack-ready. Feature branches merge locally after review passes. Without feature branch, a draft PR to main opens automatically. With args: single ticket. Without args: discover and process queue."
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__searchJiraIssuesUsingJql
@@ -30,7 +30,7 @@ allowed-tools:
 
 Run Jira tickets through: plan → execute → code review → stack-ready.
 Tickets in a Story/Epic stack: merge locally into the container's feature branch (named after the container key, e.g. `EPIC-123`) after review passes.
-Standalone tickets (no Story/Epic container): stop at stack-ready; PR to main requires `ClaudePRApproved` trigger.
+Standalone tickets (no Story/Epic container): run through stack-ready and straight on to open a draft PR against `main`.
 Idempotent — reads checklist state and resumes from wherever it left off.
 
 - **With arguments**: Run a single ticket (or expand a Story to its subtasks and run them in parallel).
@@ -46,7 +46,7 @@ Every command block in this skill is one Bash tool call. Never chain with `&&`, 
 
 ## Label Reference
 
-The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`). Progress flow is: `ClaudeReady` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → `ClaudePRApproved` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every progress transition — it consults `PROGRESS_LABELS` to clear the previous state automatically. It does **not** touch the Jira workflow status.
+The canonical lifecycle label set lives in `cli/lib/labels.js` (`DURABLE_LABELS`, `PROGRESS_LABELS`, `CONTAINER_LABELS`). Progress flow is: `ClaudeReady` → `ClaudePlanning` → `ClaudeExecuting` → `ClaudeStackReady` → cleanup; `ClaudeFailed` is the failure side-channel and `ClaudeStackComplete` is the container-level rollup that triggers Mode C. `ClaudeWork` is durable and never removed. Use `set-ticket-state` for every progress transition — it consults `PROGRESS_LABELS` to clear the previous state automatically. It does **not** touch the Jira workflow status.
 
 A state earns a label only when another process (a peer agent, a JQL query, a human handing work back) has no cheaper way to see it. Anything derivable from git, the GitHub PR, or the checklist is read from that source instead:
 
@@ -132,7 +132,7 @@ If the issue type is `Epic` (and Mode C did not trigger above), do **not** expan
 1. Run the **Stack Context Resolution** sub-procedure with `KEY={EPIC_KEY}` and `FETCH=true`. This produces `STACK_ORDER` (topologically sorted) and the container fields.
 2. Walk `STACK_ORDER` in order and pick the **first** entry where:
    - `entry.eligible === true`, AND
-   - the entry does not already carry any progress label from `PROGRESS_LABELS` (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeFailed`), AND
+   - the entry does not already carry any progress label from `PROGRESS_LABELS` (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudeFailed`), AND
    - `entry.inReview !== true` — `resolve-stack` sets this (and populates `entry.openPr`) when the ticket has an open PR or a review-state Jira status. Those tickets are out for review, not waiting for work.
    Call this `NEXT_KEY`.
 3. If no entry qualifies:
@@ -145,7 +145,7 @@ If the issue type is `Epic` (and Mode C did not trigger above), do **not** expan
 
 ### Standard ticket resolution
 
-If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, or `ClaudeFailed` — this is `SUBTASK_EXCLUSION_LABELS` in `cli/lib/labels.js`). If not a parent, use the ticket directly.
+If it is a **parent with subtasks** (issue type is Story/Task and has subtasks), expand to its subtasks via JQL: `parent = {PARENT_KEY}`. Apply exclusion filter (skip subtasks that already have `ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, or `ClaudeFailed` — this is `SUBTASK_EXCLUSION_LABELS` in `cli/lib/labels.js`). If not a parent, use the ticket directly.
 
 ### Inherit from Parent (subtasks only)
 
@@ -629,8 +629,8 @@ Stacks Completed:
 Skipped (dependency not ready):
   - {KEY}: waiting on {BLOCKER_KEY}
 
-Awaiting PR Approval:
-  - {KEY}: stack ready, add ClaudePRApproved to open PR
+Awaiting Human Review:
+  - {KEY}: stack ready, PR open and waiting on review
 ```
 
 ---
@@ -1278,20 +1278,12 @@ This sub-step marks the ticket stack-ready, which unblocks downstream tickets wi
 3. Mark step 6 as done and sync checklist to Jira.
 
 After S4.6a:
-- If `FEATURE_BRANCH` is null (standalone workflow): this is the terminal state for non-feature-branch tickets. Display:
-  ```
-  Ticket {TICKET_KEY} - Stack Ready (terminal)
-
-  Branch: {BRANCH_NAME}
-  Code review complete. Downstream tickets are unblocked.
-  To open the PR later: add `ClaudePRApproved` in Jira, then re-run `/ticket-work {TICKET_KEY}`.
-  ```
-  Proceed to S6 (promote downstream), then stop. Do **not** run S4.6b.
+- If `FEATURE_BRANCH` is null (standalone workflow): continue to S4.8 (S4.7 is retired and always skipped) to open the draft PR against `main`. Do **not** run S4.6b.
 - If `FEATURE_BRANCH` is set: continue to S4.6b.
 
 #### Step S4.6b: Merge into feature branch (feature-branch workflow only)
 
-**Skip if**: `FEATURE_BRANCH` is null. Feature-branch tickets stop after S4.6b; the container's Mode C checklist takes over from there. Slots 7–10 (the S4.7 PR-approved gate and the S4.8–S4.10 PR push-and-review steps) are stamped done by S4.6b after the integration PR opens, because the work they describe is owned by Mode C, not by the per-ticket lifecycle.
+**Skip if**: `FEATURE_BRANCH` is null. Feature-branch tickets stop after S4.6b; the container's Mode C checklist takes over from there. Slots 8–10 (the S4.8–S4.10 PR push-and-review steps) are stamped done by S4.6b after the integration PR opens, because the work they describe is owned by Mode C, not by the per-ticket lifecycle. Slot 7 is the retired approval gate and is already pre-marked done at seed time.
 
 1. **Verify review is clean**: Read the PR review plan file from `{PLANS_DIR}/` (matching `pr-review-*.md` or `pr-{TICKET_KEY}*.md`). Parse all items in the plan:
    - If any issues are marked unresolved or incomplete: run `set-ticket-state {TICKET_KEY} --to ClaudeFailed`, append the unresolved-issues list to the activity log (`append-activity {TICKET_KEY} --heading "Review issues unresolved" --body-file <issues.md>`), and **stop**.
@@ -1313,7 +1305,7 @@ After S4.6a:
    - S4.10 (review summary) ↔ P4
    - Mark-ready (P5) is a final inline step here, not a separate checklist entry.
 
-3. After the sub-procedure completes, **stop the per-ticket lifecycle**. Do not proceed to S4.7 — that step (and its `ClaudePRApproved` gate plus S4.8–S4.10) is the standalone-ticket flow targeting `main`. Feature-branch tickets terminate here at "PR open and ready for human review against `{FEATURE_BRANCH}`". Stamp slot 7 (PR approved) done as well — it does not apply to feature-branch tickets — via `sync-checklist {TICKET_KEY}`. Slots 8–10 were already marked done inside the sub-procedure.
+3. After the sub-procedure completes, **stop the per-ticket lifecycle**. Do not proceed to S4.8 — those steps are the standalone-ticket flow targeting `main`. Feature-branch tickets terminate here at "PR open and ready for human review against `{FEATURE_BRANCH}`". Slots 8–10 were already marked done inside the sub-procedure; slot 7 is the retired approval gate and was pre-marked done at seed time.
 
 4. Display:
    ```
@@ -1333,31 +1325,17 @@ After S4.6a:
 
 ---
 
-### Step S4.7: PR approved
+### Step S4.7: PR approval gate (retired)
 
-**Skip if**: step 7 is already checked `[x]`, OR `FEATURE_BRANCH` is non-null (feature-branch tickets terminate at S4.6b — the integration PR is already open against `{FEATURE_BRANCH}` and does not need a separate `ClaudePRApproved` gate).
+**Always skip.** This step is retired — there is no PR-approval gate. `seed-checklist` pre-marks slot 7 done with a ` (skipped: retired)` suffix, so the S4 loop never opens it. The slot is retained only to keep step numbering stable for the S4.8–S4.10 names, the S4.6b slot mapping, and historical Jira checklists.
 
-Check the ticket's current labels:
-- If `ClaudePRApproved` is present: mark step 7 as done, sync checklist to Jira, and continue.
-- If `ClaudeStackReady` is present (or no PR approval label):
-  - Tell the user:
-    ```
-    Awaiting PR approval.
-
-    To approve: add the `ClaudePRApproved` label in Jira, then re-run `/ticket-work {TICKET_KEY}`.
-
-    Or type "approve pr" to approve now and continue.
-    ```
-  - If the user types "approve pr" or similar affirmative:
-    - Run `set-ticket-state {TICKET_KEY} --to ClaudePRApproved`
-    - Mark step 7 as done and sync checklist to Jira.
-  - Otherwise: **stop here**. The command will resume from this step on next run.
+Standalone tickets flow straight from S4.6a into S4.8 and open their draft PR against `main` without waiting for a human label. The draft state *is* the checkpoint: nothing merges until a human marks the PR ready and approves it on GitHub.
 
 ---
 
 ### Steps S4.8–S4.10: PR Push & Review (shared sub-procedure)
 
-**Skip if** `FEATURE_BRANCH` is non-null. Feature-branch tickets terminate at S4.6b — the integration PR into `{FEATURE_BRANCH}` was already opened there using these same checklist slots (8–10) for its sub-procedure mapping. S4.8–S4.10 below describe the **standalone-ticket** path: PR opens against `main` (`PR_TARGET`) and is gated by `ClaudePRApproved` (S4.7).
+**Skip if** `FEATURE_BRANCH` is non-null. Feature-branch tickets terminate at S4.6b — the integration PR into `{FEATURE_BRANCH}` was already opened there using these same checklist slots (8–10) for its sub-procedure mapping. S4.8–S4.10 below describe the **standalone-ticket** path: the PR opens against `main` (`PR_TARGET`) as a draft, entered directly from S4.6a with no approval gate in between.
 
 S4.8 through S4.10 are an instance of the **Shared sub-procedure: PR Push & Review** (defined earlier in this file). Use these bindings:
 
@@ -1367,7 +1345,7 @@ S4.8 through S4.10 are an instance of the **Shared sub-procedure: PR Push & Revi
 - `JIRA_KEY` = `TICKET_KEY`
 - `STORAGE` = the Jira checklist on `{TICKET_KEY}` (use `sync-checklist {TICKET_KEY}` to read/write)
 - `MARK_READY` = false (per-ticket PRs stay draft until the human marks them ready)
-- `REVIEW_TRANSITION` = true (P2 creates the draft PR and moves `{TICKET_KEY}`'s Jira status to "In Review"; the `ClaudePRApproved` label from S4.7 stays put)
+- `REVIEW_TRANSITION` = true (P2 creates the draft PR and moves `{TICKET_KEY}`'s Jira status to "In Review"; `ClaudeStackReady` stays put)
 
 The mapping is:
 - S4.8 ↔ P1 (PR description)
@@ -1412,7 +1390,7 @@ From the `stack` array, find tickets that come after the current ticket and have
 
 Filter out:
 - Tickets not assigned to the current user
-- Tickets that already have any progress label (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudePRApproved`, `ClaudeFailed`)
+- Tickets that already have any progress label (`ClaudePlanning`, `ClaudeExecuting`, `ClaudeStackReady`, `ClaudeFailed`)
 - Tickets already out for review (an open PR, or a review-state Jira status per `isReviewStatus()`)
 
 ### S6b: Promote and Run Next Ticket

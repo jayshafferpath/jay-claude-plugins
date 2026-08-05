@@ -85,7 +85,7 @@ Initialize `CONTAINER_KEYS = []` and `COLD_TICKETS = []`. `COLD_TICKETS` holds `
 2. **Cold tickets** — `mcp__atlassian__searchJiraIssuesUsingJql` with:
 
    ```
-   assignee = currentUser() AND statusCategory != Done AND (labels is EMPTY OR NOT (labels in ("ClaudeWork", "ClaudeReady", "ClaudePlanning", "ClaudeExecuting", "ClaudeStackReady", "ClaudePRApproved", "ClaudeFailed")))
+   assignee = currentUser() AND statusCategory != Done AND (labels is EMPTY OR NOT (labels in ("ClaudeWork", "ClaudeReady", "ClaudePlanning", "ClaudeExecuting", "ClaudeStackReady", "ClaudeFailed")))
    ```
 
    Fields: `key, summary, status, labels, issuetype`.
@@ -114,7 +114,7 @@ Append the parsed result to `STACKS`.
 
 The decision table is implemented in `cli/lib/classify-actions.js` and exposed as the `classify-actions` CLI. Pass the resolved `STACKS` snapshot to it; it applies the 9-rule first-match table, surfaces stack-level flags (`needsStackRebase`, `blockedOnContainer`), and emits `pendingProbes` for any rule-1a candidate whose parent-feature-branch merge state is unknown.
 
-> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch, phase-1 not yet run → `cleanup-phase-1`; rule 1b = same shape but `phaseOneDone` → `promote-to-main` (phase-1 cleanup already ran, the main PR hasn't landed); rule 2 = `ClaudePRApproved` → `promote-to-main`; rules 3-4 = `ClaudeStackReady` → `awaiting-pr-approval`; rule 5 = `ClaudeFailed` → `failed`; rule 6 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 7 = `ClaudeReady && eligible` → `ticket-work`; rule 8 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 9 = idle. Container-blocked overrides every rule.
+> **Decision table reference**: The canonical rule list lives in `cli/lib/classify-actions.js` (`classifyTicket`). Briefly: rule 1 = `mergedIntoMain` → `cleanup-terminal`; rule 1a = Story-container merged into parent Epic feature branch, phase-1 not yet run → `cleanup-phase-1`; rule 1b = same shape but `phaseOneDone` → `promote-to-main` (phase-1 cleanup already ran, the main PR hasn't landed); rule 2 = `ClaudeStackReady` → `awaiting-review`; rule 3 = `ClaudeFailed` → `failed`; rule 4 = `ClaudeExecuting` / `ClaudePlanning` → `in-flight`; rule 5 = `ClaudeReady && eligible` → `ticket-work`; rule 6 = `ClaudeReady && !eligible` → `blocked-on-stack`; rule 7 = idle. Container-blocked overrides every rule.
 
 ### 3a: Probe rule-1a candidates
 
@@ -188,7 +188,7 @@ Annotate each ticket's `→ {next_action}` line with one of:
 - `✓ auto: promote-to-main` — safe, will run.
 - `? ask: rework or fix-drift` — failed, will prompt.
 - `? ask: ticket-work` — ready, will prompt (long-running).
-- `⏸ manual: awaiting PR approval (add ClaudePRApproved)` — user action.
+- `⏸ manual: awaiting review (PR open, needs human review/merge)` — user action.
 - `… in-flight` — another agent is working on this.
 - `⊘ blocked on {KEY}` — waiting on stack predecessor.
 - `⊘ blocked on container {KEY}` — waiting on parent container merge.
@@ -216,8 +216,8 @@ Awaiting your decision ({count}):
   - KEY3 — failed, /rework or /fix-drift?
   - KEY4 — cold, kick off with /prework + /ticket-work?
 
-Awaiting your approval ({count}):
-  - KEY5 — stack ready, label ClaudePRApproved
+Awaiting your review ({count}):
+  - KEY5 — stack ready, PR open and waiting on review
 
 Blocked / in-flight ({count}):
   - KEY6 — blocked on KEY7
@@ -340,8 +340,8 @@ Actions run:
   ✗ /promote-to-main KEY4 — rebase conflict in path/file.ts (manual fixup needed)
   ⏸ /rework KEY5 — skipped by user
 
-Awaiting your approval:
-  - KEY7 — stack ready, label ClaudePRApproved
+Awaiting your review:
+  - KEY7 — stack ready, PR open and waiting on review
 
 Blocked / in-flight:
   - KEY8 — blocked on KEY9

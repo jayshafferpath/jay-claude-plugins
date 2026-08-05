@@ -14,7 +14,7 @@ export function SummaryBar({ total, stackCount, plansPending, prsPending, failed
       )}
       {prsPending > 0 && (
         <div className="summary-stat" style={{ color: "#d29922" }}>
-          <span className="count">{prsPending}</span> PRs pending
+          <span className="count">{prsPending}</span> awaiting review
         </div>
       )}
       {failed > 0 && (

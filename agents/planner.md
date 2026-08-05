@@ -405,7 +405,7 @@ A ticket is also stale if its referenced TDD section/heading no longer exists in
 Not every unmatched ticket should be pruned. Apply these rules:
 
 - **Skip if status category is "done"**: shipped work stays in history. Note it as "obsolete but shipped" — the user may want to /prune just to update its state, but no merge revert is needed.
-- **Skip if the ticket is mid-flight to merge**: it has an open PR, its status is review-flavored (`In Review`, `Code Review`, `Review`), or it carries `ClaudePRApproved`. Flag for user judgment, don't recommend prune. To check for an open PR, run `gh pr list --state open --head {KEY} --json number,url` in the ticket's repo (feature branches are named after the ticket key per `commands/ticket-work.md`); treat a `gh` failure as "unknown, no open PR".
+- **Skip if the ticket is mid-flight to merge**: it has an open PR, or its status is review-flavored (`In Review`, `Code Review`, `Review`). Flag for user judgment, don't recommend prune. To check for an open PR, run `gh pr list --state open --head {KEY} --json number,url` in the ticket's repo (feature branches are named after the ticket key per `commands/ticket-work.md`); treat a `gh` failure as "unknown, no open PR".
 - **Skip if status is `Cancelled`**: already pruned (`/prune` transitions the ticket to Cancelled), ignore.
 - **Otherwise** (no progress / planning / executing / stack-ready / failed): candidate for `/prune`.
 
@@ -527,9 +527,9 @@ These tickets are obsolete in the current TDD but already shipped — no action 
 
 ### In-Flight, Manual Judgment Needed
 
-These tickets are mid-merge (open PR, review status, or `ClaudePRApproved`). Decide before pruning:
+These tickets are mid-merge (open PR or review status). Decide before pruning:
 
-- **{KEY}**: {summary} — {open PR #N | status | ClaudePRApproved} — {reason}
+- **{KEY}**: {summary} — {open PR #N | status} — {reason}
 ```
 
 Ask the user: "Does this decomposition look right? I can adjust Epics, Stories, dependencies, or subtasks. The patterns and constraints summarized above live in each repo's sidecar (written by init); if any look stale or wrong, run `@planner init {slug}` again to refresh the affected repo sidecars before I create tickets. Stale Jira tickets are surfaced for `/prune` — I won't touch them automatically."

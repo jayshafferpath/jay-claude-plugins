@@ -25,7 +25,7 @@ export function labelState(labels, { openPr = null, statusName = null } = {}) {
 }
 
 export function actionHint(stateLabel) {
-  if (stateLabel === "ClaudeStackReady") return "ready for PR?";
+  if (stateLabel === "ClaudeStackReady") return "awaiting review";
   if (stateLabel === "ClaudeFailed") return "investigate";
   return null;
 }

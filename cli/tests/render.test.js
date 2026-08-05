@@ -45,7 +45,7 @@ describe("renderTree", () => {
       },
     ];
     const output = renderTree(stacks);
-    expect(output).toContain("ready for PR?");
+    expect(output).toContain("awaiting review");
   });
 
   it("renders feature branch header with depth-indented stack", () => {

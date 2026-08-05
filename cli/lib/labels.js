@@ -22,7 +22,6 @@ export const PROGRESS_LABELS = Object.freeze([
   "ClaudePlanning",
   "ClaudeExecuting",
   "ClaudeStackReady",
-  "ClaudePRApproved",
   "ClaudeFailed",
 ]);
 
@@ -50,7 +49,6 @@ export const SUBTASK_EXCLUSION_LABELS = Object.freeze([
   "ClaudePlanning",
   "ClaudeExecuting",
   "ClaudeStackReady",
-  "ClaudePRApproved",
   "ClaudeFailed",
 ]);
 
@@ -109,7 +107,6 @@ export function isReviewStatus(statusName) {
 // callers that can probe the PR pass it in separately (see labelState).
 export const LABEL_DISPLAY_ORDER = Object.freeze([
   ["ClaudeFailed", "FAILED"],
-  ["ClaudePRApproved", "PR approved"],
   ["ClaudeStackReady", "stack ready"],
   ["ClaudeExecuting", "executing..."],
   ["ClaudePlanning", "planning..."],

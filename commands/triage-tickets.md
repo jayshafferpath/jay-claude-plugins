@@ -194,8 +194,8 @@ Needs a decision ({count}):
   - KEY5 — ClaudeFailed 9.2d. /fix-drift, /rework, or /prune?
   - KEY7 — PR #43 has had no review activity for 11.4d.
 
-Awaiting your approval ({count}):
-  - KEY8 — stack ready, label ClaudePRApproved
+Awaiting your review ({count}):
+  - KEY8 — stack ready, PR open and waiting on review
 
 Degraded:
   - EPIC-3 — repo root unresolved; PR and commit rules skipped

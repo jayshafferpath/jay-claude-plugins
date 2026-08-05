@@ -20,15 +20,15 @@ const FIELDS = [
 //
 // The old `NOT IN ("ClaudeNeedsReview", ...)` clauses are gone: progress
 // labels are mutually exclusive (setTicketState clears the others), so a
-// ticket selected by ClaudeReady/ClaudeExecuting/ClaudePRApproved could never
-// also carry the excluded label. Review state is read from the PR, not JQL.
+// ticket selected by ClaudeReady/ClaudeExecuting could never also carry the
+// excluded label. Review state is read from the PR, not JQL.
 export const QUEUE_QUERIES = Object.freeze({
   readyForPlanning:
     'labels = "ClaudeReady" AND statusCategory != Done AND assignee = currentUser()',
   readyParents:
     'labels = "ClaudeReady" AND issueType IN (Story, Task) AND assignee = currentUser()',
   inFlight:
-    'labels IN ("ClaudeExecuting", "ClaudePRApproved") AND statusCategory != Done AND assignee = currentUser()',
+    'labels = "ClaudeExecuting" AND statusCategory != Done AND assignee = currentUser()',
 });
 
 // Pure helper. Given a parent issue and its subtask issue, build the labels

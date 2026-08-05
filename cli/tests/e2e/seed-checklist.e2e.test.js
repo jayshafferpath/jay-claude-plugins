@@ -168,7 +168,9 @@ describe("seed-checklist e2e", () => {
     for (let i = 0; i < 6; i++) {
       expect(result.steps[i].done).toBe(true);
     }
-    expect(result.steps[6].done).toBe(false);
+    // Slot 7 is the retired PR-approval gate — always pre-marked done.
+    expect(result.steps[6].done).toBe(true);
+    expect(result.steps[7].done).toBe(false);
   });
 
   it("seeds with steps 1-9 done when PR exists", async () => {
@@ -189,7 +191,9 @@ describe("seed-checklist e2e", () => {
       { prExists: true, prState: "MERGED" },
     );
 
-    expect(result.steps.every((s) => s.done === false)).toBe(true);
+    // Slot 7 (retired gate) is always done; nothing else is.
+    expect(result.steps.filter((s) => s.done)).toHaveLength(1);
+    expect(result.steps[6].done).toBe(true);
   });
 
   it("ignores a CLOSED PR from a prior life on a rework'd branch", async () => {
@@ -198,7 +202,9 @@ describe("seed-checklist e2e", () => {
       { prExists: true, prState: "CLOSED" },
     );
 
-    expect(result.steps.every((s) => s.done === false)).toBe(true);
+    // Slot 7 (retired gate) is always done; nothing else is.
+    expect(result.steps.filter((s) => s.done)).toHaveLength(1);
+    expect(result.steps[6].done).toBe(true);
   });
 
   it("uses base_branch and pr_target frontmatter for stacked tickets", async () => {
@@ -244,7 +250,7 @@ describe("seed-checklist e2e", () => {
 
     expect(result.complexity).toBe("standard");
     for (const step of result.steps) {
-      expect(step.label).not.toContain("(skipped");
+      expect(step.label).not.toContain("(skipped: trivial)");
     }
     expect(result.markdown).toContain("complexity: standard");
   });

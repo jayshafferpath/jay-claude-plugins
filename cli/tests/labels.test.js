@@ -32,7 +32,6 @@ describe("labels.js label sets", () => {
       "ClaudePlanning",
       "ClaudeExecuting",
       "ClaudeStackReady",
-      "ClaudePRApproved",
       "ClaudeFailed",
     ]);
   });
@@ -45,6 +44,7 @@ describe("labels.js label sets", () => {
       "ClaudeMainPR",
       "ClaudePruned",
       "ClaudeDesignsCaptured",
+      "ClaudePRApproved",
     ]) {
       expect(ALL_LIFECYCLE_LABELS).not.toContain(retired);
     }
@@ -72,7 +72,6 @@ describe("labels.js label sets", () => {
       "ClaudePlanning",
       "ClaudeExecuting",
       "ClaudeStackReady",
-      "ClaudePRApproved",
       "ClaudeFailed",
     ]);
   });
