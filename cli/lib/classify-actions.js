@@ -22,6 +22,30 @@ function classifyTicket(ticket, ctx) {
   const { container, mergedToParentFeatureBranch } = ctx;
   const branch = ticket.branch || null;
 
+  // A merged ticket with no branch on record has already been cleaned.
+  //
+  // Branch deletion is what terminal cleanup does, and /cleanup Step 1b refuses
+  // outright ("No branch on record") when the branch is gone — so dispatching
+  // cleanup here can only ever halt. Queueing it as auto-safe made /orchestrate
+  // hand the batch a guaranteed refusal every round.
+  //
+  // Branch presence is the honest discriminator rather than a proxy: findBranch
+  // checks remote-tracking refs as well as local ones, and cleanup deletes both.
+  // A null branch alongside a positive merge signal cannot mean "repo root
+  // unresolved" — both mergedIntoMain and mergedIntoFeature are themselves
+  // derived from git, so they are false when there is no repo to read.
+  const isCleaned =
+    !branch &&
+    (ticket.mergedIntoMain === true || ticket.mergedIntoFeature === true);
+  if (isCleaned) {
+    return {
+      key: ticket.key,
+      nextAction: "cleaned",
+      autoSafe: false,
+      reason: "merged with no branch on record — cleanup already ran",
+    };
+  }
+
   // Rule 1
   if (ticket.mergedIntoMain === true) {
     return {
@@ -81,6 +105,43 @@ function classifyTicket(ticket, ctx) {
       nextAction: "promote-to-main",
       autoSafe: true,
       reason: "phase-1 cleanup done, awaiting main promotion",
+    };
+  }
+
+  // Rule 1c — leaf ticket merged into its container's feature branch.
+  //
+  // Rules 1a/1b describe a *stack-container* — a Story whose own feature branch
+  // was PR'd into a parent Epic's branch — so they gate on the ticket's branch
+  // BEING the container's feature branch. A leaf (a Story with no children, or a
+  // subtask) has `branch !== container.featureBranch` and a null
+  // `parentFeatureBranch`, so neither rule fires. Rule 1 doesn't either, since
+  // `mergedIntoMain` is false. Execution used to fall through to rule 2, where
+  // the still-present ClaudeStackReady label reported `awaiting-review` — "PR
+  // open, waiting on a human" — for work that had already merged. A default
+  // /orchestrate run skipped those tickets and reported them as blocked on the
+  // user, so cleanup never ran and the `merged/{KEY}` tag it mints never
+  // appeared. That tag gates the Ensure Cleanup Prerequisites sub-procedure, so
+  // the omission surfaced far from its cause, in whichever later command
+  // backfilled it.
+  //
+  // Keyed on merge state rather than branch-name shape: `mergedIntoFeature` is
+  // exactly the fact resolve-stack already establishes (and already backs with
+  // the merged/{KEY} tag).
+  //
+  // `cleanup-terminal` is the right action for a leaf. /cleanup derives
+  // DEFER_DESTRUCTIVE = false for it — it isn't a stack-container, so it never
+  // goes through /promote-to-main — and its Step 4d retains the merged/{KEY} tag
+  // because MERGE_TARGET !== "main".
+  if (
+    ticket.mergedIntoFeature === true &&
+    ticket.mergedIntoMain !== true &&
+    !isFeatureContainer
+  ) {
+    return {
+      key: ticket.key,
+      nextAction: "cleanup-terminal",
+      autoSafe: true,
+      reason: "merged into feature branch, not a stack-container",
     };
   }
 
@@ -151,6 +212,14 @@ function classifyTicket(ticket, ctx) {
   };
 }
 
+// Whether a ticket's branch has actually diverged from the base it would rebase
+// onto. `hasUniqueCommits` is supplied by the caller (the CLI probes git); when
+// it's absent we can't tell, and the flag stays permissive so a real staleness
+// case isn't hidden by a missing probe.
+function isStaleAgainstBase(ticket) {
+  return ticket.hasUniqueCommits !== false;
+}
+
 function classifyStack(stack, mergedToParentFeatureBranch) {
   const container = stack.container || null;
   const tickets = Array.isArray(stack.tickets) ? stack.tickets : [];
@@ -177,12 +246,20 @@ function classifyStack(stack, mergedToParentFeatureBranch) {
     );
   }
 
-  // Stack-level needs_stack_rebase: any ticket that hasn't merged yet but
-  // whose blocker has merged is potentially stale-stacked. The orchestrator
-  // surfaces this as informational (manual /stack-rebase).
+  // Stack-level needs_stack_rebase: a ticket that hasn't merged yet, whose
+  // blocker HAS merged, and whose branch has actually diverged from the base.
+  //
+  // The first two conditions alone aren't staleness. A branch cut fresh from the
+  // feature branch after its blocker merged satisfies both while being
+  // byte-identical to its base — nothing to rebase. Without the third condition
+  // the flag fires on every freshly-created downstream branch, so /orchestrate
+  // offers a no-op /stack-rebase whose only signal value is noise.
+  //
+  // The orchestrator surfaces this as informational (manual /stack-rebase).
   let needsStackRebase = false;
   for (const t of tickets) {
     if (t.mergedIntoFeature !== false) continue;
+    if (!isStaleAgainstBase(t)) continue;
     const blockers = Array.isArray(t.blockers) ? t.blockers : [];
     for (const blockerKey of blockers) {
       const blocker = tickets.find((x) => x.key === blockerKey);
@@ -246,6 +323,8 @@ export function classifyActions({ stacks, mergedToParentFeatureBranch = {} }) {
       } else if (c.nextAction === "in-flight") {
         queues.inFlight.push(c);
       } else {
+        // `cleaned` lands here alongside `idle`: nothing is owed on either, and
+        // the distinction is carried on nextAction for the renderers.
         queues.idle.push(c);
       }
     }

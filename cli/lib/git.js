@@ -380,6 +380,24 @@ export function countCommitsBehind(branch, base, cwd) {
   return Number.isNaN(n) ? null : n;
 }
 
+// How many commits `branch` carries that `base` does not — the mirror of
+// countCommitsBehind, and the cheap test for "has this branch diverged at all".
+//
+// A freshly-created downstream branch is byte-identical to the base it was cut
+// from, so it has zero unique commits and there is nothing a rebase could move.
+// Returns null when either ref is unresolvable, which callers treat as "cannot
+// judge" rather than "not stale".
+export function countCommitsAhead(branch, base, cwd) {
+  if (!branch || !base || !cwd) return null;
+  const result = run(
+    `git rev-list --count 'origin/${base}..origin/${branch}'`,
+    cwd,
+  );
+  if (result === null) return null;
+  const n = Number.parseInt(result, 10);
+  return Number.isNaN(n) ? null : n;
+}
+
 export function getWorktreeList(repoRoot) {
   if (!repoRoot || !existsSync(repoRoot)) return [];
   const result = run("git worktree list --porcelain", repoRoot);

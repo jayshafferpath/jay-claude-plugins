@@ -95,6 +95,25 @@ describe("parseResearchBaseline", () => {
   it("returns empty object when no baseline line is present", () => {
     expect(parseResearchBaseline("just some prose")).toEqual({});
   });
+
+  it("stops at a trailing parenthetical instead of swallowing it", () => {
+    // Real NEV-1446 shape: the parenthetical and the sentence after it used to be
+    // absorbed into the repo key, which then derived a phantom sidecar path and
+    // made verifySidecars a silent no-op.
+    const line =
+      "Research baseline: pathccm/attribution-service@a371f69... " +
+      "(Epic feature branch {{NEV-1352}} = main@1967fc3 + NEV-1442 + NEV-1616). " +
+      "Decomposed 2026-08-04 after NEV-1440, NEV-1441.";
+    expect(parseResearchBaseline(line)).toEqual({
+      "pathccm/attribution-service": "a371f69",
+    });
+  });
+
+  it("ignores tokens that are not {repo}@{sha} shaped", () => {
+    expect(
+      parseResearchBaseline("Research baseline: r1@abc123, not-a-baseline"),
+    ).toEqual({ r1: "abc123" });
+  });
 });
 
 describe("parseCitations", () => {
@@ -132,6 +151,28 @@ describe("parseCitations", () => {
 
   it("returns an empty list when no citations are present", () => {
     expect(parseCitations("just a paragraph")).toEqual([]);
+  });
+
+  it("prefers the permalink's path when the display text is abbreviated", () => {
+    // Notes routinely label the link with just a basename. Resolving the label
+    // looked for `main.ts` at the repo root, which doesn't exist — so every such
+    // citation came back "file did not exist at baseline" → drifted.
+    const block =
+      "- [main.ts#L9-L17|https://github.com/pathccm/attribution-service/blob/a371f69/apps/jobs/batch-runner/src/main.ts#L9-L17]";
+    const citations = parseCitations(block);
+    expect(citations[0]).toMatchObject({
+      path: "apps/jobs/batch-runner/src/main.ts",
+      label: "main.ts",
+      start: 9,
+      end: 17,
+      repo: "attribution-service",
+      baselineSha: "a371f69",
+    });
+  });
+
+  it("keeps the display-text path for the plain form with no permalink", () => {
+    const citations = parseCitations("[src/x.ts#L1-L3]");
+    expect(citations[0]).toMatchObject({ path: "src/x.ts", label: "src/x.ts" });
   });
 });
 
@@ -188,6 +229,72 @@ describe("diffCitation", () => {
     expect(result.status).toBe("drifted");
     expect(result.reason).toBe("lines modified");
     expect(result.commits.length).toBeGreaterThan(0);
+  });
+
+  // `git log -L` needs continuous line history and a range that fits the file.
+  // When it exits non-zero the old code returned `unknown`, which still counted
+  // toward the totals that make the top-level verdict `drifted` — so the run
+  // cried wolf. These cover the content-comparison fallback that replaced it.
+  describe("fallback when git log -L fails", () => {
+    it("reports 'drifted' when the cited range no longer holds the same code", () => {
+      const repo = makeRepo("shrunk");
+      writeFileSync(join(repo, "f.txt"), "a\nb\nc\nd\ne\nf\n");
+      git("add f.txt", repo);
+      git('commit -m "initial"', repo);
+      const baseline = git("rev-parse HEAD", repo);
+      // The file shrinks below the cited range, so -L exits 128 with
+      // "file f.txt has only 1 lines".
+      writeFileSync(join(repo, "f.txt"), "a\n");
+      git("commit -am shrink", repo);
+
+      const result = diffCitation(
+        { path: "f.txt", start: 4, end: 6, baselineSha: baseline },
+        repo,
+      );
+      expect(result.status).toBe("drifted");
+      expect(result.check).toBe("line-range-fallback");
+      expect(result.reason).toMatch(/-L history unavailable/);
+    });
+
+    it("reports 'current' when the range is identical despite -L failing", () => {
+      const repo = makeRepo("unchanged-past-eof");
+      writeFileSync(join(repo, "f.txt"), "only\n");
+      git("add f.txt", repo);
+      git('commit -m "initial"', repo);
+      const baseline = git("rev-parse HEAD", repo);
+      writeFileSync(join(repo, "other.txt"), "x\n");
+      git("add other.txt", repo);
+      git('commit -m "other"', repo);
+
+      // Range exceeds the file at both ends, so -L is fatal — but f.txt is
+      // untouched, and "current" is the honest answer.
+      const result = diffCitation(
+        { path: "f.txt", start: 5, end: 9, baselineSha: baseline },
+        repo,
+      );
+      expect(result.status).toBe("current");
+      expect(result.check).toBe("line-range-fallback");
+    });
+
+    it("reports 'unknown' when the cited path can't be read at the baseline", () => {
+      const repo = makeRepo("unreadable-baseline");
+      writeFileSync(join(repo, "f.txt"), "a\n");
+      git("add f.txt", repo);
+      git('commit -m "initial"', repo);
+      const baseline = git("rev-parse HEAD", repo);
+      // Present at HEAD but absent at the baseline, and cited past EOF so -L
+      // fails and the fallback runs.
+      writeFileSync(join(repo, "late.txt"), "z\n");
+      git("add late.txt", repo);
+      git('commit -m "late"', repo);
+
+      const result = diffCitation(
+        { path: "late.txt", start: 5, end: 9, baselineSha: baseline },
+        repo,
+      );
+      expect(result.status).toBe("unknown");
+      expect(result.reason).toMatch(/unreadable/);
+    });
   });
 
   it("returns 'drifted (file removed)' when the file is gone at HEAD", () => {

@@ -92,16 +92,32 @@ export function extractImplementationNotes(text) {
 }
 
 // Parse `Research baseline: {repo}@{sha}, {repo2}@{sha2}` into a map.
+//
+// The value is anchored to whole `{repo}@{sha}` tokens rather than consumed to
+// end-of-line. Real baselines routinely carry trailing prose — a parenthetical
+// naming the Epic feature branch, then a sentence about when the ticket was
+// decomposed. Splitting the whole line on commas and treating everything before
+// the last `@` as a repo name folded that prose into the repo key, which then
+// derived a phantom sidecar path and made verifySidecars a silent no-op.
+//
+// Truncating at the first parenthetical / sentence break also keeps incidental
+// `{ref}@{sha}` mentions inside the prose (e.g. `main@1967fc3`) out of the map.
 export function parseResearchBaseline(notesBlock) {
   if (!notesBlock) return {};
   const m = notesBlock.match(/Research baseline:\s*([^\n]+)/);
   if (!m) return {};
+  const declarations = m[1].split(/\s+\(|\.\s|;\s/)[0];
   const out = {};
-  for (const piece of m[1].split(",")) {
-    const trimmed = piece.trim();
-    const at = trimmed.lastIndexOf("@");
-    if (at < 0) continue;
-    out[trimmed.slice(0, at).trim()] = trimmed.slice(at + 1).trim();
+  for (const piece of declarations.split(",")) {
+    // Trailing ellipsis after an abbreviated SHA is common in hand-authored
+    // baselines; strip it before requiring a full-token match.
+    const token = piece.trim().replace(/\.+$/, "");
+    // Token shape, not hex: the discriminator that matters is "one unbroken
+    // {repo}@{ref} with no spaces". Prose fails that on whitespace alone, and
+    // requiring hex would reject a ref that isn't a raw SHA.
+    const match = token.match(/^([A-Za-z0-9._/-]+)@([A-Za-z0-9._-]{3,40})$/);
+    if (!match) continue;
+    out[match[1]] = match[2];
   }
   return out;
 }
@@ -118,17 +134,29 @@ export function parseCitations(notesBlock) {
     const { path, start, end, perma } = match.groups;
     let repo = null;
     let baselineSha = null;
+    let permaPath = null;
     if (perma) {
       const permaMatch = perma.match(
-        /github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/blob\/(?<sha>[0-9a-f]{6,40})\//,
+        /github\.com\/(?<owner>[^/]+)\/(?<repo>[^/]+)\/blob\/(?<sha>[0-9a-f]{6,40})\/(?<path>[^#\s]+)/,
       );
       if (permaMatch) {
         repo = permaMatch.groups.repo;
         baselineSha = permaMatch.groups.sha;
+        permaPath = permaMatch.groups.path;
       }
     }
     citations.push({
-      path,
+      // The permalink's path segment wins over the link's display text. Notes
+      // routinely abbreviate the label to a basename (`main.ts#L9-L17`) while
+      // the URL carries the real repo-relative path
+      // (`apps/jobs/batch-runner/src/main.ts`). Resolving the label made every
+      // such citation look like a missing file at the repo root, so
+      // well-formedness reported "file did not exist at baseline" and the whole
+      // ticket came back `drifted` against an unchanged tree.
+      path: permaPath || path,
+      // Kept so callers can render what the ticket actually wrote, and so a
+      // path mismatch between label and permalink stays inspectable.
+      label: path,
       start: Number(start),
       end: end ? Number(end) : Number(start),
       repo,
@@ -331,14 +359,15 @@ export function diffCitation(citation, repoRoot, fallbackBaseline) {
     repoRoot,
   );
   if (log === null) {
-    // git log -L can fail when the path's history doesn't reach the baseline
-    // SHA (rare but possible after a rebase). Treat as unknown rather than
-    // false-positive drift.
-    return {
-      ...citation,
-      status: "unknown",
-      reason: "git log -L failed (history mismatch?)",
-    };
+    // `git log -L` needs continuous line history for the path, which a squash
+    // merge does not preserve. Since every ticket in this lifecycle ships to its
+    // feature branch via squash, a citation pinned to a squash-merged baseline
+    // fails here as a matter of course — not "rare, after a rebase" as this
+    // previously assumed. Returning `unknown` still counted toward the totals
+    // that make the top-level verdict `drifted`, so the run cried wolf on an
+    // untouched tree. Answer the actual question instead: did the cited range
+    // change between baseline and HEAD?
+    return diffCitationByRange(citation, repoRoot, baseline);
   }
   if (log.length === 0) {
     return { ...citation, status: "current" };
@@ -348,6 +377,45 @@ export function diffCitation(citation, repoRoot, fallbackBaseline) {
     status: "drifted",
     reason: "lines modified",
     commits: log.split("\n").filter(Boolean),
+  };
+}
+
+// Fallback line-range comparison that doesn't depend on path history.
+//
+// Reads the cited range out of the baseline blob and out of HEAD, and compares
+// the text. This is a weaker check than `git log -L` — it can't name the commits
+// responsible, and it compares by line number, so an edit above the range that
+// shifts it reads as drift. Both are the correct conservative answer here:
+// the range the notes point at no longer holds the same code.
+function diffCitationByRange(citation, repoRoot, baseline) {
+  const sliceRange = (ref) => {
+    const blob = run(
+      `git cat-file -p ${shellQuote(`${ref}:${citation.path}`)}`,
+      repoRoot,
+    );
+    if (blob === null) return null;
+    return blob.split("\n").slice(citation.start - 1, citation.end);
+  };
+
+  const before = sliceRange(baseline);
+  const after = sliceRange("HEAD");
+
+  if (before === null || after === null) {
+    return {
+      ...citation,
+      status: "unknown",
+      reason: "cited path unreadable at baseline or HEAD",
+      check: "line-range-fallback",
+    };
+  }
+  if (before.join("\n") === after.join("\n")) {
+    return { ...citation, status: "current", check: "line-range-fallback" };
+  }
+  return {
+    ...citation,
+    status: "drifted",
+    reason: "lines modified (compared by content; -L history unavailable)",
+    check: "line-range-fallback",
   };
 }
 
@@ -644,10 +712,16 @@ export async function driftCheck(ticketKey, { repoRoot, lite = false } = {}) {
       wellFormed.status === "unknown" &&
       lineRangeResults[idx].status === "current"
     ) {
-      return { ...lineRangeResults[idx], check: "line-range" };
+      return {
+        ...lineRangeResults[idx],
+        check: lineRangeResults[idx].check || "line-range",
+      };
     }
     /* c8 ignore stop */
-    return { ...lineRangeResults[idx], check: "line-range" };
+    return {
+      ...lineRangeResults[idx],
+      check: lineRangeResults[idx].check || "line-range",
+    };
   });
 
   // Pattern pass: pair each parsed pattern with its citation diff (so
