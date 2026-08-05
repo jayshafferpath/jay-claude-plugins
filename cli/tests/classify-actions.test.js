@@ -139,19 +139,7 @@ describe("classifyActions", () => {
     expect(out.queues.autoSafe[0].nextAction).toBe("cleanup-phase-1");
   });
 
-  it("rule 2: ClaudePRApproved → promote-to-main auto-safe", () => {
-    const out = classifyActions({
-      stacks: [
-        stack({
-          container: { key: "EPIC-1", featureBranch: "feat/x" },
-          tickets: [ticket("PROJ-2", { labels: ["ClaudePRApproved"] })],
-        }),
-      ],
-    });
-    expect(out.queues.autoSafe[0].nextAction).toBe("promote-to-main");
-  });
-
-  it("rule 3-4: ClaudeStackReady → awaiting-pr-approval manual", () => {
+  it("rule 2: ClaudeStackReady → awaiting-review manual", () => {
     const out = classifyActions({
       stacks: [
         stack({
@@ -160,7 +148,20 @@ describe("classifyActions", () => {
         }),
       ],
     });
-    expect(out.queues.manual[0].nextAction).toBe("awaiting-pr-approval");
+    expect(out.queues.manual[0].nextAction).toBe("awaiting-review");
+  });
+
+  it("never classifies on the retired ClaudePRApproved label", () => {
+    const out = classifyActions({
+      stacks: [
+        stack({
+          container: { key: "EPIC-1", featureBranch: "feat/x" },
+          tickets: [ticket("PROJ-2", { labels: ["ClaudePRApproved"] })],
+        }),
+      ],
+    });
+    expect(out.queues.autoSafe).toHaveLength(0);
+    expect(out.queues.idle[0].nextAction).toBe("idle");
   });
 
   it("rule 5: ClaudeFailed → failed (asks queue)", () => {
@@ -237,7 +238,7 @@ describe("classifyActions", () => {
             unmergedBlockers: ["EPIC-2"],
           },
           tickets: [
-            ticket("PROJ-9", { labels: ["ClaudePRApproved"] }),
+            ticket("PROJ-9", { labels: ["ClaudeStackReady"] }),
             ticket("PROJ-10", { mergedIntoMain: true }),
           ],
         }),
@@ -276,7 +277,7 @@ describe("classifyActions", () => {
           tickets: [
             ticket("PROJ-X", {
               mergedIntoMain: true,
-              labels: ["ClaudePRApproved"],
+              labels: ["ClaudeStackReady"],
             }),
           ],
         }),

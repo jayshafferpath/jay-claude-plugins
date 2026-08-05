@@ -152,12 +152,6 @@ app.post("/api/tickets/:key/approve-plan", async (request) => {
   return { ok: true, action: "plan approved" };
 });
 
-app.post("/api/tickets/:key/approve-pr", async (request) => {
-  const { key } = request.params;
-  await swapLabel(key, "ClaudeStackReady", "ClaudePRApproved");
-  return { ok: true, action: "PR approved" };
-});
-
 app.get("/api/tickets/:key/plan", async (request) => {
   const { key } = request.params;
   const planData = await readPlanSectionsFromJira(key);

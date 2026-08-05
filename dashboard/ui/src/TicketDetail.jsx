@@ -47,7 +47,6 @@ export function TicketDetail({ ticketKey, onAction }) {
   if (!detail) return <div className="detail-panel">Failed to load details.</div>;
 
   const canApprovePlan = detail.stateLabel === "ClaudePlanNeedsApproval";
-  const canApprovePR = detail.stateLabel === "ClaudeStackReady";
   const canRequestReview = !!detail.pr;
 
   return (
@@ -280,7 +279,7 @@ export function TicketDetail({ ticketKey, onAction }) {
         )}
       </div>
 
-      {(canApprovePlan || canApprovePR || canRequestReview) && (
+      {(canApprovePlan || canRequestReview) && (
         <div className="detail-actions">
           {canApprovePlan && (
             <button
@@ -288,14 +287,6 @@ export function TicketDetail({ ticketKey, onAction }) {
               onClick={() => onAction("approve-plan", ticketKey)}
             >
               Approve Plan
-            </button>
-          )}
-          {canApprovePR && (
-            <button
-              className="btn btn--primary"
-              onClick={() => onAction("approve-pr", ticketKey)}
-            >
-              Ready for PR
             </button>
           )}
           {canRequestReview && (

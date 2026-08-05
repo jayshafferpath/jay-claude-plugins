@@ -70,19 +70,19 @@ ClaudeWork                 durable: Claude owns this ticket
 ClaudeReady                eligible for planning
 ClaudePlanning             /plan-ticket in progress
 ClaudeExecuting            TDD execution in progress
-ClaudeStackReady           review done; awaiting PR-push gate
-ClaudePRApproved           user-applied gate: PR push proceeds
+ClaudeStackReady           review done; PR open, awaiting human review
 ClaudeStackComplete        container-level rollup; triggers Mode C
 ClaudeFailed               failure side-channel
 ```
 
 To enqueue a ticket: tag it `ClaudeWork` + `ClaudeReady`. To finish it: run `/cleanup KEY` after merge to main.
 
-The set is deliberately small. A state earns a label only when another *process* must see it — a peer agent (`ClaudePlanning`/`ClaudeExecuting` are distributed locks across parallel `/ticket-work` agents), a JQL query that has to find the ticket before anything can probe it, or a human handing work back (`ClaudeReady`, `ClaudePRApproved`). Everything else is read from the system that already records it:
+The set is deliberately small. A state earns a label only when another *process* must see it — a peer agent (`ClaudePlanning`/`ClaudeExecuting` are distributed locks across parallel `/ticket-work` agents), a JQL query that has to find the ticket before anything can probe it, or a human handing work in (`ClaudeReady`). Everything else is read from the system that already records it:
 
 | State | Read from |
 | --- | --- |
 | Out for review | An open PR (`getOpenPrMap`), or Jira status "In Review"/"Code Review"/"Review". `resolve-stack` surfaces `entry.inReview` and `entry.openPr`; `transition-jira {KEY} --event review` moves the status on PR push. |
+| PR approved | GitHub review state on the PR itself. There is no approval label — every PR opens as a draft, and a human marking it ready and approving it is the gate. |
 | Merged | `git merge-base` / merged-PR lists (`mergedIntoFeature`, `mergedIntoMain`). |
 | Phase-1 cleanup ran | The `merged/{KEY}` git tag from `/cleanup` Step 2d. |
 | Implementation Notes current | `drift-check` diffs the research baseline SHA against HEAD — idempotent, so no marker is needed. |
@@ -155,7 +155,7 @@ The main engine. Idempotent — reads checklist state from Jira and resumes wher
 - **Gate 1** (pre-execute, S3.4): sets `complexity:trivial`. Skips `/plan-ticket` and runs execute in no-plan mode (single-batch test authoring).
 - **Gate 2** (post-execute, S4.3.5): decided from actual diff size. Skips `@refactor` and `/jay-pr-review`. In-memory only; no Jira label.
 
-**Stack behavior**: containered tickets merge locally into their feature branch after review passes. Standalone tickets stop at `ClaudeStackReady` and wait for the user to apply `ClaudePRApproved`.
+**Stack behavior**: containered tickets merge locally into their feature branch after review passes. Standalone tickets run straight through `ClaudeStackReady` and open a draft PR against `main`; the draft state is the checkpoint, so nothing merges until a human marks it ready and approves it.
 
 **Mode C**: when a container's last child ships (`ClaudeStackComplete`), the feature branch is pushed as a single PR — to `main`, or to the parent Epic's branch for nested Stories — reusing the same PR push & review sub-procedure with a final draft → ready flip.
 
@@ -358,20 +358,17 @@ Starting from a PRD in Jira:
 1. Tag ticket ClaudeWork + ClaudeReady in Jira.
 
 2. /ticket-work KEY
-     ↳ no container, so no feature branch. Runs the same pipeline but
-       stops at ClaudeStackReady with a draft PR open. Waits.
+     ↳ no container, so no feature branch. Runs the same pipeline and
+       ends at ClaudeStackReady with a draft PR open against main.
 
 3. Review the diff locally / in GitHub.
-4. Apply ClaudePRApproved label in Jira.
+4. Mark the PR ready for review on GitHub when it looks right.
 
-5. /ticket-work KEY (or /orchestrate)
-     ↳ sees the gate, pushes PR to "ready for review".
-
-6. /cop-fight
+5. /cop-fight
      ↳ waits for CI, judges Copilot comments, dismisses noise, fixes real issues.
 
-7. Merge in GitHub.
-8. /cleanup KEY.
+6. Merge in GitHub.
+7. /cleanup KEY.
 ```
 
 ### 3. Mid-stack drift: blocker merged while a Story was in flight
@@ -451,12 +448,12 @@ Morning:
   /orchestrate
     ↳ auto-runs safe steps:
        - /cleanup for tickets whose PR merged overnight
-       - PR push for tickets with ClaudePRApproved
+       - /promote-to-main for containers whose phase-1 cleanup already ran
        - promote-downstream for freshly-unblocked dependents
     ↳ surfaces needs-human list:
        - ClaudeFailed tickets (investigate)
        - drift-detected tickets (review Jira comment, decide /rework?)
-       - stack-ready standalone tickets (review diff, apply ClaudePRApproved?)
+       - stack-ready tickets (review the open PR, mark ready + approve?)
 
 Address the list, then:
   /ticket-work         (queue mode picks up freshly-Ready work)

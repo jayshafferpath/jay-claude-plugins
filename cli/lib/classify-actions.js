@@ -1,6 +1,6 @@
 // Classify each ticket's next lifecycle action from a stacks snapshot.
 //
-// Implements the 9-rule first-match decision table from /orchestrate Step 3.
+// Implements the 8-rule first-match decision table from /orchestrate Step 3.
 // Pure data → next_action; the actual side effects (running /cleanup,
 // /promote-to-main, etc.) stay in the orchestrator command.
 //
@@ -84,21 +84,14 @@ function classifyTicket(ticket, ctx) {
     };
   }
 
-  // Rule 2
-  if (hasLabel(ticket, "ClaudePRApproved")) {
-    return {
-      key: ticket.key,
-      nextAction: "promote-to-main",
-      autoSafe: true,
-      reason: "ClaudePRApproved",
-    };
-  }
-
-  // Rules 3 & 4 collapse — both produce awaiting-pr-approval, manual.
+  // Rule 2 — ClaudeStackReady means review passed and the PR is open (into the
+  // feature branch for containered tickets, into main for standalone ones).
+  // There is no label-gated PR-push step anymore, so the only thing left is a
+  // human reviewing and merging that PR.
   if (hasLabel(ticket, "ClaudeStackReady")) {
     return {
       key: ticket.key,
-      nextAction: "awaiting-pr-approval",
+      nextAction: "awaiting-review",
       autoSafe: false,
       reason: "ClaudeStackReady",
     };
@@ -241,11 +234,11 @@ export function classifyActions({ stacks, mergedToParentFeatureBranch = {} }) {
       } else if (c.nextAction === "failed" || c.nextAction === "ticket-work") {
         queues.asks.push(c);
       } else if (
-        c.nextAction === "awaiting-pr-approval" ||
+        c.nextAction === "awaiting-review" ||
         c.nextAction === "blocked-on-container" ||
         c.nextAction === "blocked-on-stack"
       ) {
-        if (c.nextAction === "awaiting-pr-approval") {
+        if (c.nextAction === "awaiting-review") {
           queues.manual.push(c);
         } else {
           queues.blocked.push(c);

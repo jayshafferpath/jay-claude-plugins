@@ -31,9 +31,7 @@ describe("QUEUE_QUERIES", () => {
   });
 
   it("preserves the inFlight JQL", () => {
-    expect(QUEUE_QUERIES.inFlight).toContain(
-      'labels IN ("ClaudeExecuting", "ClaudePRApproved")',
-    );
+    expect(QUEUE_QUERIES.inFlight).toContain('labels = "ClaudeExecuting"');
   });
 
   it("does not filter on retired labels — progress labels are mutually exclusive", () => {
@@ -41,6 +39,7 @@ describe("QUEUE_QUERIES", () => {
       expect(query).not.toContain("ClaudeNeedsReview");
       expect(query).not.toContain("ClaudeDriftChecked");
       expect(query).not.toContain("ClaudePendingMainPromotion");
+      expect(query).not.toContain("ClaudePRApproved");
     }
   });
 });

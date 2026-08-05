@@ -48,11 +48,19 @@ const STEP_LABELS = [
   "Refactoring pass with @refactor agent",
   "PR review plan generated with /jay-pr-review",
   "Stack ready (unblocks downstream) — TERMINAL STATE",
-  "PR approved",
+  "PR approval gate (retired)",
   "PR description and title generated with /jay-pr-description",
   "PR pushed as draft",
   "PR review summary posted",
 ];
+
+// 1-indexed step numbers for retired lifecycle stages. The slot is kept so
+// step numbering stays stable across every consumer (the S4.8–S4.10 step
+// names, the S4.6b slot mapping, render.js, and historical Jira checklists),
+// but it describes work that no longer happens and is always pre-marked done.
+//   7 → the ClaudePRApproved gate: standalone tickets now flow straight from
+//       stack-ready to opening their PR against main, with no label to apply.
+const RETIRED_STEPS = new Set([7]);
 
 // 1-indexed step numbers that are skipped on the trivial complexity tier.
 // Step numbering stays stable across tiers — these steps are pre-marked
@@ -63,6 +71,7 @@ const STEP_LABELS = [
 //   5 → /jay-pr-review plan
 const TRIVIAL_SKIPPED_STEPS = new Set([1, 4, 5]);
 const TRIVIAL_SKIP_SUFFIX = " (skipped: trivial)";
+const RETIRED_SKIP_SUFFIX = " (skipped: retired)";
 
 async function seedSteps() {
   const steps = Array(STEP_LABELS.length).fill(false);
@@ -81,8 +90,6 @@ async function seedSteps() {
 
   if (prExists) {
     for (let i = 0; i < 9; i++) steps[i] = true;
-  } else if (hasLabel("ClaudePRApproved")) {
-    for (let i = 0; i < 7; i++) steps[i] = true;
   } else if (hasLabel("ClaudeStackReady")) {
     for (let i = 0; i < 6; i++) steps[i] = true;
   } else {
@@ -131,10 +138,18 @@ async function seedSteps() {
     }
   }
 
+  // Retired stages are always done — nothing ever opens them.
+  for (const num of RETIRED_STEPS) {
+    steps[num - 1] = true;
+  }
+
   return { steps, complexity };
 }
 
 function labelFor(num, complexity) {
+  if (RETIRED_STEPS.has(num)) {
+    return STEP_LABELS[num - 1] + RETIRED_SKIP_SUFFIX;
+  }
   if (complexity === COMPLEXITY_TRIVIAL && TRIVIAL_SKIPPED_STEPS.has(num)) {
     return STEP_LABELS[num - 1] + TRIVIAL_SKIP_SUFFIX;
   }

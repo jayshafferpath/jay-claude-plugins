@@ -49,7 +49,7 @@ describe("labelState", () => {
 
 describe("actionHint", () => {
   it("returns hint for stack ready", () => {
-    expect(actionHint("ClaudeStackReady")).toBe("ready for PR?");
+    expect(actionHint("ClaudeStackReady")).toBe("awaiting review");
   });
 
   it("returns null for states without a hint", () => {

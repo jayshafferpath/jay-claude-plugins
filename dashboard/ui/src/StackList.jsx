@@ -5,7 +5,7 @@ function ticketColor(ticket) {
   if (ticket.stateLabel === "ClaudeFailed") return "failed";
   if (ticket.waitingOn) return "waiting";
   if (ticket.state === "PR open") return "done";
-  if (["ClaudeStackReady", "ClaudePRApproved"].includes(ticket.stateLabel)) return "done";
+  if (ticket.stateLabel === "ClaudeStackReady") return "done";
   if (["ClaudeExecuting", "ClaudePlanning"].includes(ticket.stateLabel)) return "active";
   if (["ClaudePlanNeedsApproval", "ClaudePlanApproved"].includes(ticket.stateLabel)) return "pending";
   return "idle";
