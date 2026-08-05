@@ -184,16 +184,28 @@ function subsectionHeaderRe(label) {
 }
 
 // Pull a labelled subsection out of the Implementation Notes block. The
-// planner emits sections as `*Existing patterns to extend:*` followed by a
+// planner emits sections as `*How this works today:*` followed by a
 // bulleted list, terminated by the next `*…:*` heading or end-of-block.
+//
+// `label` may be a single string or a list of accepted spellings. The planner's
+// Notes format moved from prescriptive labels ("Existing patterns to extend",
+// "Files likely to change") to descriptive ones ("How this works today",
+// "Relevant surfaces") — but tickets created under the old format are still in
+// flight, and their Notes blocks are immutable history. Both spellings must
+// resolve or the drift verifiers silently no-op on every pre-existing ticket.
+// First match in list order wins.
 function extractSubsection(notesBlock, label) {
   if (!notesBlock) return null;
-  const match = notesBlock.match(subsectionHeaderRe(label));
-  if (!match) return null;
-  const start = match.index + match[0].length;
-  const remainder = notesBlock.slice(start);
-  const nextHeader = remainder.match(ANY_SUBSECTION_HEADER);
-  return nextHeader ? remainder.slice(0, nextHeader.index) : remainder;
+  const labels = Array.isArray(label) ? label : [label];
+  for (const candidate of labels) {
+    const match = notesBlock.match(subsectionHeaderRe(candidate));
+    if (!match) continue;
+    const start = match.index + match[0].length;
+    const remainder = notesBlock.slice(start);
+    const nextHeader = remainder.match(ANY_SUBSECTION_HEADER);
+    return nextHeader ? remainder.slice(0, nextHeader.index) : remainder;
+  }
+  return null;
 }
 
 // Iterate the bullet items in a subsection. Bullets are `*` or `-` prefixed.
@@ -205,11 +217,17 @@ function bulletLines(section) {
     .filter((line) => line.length > 0);
 }
 
-// Parse `*Existing patterns to extend:*` bullets. Each bullet has the shape:
+// Accepted spellings per subsection, newest first. See extractSubsection for
+// why the legacy prescriptive labels stay supported.
+const PATTERNS_LABELS = ["How this works today", "Existing patterns to extend"];
+const SURFACES_LABELS = ["Relevant surfaces", "Files likely to change"];
+const TESTS_LABELS = ["Existing test coverage", "Tests likely to extend"];
+
+// Parse `*How this works today:*` bullets. Each bullet has the shape:
 //   *{Pattern name}* — `{symbol}` in [{path}#L{start}-L{end}|{permalink}] — {description}
 // We tolerate missing pieces (no symbol, no description, plain citation form).
 export function parsePatterns(notesBlock) {
-  const section = extractSubsection(notesBlock, "Existing patterns to extend");
+  const section = extractSubsection(notesBlock, PATTERNS_LABELS);
   if (!section) return [];
   const out = [];
   for (const line of bulletLines(section)) {
@@ -226,9 +244,11 @@ export function parsePatterns(notesBlock) {
   return out;
 }
 
-// Parse a list of `\`{path}\` — {reason}` bullets. Used by both the
-// "Files likely to change" and "Tests likely to extend" subsections. Tests can
+// Parse a list of `\`{path}\` — {note}` bullets. Used by both the
+// "Relevant surfaces" and "Existing test coverage" subsections. Entries can
 // also carry a `[…|permalink]` citation; we keep both fields when present.
+// Directory entries (trailing slash) are kept — verifyPathExists resolves them
+// via `git ls-tree`, which handles dir pathspecs.
 function parsePathBullets(notesBlock, label) {
   const section = extractSubsection(notesBlock, label);
   if (!section) return [];
@@ -252,11 +272,11 @@ function parsePathBullets(notesBlock, label) {
 }
 
 export function parseFilesLikelyToChange(notesBlock) {
-  return parsePathBullets(notesBlock, "Files likely to change");
+  return parsePathBullets(notesBlock, SURFACES_LABELS);
 }
 
 export function parseTestsLikelyToExtend(notesBlock) {
-  return parsePathBullets(notesBlock, "Tests likely to extend");
+  return parsePathBullets(notesBlock, TESTS_LABELS);
 }
 
 // Constraints stay raw — the agent decides whether they're still applicable

@@ -48,7 +48,7 @@ You are conversational — you present your analysis, wait for feedback, and ite
 4. **Multi-Epic capable**: Large features produce multiple Epics, each representing a major capability or bounded context.
 5. **Explicit parallelism**: Every ticket gets "Blocks" links to define execution order. Tickets without inward blockers can run in parallel. This drives `/ticket-work`'s scheduling.
 6. **Pattern-aware decomposition over a clone cache**: Before writing Gherkin or subtasks for the first Epic, research the codebase for existing patterns (modules, conventions, abstractions) the work should reuse or extend. Each repo named in a TDD's `**Repos**:` line is shallow-cloned into `{TDD_REPO}/.planner-cache/{org}/{repo}` (gitignored) at init time. All research — both Epic-level (init) and per-ticket — runs locally inside the cache via Read/Glob/Grep, with permalinks pinned to the cached SHA so they're immutable. Epic-wide patterns and constraints live in **per-repo sidecar files** (`{TDD_REPO}/docs/tdds/{slug}/{repo-name}.research.md`) — one sidecar per repo the TDD touches, each pinned to that repo's `origin/HEAD` at init time. The TDD body stays capability-level; Jira tickets link to the TDD section for context and consult the relevant sidecars during per-ticket research.
-7. **Per-ticket research baseline**: When a ticket is created, run a fresh narrow research pass scoped to that ticket and inject an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. The research runs against the local clone cache — re-entry runs `git fetch` per cached repo first so per-ticket Notes pin to current upstream HEAD, not the older `initialized_sha`. This baseline is what `/ticket-work` later diffs against to detect drift before execution begins.
+7. **Per-ticket research baseline — orientation, not a change plan**: When a ticket is created, run a fresh narrow research pass scoped to that ticket and inject an `Implementation Notes` block with sha-pinned permalinks and a recorded baseline SHA. The block describes **only code that exists at that SHA** — how the area works today, which surfaces are relevant, what tests cover it, what constrains a change. It does not name the files that will change, prescribe which pattern to follow, or specify tests to write: that design work happens at execution time in `/plan-ticket`, against current HEAD, by whoever has the working tree open. A planner writing a file-level change plan weeks ahead of execution is generating drift and, worse, an instruction the executor will follow over the AC. The research runs against the local clone cache — re-entry runs `git fetch` per cached repo first so per-ticket Notes pin to current upstream HEAD, not the older `initialized_sha`. This baseline is what `/ticket-work` later diffs against to detect drift before execution begins.
 8. **TDD must be initialized before decomposition**: A TDD has to pass `@planner init {slug}` before any decomposition runs. Init validates the TDD's shape (H1, capability sections, `**Repos**:` declarations as GitHub slugs, valid heading anchors), verifies `gh auth` and per-repo access, populates the local clone cache, runs Epic-level codebase research **per (capability, repo) pair**, and writes one sidecar per repo (all under `{TDD_REPO}/docs/tdds/{slug}/`). The TDD's frontmatter records init via a `repos:` array — one entry per repo, each carrying its own `github_slug`, `initialized_sha`, and sidecar path. Subsequent `@planner {slug}` runs hard-gate on this — they refuse with a "run init first" message if the array is absent or malformed. This pulls the heaviest research work out of the per-decomposition path and into a one-time setup, so re-entry runs stay light.
 
 9. **TDD ownership and consumer pointers**: Every TDD has exactly one **owner repo** — the repo that holds the canonical markdown body. Owner init writes `mode: owner`, `owner_repo`, and `owner_path` into the TDD frontmatter. Other repos that need to plan against this TDD run **consumer init** (`@planner init {owner-slug}:{tdd-slug}`), which writes a small **pointer file** at `{CONSUMER_REPO}/docs/tdds/{slug}.md` carrying frontmatter (`mode: consumer`, `owner_repo`, `owner_path`, `owner_sha`, `jira_project`, `repos:`) and a single human-readable line linking to the canonical body — *the TDD body itself is never copied*. Consumer init runs research only for the consumer's own repo(s), writes consumer-side sidecars under `{CONSUMER_REPO}/docs/tdds/{slug}/`, and refuses if the consumer's repo isn't named in any of the owner TDD's `**Repos**:` declarations. Decomposition in the consumer fetches the TDD body from the owner via `gh api ... ?ref={owner_sha}` (immutable), generates Epics/Stories scoped to the consumer's declared repos, and produces a separate Epic tree in the same Jira project. Cross-repo pattern citations link to the owner's sidecar URLs rather than re-cloning. A drift check at the start of each consumer decomposition compares the owner's current `origin/HEAD` body against `owner_sha` and warns if it has shifted.
@@ -206,7 +206,7 @@ For the first Epic:
 
 1. Look up its `repos` from Phase 2a.
 2. For each repo (keyed by `github_slug`) in that list, locate the sidecar at `{TDD_REPO}/{REPO_MAP[github_slug].sidecar}`. **Owner mode, or consumer mode where the repo is in the consumer's `REPO_MAP`**: `Read` the local file. **Consumer mode, repo is *not* in the consumer's `REPO_MAP`**: the sidecar lives in the owner repo. Compose `OWNER_SIDECAR_URL = https://github.com/{OWNER_REPO}/blob/{OWNER_SHA}/docs/tdds/{TDD_SLUG}/{repo-name}.research.md` and fetch it via `gh api repos/{OWNER_REPO}/contents/docs/tdds/{TDD_SLUG}/{repo-name}.research.md?ref={OWNER_SHA} --jq .content | base64 -d`. Cache the body in memory for the run; do **not** write it to the consumer's working tree. If the lookup doesn't resolve, surface a research gap as described below.
-3. Within the sidecar body, locate the H2 whose heading matches the first Epic's TDD section heading. Parse its `### Patterns to Follow` and `### Constraints` H3 subsections.
+3. Within the sidecar body, locate the H2 whose heading matches the first Epic's TDD section heading. Parse its `### Patterns Observed` and `### Constraints` H3 subsections. Accept `### Patterns to Follow` as an alias — sidecars written before the heading was renamed are still valid research, and are refreshed on the next `@planner init`.
 4. Build `EPIC_PATTERNS` as a per-repo map: `{ github_slug → { patterns: [...], constraints: [...], sidecar_url: <permalink-or-local-path>, source: "init" | "blocker", base_sha: <sha-the-patterns-pin-to> } }`. The `sidecar_url` is later used by Phase 5.0 when composing Implementation Notes for cross-repo citations — for owner-side sidecars fetched via `gh api`, every pattern citation in a consumer ticket should link to the owner's sidecar URL rather than embed the citation inline. `source` is `"init"` here; Phase 2c.6 overwrites it with `"blocker"` for repos it re-researches against a blocker branch. `base_sha` is what permalinks in these patterns pin to (the repo's `initialized_sha` for init baselines; the blocker-branch SHA for blocker-grounded patterns). Used in 2d, 2f, Phase 3, and Phase 5.0.
 
 **If a sidecar lacks the Epic's H2** (or the H3 subsections are empty), that's a research gap: surface it to the user and recommend re-running `@planner init {slug}` to refresh that repo's sidecar. Do not proceed to write Gherkin or subtasks without grounding patterns from at least one repo — the per-ticket research in Phase 5.0 covers narrow, ticket-specific scope but relies on Epic-level patterns for context.
@@ -285,7 +285,9 @@ For the first Epic, write Gherkin at two fidelities depending on whether the Sto
 
 You may need to iterate: sketch all scenario names first, run 2e to identify the dependency graph, then circle back and only flesh the parallel-startable ones.
 
-Use `EPIC_PATTERNS` (from 2c) to ground scenario language in real seams — e.g., if a codebase has a "command/handler" pattern, framing scenarios around the relevant handler boundaries makes downstream subtask scoping cleaner. For a multi-repo Epic, `EPIC_PATTERNS` is a per-repo map keyed by `github_slug`; cross-repo scenarios may pull seams from each side (e.g., a frontend trigger and a backend command). Don't drag implementation detail into Gherkin (it stays behavioral), but let the patterns shape *which* scenarios you call out as separate Stories.
+**Scenario boundaries come from behavior, not from file layout.** Split scenarios where the *observable outcome* differs — a distinct actor, trigger, or result — and let the executor discover which modules that touches. Codebase seams are not scenario seams: a capability that happens to span three modules today may be one behavior to a user, and a single module may host several. Deriving Gherkin from the current structure bakes today's layout into the acceptance criteria, so the AC starts drifting the moment anyone refactors, and it quietly rules out implementations that would have cut across the existing seams.
+
+Use `EPIC_PATTERNS` (from 2c) only to keep the *vocabulary* honest — name the domain concepts and actors the codebase already uses, so a scenario says "when the employer submits the claim" rather than inventing a synonym nobody greps for. That's terminology alignment. Do not let it decide which scenarios exist, and keep implementation detail out of the steps entirely. For a multi-repo Epic, `EPIC_PATTERNS` is a per-repo map keyed by `github_slug`; a cross-repo behavior is still **one** scenario if the user observes one outcome.
 
 Follow Gherkin best practices:
 - Use `Feature:` to frame the Epic-level capability
@@ -350,9 +352,9 @@ For each parallel-startable Gherkin scenario (Story), assess whether it needs to
 
 - **Hard rule: Subtasks must not contain code changes.** Code-touching work is always a Story. Subtasks are reserved for non-code work (spikes, design notes, documentation, manual QA, ops tasks). This is enforced because the lifecycle promotes Stories — not Subtasks — to main; a code-changing Subtask is unreachable to `/promote-to-main` and gets its branch deleted on cleanup before it can ship.
 
-- **If a Story would otherwise decompose into multiple code-changing subtasks, decompose into multiple Stories instead.** Each resulting Story should be independently promotable to main: a coherent slice of behavior with its own Gherkin scenario, blocker links to its predecessors, and (when appropriate) split along the repo seam (a single `github_slug` per Story where possible). Use Story blocker links to express the dependency order that would have been Subtask blocker links.
-  - Simple (1-2 Given/When/Then steps, single concern, single repo): one Story, no further split.
-  - Complex (3+ steps, multiple concerns, multiple layers, or multiple repos): split into multiple Stories along behavior or repo seams.
+- **If a Story would otherwise decompose into multiple code-changing subtasks, decompose into multiple Stories instead.** Each resulting Story should be independently promotable to main: a coherent slice of behavior with its own Gherkin scenario, blocker links to its predecessors, and (when appropriate) split along the repo seam (a single `github_slug` per Story where possible — a cross-repo change can't land in one PR, so that seam is a real promotion constraint, not an architectural guess). Use Story blocker links to express the dependency order that would have been Subtask blocker links.
+  - Simple (1-2 Given/When/Then steps, single observable behavior, single repo): one Story, no further split.
+  - Complex (3+ steps, several distinct observable behaviors, or multiple repos): split — but split along **behavioral** seams (what a user or caller can observe changing) or the repo seam, not along assumed implementation layers. "Add the column", "add the endpoint", "add the UI" are three slices of one behavior, none independently valuable; prefer one Story per behavior that ships end-to-end, and let the executor decide how to sequence the layers inside it.
 
 - **When subtasks ARE appropriate (non-code only):**
   - Spikes / research tasks that produce a doc or decision, not a code change.
@@ -362,10 +364,12 @@ For each parallel-startable Gherkin scenario (Story), assess whether it needs to
 
 - **Patterns live in per-repo sidecars, not in subtask descriptions**: subtask descriptions link to the TDD section for capability context; per-ticket Implementation Notes (Phase 5.0c) on Stories carry sha-pinned permalinks from the relevant repo's sidecar.
 
-When Stories have ordering dependencies, determine blockers between them:
-- A data-model Story typically blocks an API-endpoint Story which blocks a UI Story.
-- Test-only Stories depend on the implementation Stories they test.
-- Stories with no shared state or interfaces are independent (parallel).
+When Stories have ordering dependencies, determine blockers between them. **Derive the order from behavioral prerequisites in the Gherkin, not from an assumed implementation layering.** Blocker links become the actual execution order in Jira, so a guessed architecture encoded here is binding in a way a suggestion isn't.
+
+- Story B is blocked by Story A when B's `Given` steps describe state or behavior that only A's `Then` steps bring into existence. That's a fact about the scenarios, checkable without knowing how either is built.
+- Stories whose scenarios share no state, data, or observable interface are independent (parallel) — the default when in doubt.
+- Do **not** assume a data-model → API → UI chain, or any other layer ordering, as the default shape. That's an implementation strategy: it may be right, but it's the executor's call with the working tree open, and encoding it as blocker links forecloses vertical-slice approaches that would ship value sooner. If two Stories genuinely can't proceed in parallel and the reason is architectural rather than behavioral, say so in Phase 3 and let the user decide rather than silently linking them.
+- Test-only Stories are a smell — coverage usually belongs inside the Story whose behavior it verifies. If one exists anyway, it depends on the Story it tests.
 
 ### 2.5: Stale Ticket Detection
 
@@ -458,7 +462,7 @@ Source: {TDD_REPO}/{TDD_PATH}
 - docs/tdds/{TDD_SLUG}/{repo-1-name}.research.md (pinned to `{repo-1.initialized_sha}`)
 - docs/tdds/{TDD_SLUG}/{repo-2-name}.research.md (pinned to `{repo-2.initialized_sha}`)
 
-**Patterns** (summary by repo):
+**Patterns observed** (summary by repo — what exists today, not a directive):
 - {org/repo-1}: {pattern 1 name} — `{symbol}`; {pattern 2 name} — `{symbol}`
 - {org/repo-2}: {pattern 1 name} — `{symbol}`
 
@@ -588,7 +592,15 @@ The planner does **not** auto-edit the TDD — TDD changes go through normal cod
 
 Before creating each ticket (Epic / Story / Subtask), run a fresh research pass scoped to *that ticket's* slice. The output gets injected into the ticket description as an **Implementation Notes** block, and `/ticket-work` later uses it to detect drift before execution.
 
-This is heavier than the Epic-level research (Phase 2c) but produces richer per-ticket guidance and a SHA baseline that can be diffed against when work begins.
+**Implementation Notes orient; they do not design.** Every bullet must be a verifiable statement about code that exists at the baseline SHA — what's there, where it lives, how it currently behaves, what it forbids. Nothing in the block describes the change the executor is going to make. That's a deliberate boundary:
+
+- The planner pins a SHA when the ticket is *created*, which for a downstream Story can be weeks before anyone opens the code. A file-level change plan written then is drift by construction; a description of existing structure degrades far more gracefully and `drift-check` can actually verify it.
+- The planner reads the codebase but doesn't write it. Deciding which files a change touches, in what order, and how it's bundled is a decision made with the working tree in hand — that's `/plan-ticket`'s job at execution time, against current HEAD.
+- An enumerated list of files in a Jira ticket reads as a spec to whoever executes it, no matter how it's hedged. If the planner guesses wrong, the executor tends to comply with the guess rather than the AC.
+
+So: describe the terrain, name the constraints, cite the permalinks. Do not name the files that will change, do not prescribe which pattern to follow, do not specify what tests to write. If you catch yourself writing a bullet whose verb is imperative (*extend*, *add*, *follow*, *wire*) or whose subject is code that doesn't exist yet, delete it — it belongs in the plan, not the ticket.
+
+This is heavier than the Epic-level research (Phase 2c) but produces a sharper orientation and a SHA baseline that can be diffed against when work begins.
 
 Background context comes from the relevant repo's sidecar (the same H2 section that fed `EPIC_PATTERNS` in Phase 2c). For a single-repo ticket, that's one sidecar. For a multi-repo ticket (rare — most subtasks should split along the repo seam per Phase 2f), pull from each touched repo's sidecar.
 
@@ -597,7 +609,7 @@ Background context comes from the relevant repo's sidecar (the same H2 section t
 For each ticket about to be created:
 
 1. Identify the ticket's specific scope — the Story's Gherkin scenario, or the Subtask's single layer/concern. Determine its primary repo (a `github_slug` from `REPO_MAP`) and any secondary repos if the work is genuinely cross-repo. Skeleton Epics skip per-ticket research (they get re-researched on re-entry).
-2. Form 2–4 narrow research questions targeting *this* slice (e.g., "where do similar mutations live?", "what's the existing validation pattern for this kind of input?", "what tests would I extend?"). Scope each question to the relevant repo.
+2. Form 2–4 narrow research questions targeting *this* slice. Frame each as a question about what exists, not about what to do: "where does this behavior live today?", "how does this layer currently validate input?", "what does the existing test coverage for this area look like?" — not "what should I change?" or "what tests should I add?". Scope each question to the relevant repo.
 3. Run the research using the same toolchain as Phase 2c (Explore subagent for breadth, Glob/Grep for targeted lookups), running the searches inside each touched repo's **clone cache directory** (`{REPO_MAP[github_slug].cache_dir}`). The cache may already be checked out at a blocker-branch SHA from Phase 2c.5 (re-entry path) — research reads whatever is on disk, so retargeted repos automatically ground their per-ticket research in the blocker's code. Reuse insights from `EPIC_PATTERNS[github_slug]` (which for retargeted repos is already blocker-grounded, per Phase 2c.6) where applicable; don't redo identical work.
    - **Cross-repo cited from a non-cached repo (consumer mode only)**: if a ticket needs to reference a pattern in a repo the consumer didn't research locally (no entry in the consumer's `REPO_MAP`), do **not** clone that repo. Instead, link to the owner's sidecar URL recorded in `EPIC_PATTERNS[github_slug].sidecar_url` (resolved in Phase 2c). The Implementation Notes block uses a single `*See owner sidecar:* [{repo}]({sidecar_url})` line for that repo and skips per-pattern permalinks for it; the consumer is not expected to ground research it didn't run.
 
@@ -611,13 +623,9 @@ Compose a per-repo blob base: `https://github.com/{github_slug}/blob/{ticket_sha
 
 #### 5.0c: Compose the Implementation Notes Block
 
-Before composing the block, **verify each path in `*Files likely to change:*` and `*Tests likely to extend:*` against the cache on disk** for the correct repo. For every cited `{path}`:
+**Every path in the block must exist in the cache at `{ticket_sha}`.** Verify each one with `git -C {cache_dir} cat-file -e {ticket_sha}:{path}` (or a Glob in the cache) for the correct repo, and drop any that doesn't resolve. There is no "new file" entry in this format — a path that doesn't exist yet is part of the change, and the change isn't the planner's to specify. If research couldn't find an existing surface for some slice of the AC, say nothing about it rather than inventing a destination; `/plan-ticket` will find it with the working tree in hand.
 
-- If the file exists in `{REPO_MAP[github_slug].cache_dir}` at `{ticket_sha}`, frame the entry as an extension of the existing file (and, for a test file, name the existing file in `*Tests likely to extend:*` rather than implying a sibling needs to be created).
-- Only label a path as a new file when `git -C {cache_dir} cat-file -e {ticket_sha}:{path}` (or a Glob in the cache) confirms the path does not exist. Bias toward extension: prefer pointing at the nearest existing test file over inventing a parallel path.
-- If two plausible locations exist (e.g. `src/__tests__/pages/Foo.test.tsx` vs `src/pages/Foo.test.tsx`), pick the one already populated with sibling tests. Surface the choice in the `{brief reason}` so the executor can sanity-check it.
-
-This guard exists because `/ticket-work` will read these paths verbatim — a "new file" lie sends the executor on a wild-goose detour and the existing test file silently rots.
+This guard exists because `drift-check` verifies every path against HEAD and `/plan-ticket` reads them as orientation — a fabricated path either trips a false drift alarm or sends the executor somewhere that was never real.
 
 Each ticket description gets an `h2. Implementation Notes` section in this shape:
 
@@ -625,20 +633,29 @@ Each ticket description gets an `h2. Implementation Notes` section in this shape
   h2. Implementation Notes
   Research baseline: {primary_github_slug}@{primary_sha}{ (from {primary_blocker_key} feature branch) if blocker_key non-null}{, {repo2_github_slug}@{sha2}{ (from {repo2_blocker_key} feature branch) if blocker_key non-null} if multi-repo}
 
-  *Existing patterns to extend:*
-  * *{Pattern name}* — `{symbol}` in [{path}#L{start}-L{end}|{permalink}] — {1-2 sentences on what to follow and why}
-  * *{Pattern name}* — `{symbol}` in [{path}#L{start}-L{end}|{permalink}] — {what to follow}
+  *How this works today:*
+  * *{Behavior or mechanism}* — `{symbol}` in [{path}#L{start}-L{end}|{permalink}] — {1-2 sentences describing what this code does now and how it relates to the AC}
+  * *{Behavior or mechanism}* — `{symbol}` in [{path}#L{start}-L{end}|{permalink}] — {what it does now}
 
-  *Files likely to change:*
-  * `{path}` — {brief reason}
-  * `{path}` — {brief reason}
+  *Relevant surfaces:*
+  * `{path-or-directory}` — {what lives here today}
+  * `{path-or-directory}` — {what lives here today}
 
-  *Tests likely to extend:*
-  * `{path}` — {what test pattern to follow, with permalink to a representative existing test}
+  *Existing test coverage:*
+  * `{path}` — {what this suite covers today and how it's structured, with permalink}
 
   *Constraints:*
   * {anti-pattern, in-flight migration, or "none surfaced"}
 ```
+
+Notes on the subsections:
+
+- **`*How this works today:*`** — the behavioral map. Present tense, indicative mood: "all mutations route through here", "validation happens at the route boundary", "this hook owns the cache key". Never "follow this pattern" or "extend this".
+- **`*Relevant surfaces:*`** — where the relevant code lives. Prefer a **directory** over a file list when the directory is the honest answer (`src/cmd/` — "command handlers live here") — it orients without pretending to know which files move. Name individual files only when a specific one is unambiguously central to the existing behavior. This subsection is emphatically *not* a change manifest.
+- **`*Existing test coverage:*`** — what tests exist for this area and how they're written (table-driven, per-fixture, integration-only, absent entirely). "No direct coverage of this path" is a valid and useful entry. Don't say what tests to add.
+- **`*Constraints:*`** — the one subsection that legitimately constrains the change, because it reports facts that limit options: in-flight migrations, deprecated helpers, invariants enforced elsewhere, AC requirements from the TDD. Keep it.
+
+If a subsection has nothing honest to put in it, omit the subsection. An empty or padded subsection is worse than an absent one — `/plan-ticket` treats a present-but-thin block as researched ground.
 
 When any repo's baseline cites a blocker feature branch, append a one-line note immediately under the `Research baseline:` line:
 
@@ -1028,9 +1045,9 @@ Walk the H2 sections and identify each as a candidate Epic. Capture name, scope,
 For each `(capability, github_slug)` pair (the cartesian product, scoped to each capability's declared repos), run codebase research *inside that repo's clone cache* (`INIT_REPO_MAP[github_slug].cache_dir`, checked out at `initialized_sha` from Phase 2.6):
 
 - Determine the relevant subdirectories/modules in this repo
-- Form 3–5 narrow research questions targeting how this capability would land in this repo (e.g., "where do similar abstractions live?", "what's the existing testing pattern?", "what conventions does this layer follow?")
+- Form 3–5 narrow research questions about what exists in this area today (e.g., "where do similar abstractions live?", "how is this layer tested?", "what conventions does this layer follow?"). Ask what's there, not what the change should do — init runs before any Story is scoped, so a design opinion formed here is the least-informed one in the whole pipeline.
 - Use the Explore subagent for breadth, Glob/Grep for targeted lookups. Read `CLAUDE.md`/`AGENTS.md` if present in the cache for conventions.
-- Synthesize findings as a list of `{Pattern, Symbol, Permalink, Why}` records and a list of `{Constraint, Permalink (if anchored), Why}` records. Patterns surface reusable seams, constraints surface anti-patterns, in-flight migrations, or rules to honor.
+- Synthesize findings as a list of `{Pattern, Symbol, Permalink, What it does today}` records and a list of `{Constraint, Permalink (if anchored), Why}` records. Patterns describe existing seams in the indicative mood; constraints surface anti-patterns, in-flight migrations, or invariants a change has to honor.
 
 Permalinks pin to that repo's `initialized_sha` (set in Phase 2.6 — `origin/HEAD` at the moment the cache was fetched). Different repos pin to different SHAs — that's expected.
 
@@ -1054,10 +1071,10 @@ Each sidecar has this shape:
 
 ## {Capability Heading 1}
 
-### Patterns to Follow
+### Patterns Observed
 
-- **{Pattern 1}** — `{symbol}` in [{path}#L{start}-L{end}]({permalink}) — {why}
-- **{Pattern 2}** — `{symbol}` in [{path}#L{start}-L{end}]({permalink}) — {why}
+- **{Pattern 1}** — `{symbol}` in [{path}#L{start}-L{end}]({permalink}) — {what this does today}
+- **{Pattern 2}** — `{symbol}` in [{path}#L{start}-L{end}]({permalink}) — {what this does today}
 
 ### Constraints
 
@@ -1065,14 +1082,16 @@ Each sidecar has this shape:
 
 ## {Capability Heading 2}
 
-### Patterns to Follow
+### Patterns Observed
 ...
 ```
 
 Rules:
 - The sidecar contains **only the H2 sections for capabilities that touch this repo** (i.e., capabilities whose `**Repos**:` line includes this `github_slug`). If a capability doesn't touch the repo, omit it entirely.
 - H2 heading text matches the TDD's capability heading verbatim — this is what Phase 2c's lookup will match against.
-- If a `(capability, repo)` pair has no patterns, omit the `### Patterns to Follow` subsection. Same for constraints. Don't write empty placeholders.
+- If a `(capability, repo)` pair has no patterns, omit the `### Patterns Observed` subsection. Same for constraints. Don't write empty placeholders.
+- **`Patterns Observed`, not "Patterns to Follow".** A sidecar records what the research found, in the indicative mood: "mutations route through `CommandHandler`", not "route mutations through `CommandHandler`". Whether a given pattern *should* be followed for a given change is a design judgment made at execution time with the working tree open — the sidecar's job is to make sure that judgment is informed, not to pre-empt it. Sidecars are also long-lived and shared across every Epic in the TDD, so a directive written for one capability becomes a rule misapplied to five others.
+- Re-init overwrites sidecars in place, so existing sidecars carrying the older `### Patterns to Follow` heading are refreshed to `### Patterns Observed` on the next `@planner init` run. Phase 2c accepts either spelling in the meantime.
 - Permalinks use the `https://github.com/{github_slug}/blob/{repo_initialized_sha}/{path}#L{start}-L{end}` form, pinned to that repo's `initialized_sha` from Phase 2.6.
 
 #### 4b: Write the sidecars

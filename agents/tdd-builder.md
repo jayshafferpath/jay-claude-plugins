@@ -395,7 +395,7 @@ Walk `SCOPE.goals` and propose H2 capabilities. Each candidate capability has:
 - **Name** (will become the H2 heading) — short, behavioral, slug-stable. Avoid punctuation that disappears under slugify.
 - **Scope** (2–3 sentences) — what behavior this capability covers.
 - **Repos** — the `github_slug`s this capability touches, derived from where the relevant seams live (per `RESEARCH`). Every capability touches at least one repo.
-- **Existing patterns to extend** — concrete references from `RESEARCH.probe_findings` (e.g., `command/handler pattern in src/commands/`). Inform the reader; don't prescribe.
+- **Patterns observed** — concrete references from `RESEARCH.probe_findings` describing what exists today (e.g., `command/handler pattern in src/commands/`). Indicative mood, not imperative: inform the reader; don't prescribe. Matches the framing planner's sidecars and Implementation Notes use downstream.
 - **Open questions** — anything the research couldn't pin down for this capability.
 
 Decomposition heuristics:
