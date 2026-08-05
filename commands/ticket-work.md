@@ -701,24 +701,22 @@ diff is read once now.
    Do not pass file contents.
 
    Always:
-   - `quality:code-reviewer` — correctness bugs, error handling, dropped promises,
-     null cases. No style nits.
+   - `diff-critic` — correctness defects, contract changes, and test-coverage gaps.
+     Read-only; reports findings.
    - `refactor` — CRAP hotspots, DRY violations, structural smells, **plus** the
      **Code Style** principles in `~/.claude/CLAUDE.md`. This agent has write
      authority: it implements refactorings and style fixes that are clearly
      beneficial and behavior-preserving, and skips anything marginal or subjective.
 
    Conditionally:
-   - `quality:security-auditor` — when the diff touches auth, input handling,
-     persistence, logging, secrets, or shells out.
-   - `testing:test-automator` — when a source file changed without a matching test
-     change.
+   - `diff-security` — when the diff touches auth, input handling, persistence,
+     logging, secrets, crypto, IaC, shells out, or adds a dependency.
 
    Every agent gets: "These files changed as part of ticket {TICKET_KEY}. Only flag
    issues introduced or worsened by this branch — do not report pre-existing issues in
    unchanged code, and do not enlarge the diff opportunistically. Return findings as
    `{severity, file, line, summary, fix}` with severity ∈ critical|high|medium|low.
-   Say 'clean' rather than inventing findings. Project-local conventions in the
+   Return `[]` rather than inventing findings. Project-local conventions in the
    surrounding files win over any general guide."
 
 5. After the agents return, if any of them changed code, run `FULL_TEST` (this is the
@@ -733,7 +731,7 @@ diff is read once now.
    severity, every actionable item a `- [ ]` checkbox so `post-review-summary` and
    `pr-execute-plan` can parse it. Mark items the `refactor` agent already fixed as
    `- [x]` with `(fixed in review pass)`. Follow the plan format in
-   `commands/jay-pr-review.md` Step 5.
+   `commands/_pr-review-format.md`.
 
 7. Apply Stage Squash Protocol: `stage-squash {TICKET_KEY} --label "review: combined review pass" --base {BASE_BRANCH} --branch {BRANCH_NAME}`.
 8. Mark steps 4 **and** 5 done in one `sync-checklist` call — step 5 is now satisfied by

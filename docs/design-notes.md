@@ -158,6 +158,43 @@ files) and given a public-API veto. The narrow original window meant most real
 tickets missed the skip and paid all three passes; the risk-path and API vetoes
 carry the safety load, and anything skipped is still covered by CI and `/cop-fight`.
 
+## Why the review agents are local and lean
+
+`/jay-pr-review` and S4.4 used to spawn the vendored `rula-plugins` reviewers:
+`quality:code-reviewer` (192 lines), `quality:security-auditor` (156),
+`quality:architect-review` (161), and `testing:test-automator` (238). Those prompts are
+written as capability résumés — "Integration with modern AI review tools (Trag, Bito,
+Codiga)", "Low-Code/No-Code Testing Platforms", `## Example Interactions` — and every
+spawn paid for all 747 lines to get maybe 75 lines of applicable instruction. Their
+scopes also overlapped: `code-reviewer` already covers security basics, test quality,
+and architecture, so three of the four largely re-derived the first one's findings from
+the same diff.
+
+They are replaced by two local agents, `diff-critic` and `diff-security` (~62 lines
+each), split by lens rather than by specialty so they don't overlap. `architect-review`'s
+one load-bearing concern — a changed public API whose consumers weren't updated — folded
+into `diff-critic` as its "contract changes" section, and `test-automator`'s review role
+folded in as "test coverage". `test-automator` was never the right agent for a review
+pass anyway: it is built to *write* test suites, and giving a review step write authority
+over tests invites diff enlargement.
+
+Both new agents are read-only and return a JSON array rather than prose, so merging two
+agents' findings is a data operation instead of a summarization. `diff-security` is now
+gated on the diff being security-relevant at all, so a docs-only or pure-refactor branch
+spawns one agent instead of four.
+
+The vendored agents are left installed and untouched — other consumers may reference
+them, and this repo doesn't own that cache.
+
+## Why the plan format lives in its own fragment
+
+Two callers write `pr-review-{BRANCH}.md`: `/jay-pr-review` Step 5 and `/ticket-work`
+S4.4. S4.4 used to cite "the plan format in `commands/jay-pr-review.md` Step 5" — a
+cross-command reference to a *step number*, which breaks silently the moment either
+command is renumbered. The format now lives in `commands/_pr-review-format.md` and both
+cite it by filename. The `_` prefix keeps `install.sh` from linking it as a slash
+command.
+
 ## Why the inner loop runs a narrowed test scope
 
 S4.2's per-task cycle used to run the **full suite** after every task, then again at

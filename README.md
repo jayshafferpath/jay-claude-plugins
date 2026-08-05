@@ -147,13 +147,13 @@ State lives in Jira as a comment, not in `.plans/`.
 
 The main engine. Idempotent — reads checklist state from Jira and resumes wherever it left off.
 
-- **Leaf key** (`/ticket-work KEY`): runs one ticket through drift-check → plan → execute (TDD Red-Green-Refactor per plan task) → verify AC → refactor (`@refactor`) → review (`/jay-pr-review`) → stack-ready.
+- **Leaf key** (`/ticket-work KEY`): runs one ticket through drift-check → plan → execute (TDD Red-Green-Refactor per plan task) → verify AC → combined review pass (`@refactor` + `diff-critic`, conditionally `diff-security`) → stack-ready.
 - **Container key** (`/ticket-work EPIC-1` or a Story): resolves the stack and runs the next unblocked member — one per invocation; re-run to advance.
 - **No discovery mode**: `/ticket-work` requires a key. `/orchestrate` is what finds eligible work across stacks.
 
 **Complexity tiers**: two independent gates control which steps run.
 - **Gate 1** (pre-execute, S3.4): sets `complexity:trivial`. Skips `/plan-ticket` and runs execute in no-plan mode (single-batch test authoring).
-- **Gate 2** (post-execute, S4.3.5): decided from actual diff size. Skips `@refactor` and `/jay-pr-review`. In-memory only; no Jira label.
+- **Gate 2** (post-execute, S4.3.5): decided from actual diff size. Skips the whole S4.4 combined review pass. In-memory only; no Jira label.
 
 **Stack behavior**: containered tickets merge locally into their feature branch after review passes. Standalone tickets run straight through `ClaudeStackReady` and open a draft PR against `main`; the draft state is the checkpoint, so nothing merges until a human marks it ready and approves it.
 
@@ -163,7 +163,14 @@ CI green and Copilot comments are **not** automatic — run `/cop-fight` on dema
 
 #### `/jay-pr-review [BASE]`
 
-Generates a PR review plan at `.plans/pr-review-<branch>.md`. Fans out specialist agents in parallel (via the `Agent` tool) and aggregates their findings into a single checklist file. `/ticket-work` calls this at S4.5; you can also run it manually against any branch.
+Generates a PR review plan at `.plans/pr-review-<branch>.md`. Fans out the two local review agents in parallel (via the `Agent` tool) and merges their findings into a single checklist file.
+
+- `diff-critic` — always. Correctness defects, contract changes, test-coverage gaps.
+- `diff-security` — skipped when the diff is security-inert (no auth, input handling, persistence, logging, secrets, crypto, IaC, shell-out, or new dependency).
+
+Both are read-only and return JSON. Plan format lives in `commands/_pr-review-format.md`, shared with `/ticket-work` S4.4.
+
+`/ticket-work` does **not** call this command — S4.4 runs its own fan-out over the same diff (adding the write-authorized `@refactor` agent) and writes the same artifact. Run `/jay-pr-review` manually against any branch.
 
 Base defaults: `$ARGUMENTS` → `git config branch.<BRANCH>.base` → `gh pr view --json baseRefName` → `main`.
 
