@@ -21,9 +21,15 @@ export const ACTION_PRESENTATION = Object.freeze({
   // without a merge probe. Rendered explicitly so such a ticket never looks
   // idle when it is in fact indeterminate.
   unknown: { hint: "state unknown", tone: "unknown" },
-  // Merged with no branch left on disk — cleanup already ran. Distinguished from
-  // idle so a shipped ticket doesn't read as one nobody has started.
+  // Merged to main with no branch left on disk — cleanup already ran.
+  // Distinguished from idle so a shipped ticket doesn't read as one nobody has
+  // started.
   cleaned: { hint: "cleaned up", tone: "idle" },
+  // Merged into a feature branch, but neither the branch nor the merged/{KEY}
+  // tag survives — there is nothing left to replay onto main. Toned as `failed`
+  // because unshippable merged work is a worse state than blocked work: no
+  // command recovers it, so it needs a human before it is silently lost.
+  stranded: { hint: "unshippable — needs recovery", tone: "failed" },
   idle: { hint: null, tone: "idle" },
 });
 

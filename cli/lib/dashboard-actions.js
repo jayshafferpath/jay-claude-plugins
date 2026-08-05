@@ -63,6 +63,11 @@ const SUGGESTED_COMMANDS = Object.freeze({
   // Cleanup already ran — re-running /cleanup would refuse on the deleted
   // branch, so there is deliberately nothing to offer or copy.
   cleaned: null,
+  // Merged into a feature branch with neither branch nor merged/{KEY} tag left.
+  // No command recovers this: /promote-to-main needs one or the other to replay
+  // from. Recovery means locating the squash commit by hand, so there is nothing
+  // honest to suggest — the classifier's reason string carries the diagnosis.
+  stranded: null,
   idle: null,
 });
 
