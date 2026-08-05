@@ -357,14 +357,18 @@ Tickets carry an optional `complexity:trivial` or `complexity:standard` label th
 2. If `labels` contains `complexity:trivial` or `complexity:standard`, skip the rest of
    S3.4 and continue to S3.5 — but keep the bindings above; the later steps need them
    regardless of tier.
-3. Otherwise classify from `GHERKIN_SCENARIOS` and `IMPL_NOTES` (already in hand from step 1). Decide tier using this rubric:
+3. Otherwise classify from `GHERKIN_SCENARIOS` and `IMPL_NOTES` (already in hand from step 1). Decide tier using this rubric.
+
+   **What the tier decides**: `trivial` skips `/plan-ticket`. Since `/plan-ticket` is where file-level design happens — the planner's Implementation Notes describe existing code and deliberately stop short of naming what changes (`agents/planner.md` Principle 7) — skipping it means the executor designs inline while implementing. That's fine when the change surface is self-evident from the AC and genuinely small. It is not fine merely because the ticket has rich Notes: orientation is not a plan, and a well-researched ticket can still describe a wide change.
+
    - **trivial** — Gate 1 fires. Skip plan, run execute in no-plan mode. Eligible when **any** of:
-     - Implementation Notes is **complete** — has a non-empty `*Existing patterns to extend:*` AND a non-empty `*Files likely to change:*` AND (when AC has Gherkin scenarios) a non-empty `*Tests likely to extend:*`. The planner already did the design work; a separate `/plan-ticket` pass would only restate it. File count is **not** capped — what matters is whether the design surface is enumerated, not its width.
      - AC has zero Gherkin scenarios (nothing branchy to plan against).
-     - AC is a single Gherkin scenario with ≤3 `Then` clauses.
+     - AC is a single Gherkin scenario with ≤3 `Then` clauses **and** its `*Relevant surfaces:*` (or legacy `*Files likely to change:*`) names at most 2 entries, none of them a directory. A directory entry means the file set is still unresolved — that resolution is the plan.
      - Mechanical edit: rename, typo, doc tweak, copy change, dependency bump that doesn't touch interfaces.
 
-     **Bias-toward-standard veto**: if any of the words `migration`, `auth`, `permission`, `schema`, `rollout`, `feature flag`, `security`, `compliance` appear in the AC or summary, choose **standard** regardless of the above. Also choose **standard** if Implementation Notes lists `*Files likely to change:*` with more than 6 entries — at that width, the order of operations and bundling decisions become load-bearing and worth a plan even when the surface is enumerated.
+     **Bias-toward-standard veto**: if any of the words `migration`, `auth`, `permission`, `schema`, `rollout`, `feature flag`, `security`, `compliance` appear in the AC or summary, choose **standard** regardless of the above.
+
+     Note the deliberate change here: Implementation Notes being *complete* no longer implies `trivial`. It used to, back when the planner enumerated `*Files likely to change:*` and a plan would only have restated it. The planner no longer predicts the change surface, so rich Notes now mean "well-oriented", not "already designed" — and inferring `trivial` from them would skip planning exactly on the tickets whose research suggests real surface area. Expect a higher share of `standard` than before; that's the intended trade, since the design work moved rather than disappeared.
    - **standard**: anything else. When in doubt between trivial and standard, choose **standard**. Misclassifying as trivial loses real review surface; misclassifying as standard only costs ceremony.
 4. Apply the chosen label via `mcp__atlassian__editJiraIssue` with `update`: `{"labels": [{"add": "complexity:trivial"}]}` (or `complexity:standard`).
 5. Append to the activity log:

@@ -533,6 +533,78 @@ _Files likely to change:_
   });
 });
 
+// The planner's Notes format moved from prescriptive labels ("Existing patterns
+// to extend", "Files likely to change") to descriptive ones ("How this works
+// today", "Relevant surfaces"). Tickets created under the old format are still
+// in flight and their Notes blocks are immutable history, so both spellings
+// must parse — otherwise every verifier silently no-ops on pre-existing tickets
+// and drift-check reports a clean bill of health it never checked.
+describe("subsection label aliases", () => {
+  it("parses the current descriptive labels", () => {
+    const block = `*How this works today:*
+* *Command routing* — \`CommandHandler\` in [src/cmd/handler.ts#L40-L88|https://github.com/o/r/blob/abc/src/cmd/handler.ts#L40-L88] — all mutations route through here
+
+*Relevant surfaces:*
+* \`src/cmd/\` — command handlers live here
+
+*Existing test coverage:*
+* \`src/cmd/__tests__/handler.test.ts\` — table-driven, one case per command`;
+
+    const patterns = parsePatterns(block);
+    expect(patterns).toHaveLength(1);
+    expect(patterns[0].symbol).toBe("CommandHandler");
+
+    expect(parseFilesLikelyToChange(block).map((f) => f.path)).toEqual([
+      "src/cmd/",
+    ]);
+    expect(parseTestsLikelyToExtend(block).map((t) => t.path)).toEqual([
+      "src/cmd/__tests__/handler.test.ts",
+    ]);
+  });
+
+  it("still parses the legacy prescriptive labels", () => {
+    const block = `*Existing patterns to extend:*
+* *Auth middleware* — \`requireSession\` in [src/auth.ts#L10-L40|https://github.com/o/r/blob/abc/src/auth.ts#L10-L40] — follow this
+
+*Files likely to change:*
+* \`src/foo.ts\` — adds the endpoint
+
+*Tests likely to extend:*
+* \`tests/foo.test.ts\``;
+
+    expect(parsePatterns(block)[0].symbol).toBe("requireSession");
+    expect(parseFilesLikelyToChange(block).map((f) => f.path)).toEqual([
+      "src/foo.ts",
+    ]);
+    expect(parseTestsLikelyToExtend(block).map((t) => t.path)).toEqual([
+      "tests/foo.test.ts",
+    ]);
+  });
+
+  it("prefers the current label when a block carries both spellings", () => {
+    const block = `*Relevant surfaces:*
+* \`src/current.ts\`
+
+*Files likely to change:*
+* \`src/legacy.ts\``;
+    expect(parseFilesLikelyToChange(block).map((f) => f.path)).toEqual([
+      "src/current.ts",
+    ]);
+  });
+
+  it("parses descriptive labels in the italic emphasis form", () => {
+    const block = `_How this works today:_
+* *Factory shape* — \`createThing\` in [src/a.ts#L1-L5|https://github.com/o/r/blob/abc/src/a.ts#L1-L5] — builds instances here
+
+_Relevant surfaces:_
+* \`src/b.ts\``;
+    expect(parsePatterns(block)[0].symbol).toBe("createThing");
+    expect(parseFilesLikelyToChange(block).map((f) => f.path)).toEqual([
+      "src/b.ts",
+    ]);
+  });
+});
+
 describe("subsection heading emphasis forms", () => {
   // extractSubsection is shared by every subsection parser, so the italic form
   // has to work for all of them — not just Constraints.

@@ -81,11 +81,13 @@ Run:
 drift-check {TICKET_KEY} --repo-root {WORK_DIR}
 ```
 
-Parse the JSON output (see `commands/ticket-work.md` S3.5a/b for the field semantics). The CLI now runs the **full** check battery by default — line-range citations *plus* symbol presence, path existence for files-likely-to-change and tests-likely-to-extend, TDD Reference resolution, and per-repo sidecar presence. The same JSON also passes through `constraintsRaw` for the manual constraints pass below.
+Parse the JSON output (see `commands/ticket-work.md` S3.5a/b for the field semantics). The CLI now runs the **full** check battery by default — line-range citations *plus* symbol presence, path existence for the relevant-surfaces and existing-test-coverage entries (reported under the `filesLikelyToChange` / `testsLikelyToExtend` JSON keys, which kept their names across the Notes format change), TDD Reference resolution, and per-repo sidecar presence. The same JSON also passes through `constraintsRaw` for the manual constraints pass below.
 
 - **`status === "no-notes"`**: stop and display "{TICKET_KEY} has no Implementation Notes block — nothing to refresh." (Already handled in Step 2.)
 - **`status === "current"`** (no drift): proceed to **Step 3.5** (Constraints pass). If that pass also returns no drift, append an activity-log entry `Drift check passed (manual) — research baseline still current.` and display a confirmation to the user.
-- **`status === "drifted"`**: re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, and post the diff comment per `commands/ticket-work.md` S3.5c "Drift detected" branch. The diff comment must call out **every** drifted check type — citations whose symbols moved/were removed, files-likely-to-change that no longer exist, TDD anchor mismatches, and missing sidecars — not just line-range diffs.
+- **`status === "drifted"`**: re-run per-ticket research from `agents/planner.md` Phase 5.0, replace the Implementation Notes block, and post the diff comment per `commands/ticket-work.md` S3.5c "Drift detected" branch. The diff comment must call out **every** drifted check type — citations whose symbols moved/were removed, cited surfaces that no longer exist, TDD anchor mismatches, and missing sidecars — not just line-range diffs.
+
+  The rewritten block uses Phase 5.0c's current format (`*How this works today:*`, `*Relevant surfaces:*`, `*Existing test coverage:*`, `*Constraints:*`), even when the ticket previously carried the older prescriptive labels — a refresh is a good moment to migrate the block. Phase 5.0's orientation-only rule applies in full: describe the code as it exists at the new baseline, and don't take the opportunity to write a change plan the ticket didn't have before.
 
 ### Step 3.5: Constraints pass (LLM verification)
 

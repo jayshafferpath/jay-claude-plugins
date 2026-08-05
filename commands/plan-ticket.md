@@ -1,5 +1,5 @@
 ---
-description: "Lightweight plan generator for a Jira ticket. Reads AC + Implementation Notes from Jira, writes a short implementation checklist to Jira as a managed plan comment. No EARS, no codebase research — that work belongs upstream in planner/TDD."
+description: "Lightweight plan generator for a Jira ticket. Reads AC + Implementation Notes from Jira, verifies the surfaces against the working tree, and writes a short implementation checklist to Jira as a managed plan comment. No EARS."
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
@@ -8,6 +8,9 @@ allowed-tools:
   - Bash(rm *)
   - Read
   - Write
+  - Glob
+  - Grep
+  - Agent
 ---
 
 # /plan-ticket
@@ -16,10 +19,11 @@ Generate a short, focused implementation plan for a Jira ticket and sync it to J
 
 - **State lives in Jira**, not in `.plans/`. The plan is a managed Jira comment (`sync-plan`).
 - **No EARS expansion.** Acceptance criteria already exist on the ticket as Gherkin; restating them as EARS adds ceremony without information.
-- **No Explore subagent.** Codebase research is the `planner` phase's job (Implementation Notes). This command consumes that research, not duplicates it.
+- **This is where file-level design happens.** The planner's Implementation Notes describe how the code works *today* at a pinned SHA — they deliberately don't name the files a change touches (see `agents/planner.md` Principle 7). Deciding which files change, in what order, and how work is bundled requires the working tree at current HEAD, which only this command has. So a bounded research pass belongs here.
+- **Bounded research, not a re-survey.** The Notes give you the terrain — start from their permalinks and surfaces rather than exploring from scratch. Verify what they claim, then extend only as far as the AC requires.
 - **No persistent local plan file.** A short markdown file is written to a tmp path, synced, then deleted.
 
-The output is a checklist of 3-7 implementation tasks grounded in the ticket's Implementation Notes, framed as `- [ ] task` bullets so `sync-plan` can read progress back via `--read` and `--mark-done`.
+The output is a checklist of 3-7 implementation tasks grounded in the AC and verified against the working tree, framed as `- [ ] task` bullets so `sync-plan` can read progress back via `--read` and `--mark-done`.
 
 ---
 
@@ -59,16 +63,31 @@ Locate the `h2. Acceptance Criteria` block (or `## Acceptance Criteria` in markd
 Locate the `h2. Implementation Notes` block. Extract these subsections (any may be absent):
 
 - `Research baseline` — repo SHA(s) the planner used.
-- `*Existing patterns to extend:*` — bullet list of `symbol — path:line — why` entries.
-- `*Files likely to change:*` — bullet list of file paths with one-line rationale.
-- `*Tests likely to extend:*` — bullet list of test paths.
+- `*How this works today:*` — bullet list of `symbol — path:line — what it does today` entries. (Legacy tickets: `*Existing patterns to extend:*`.)
+- `*Relevant surfaces:*` — bullet list of paths or directories where the relevant code lives. (Legacy tickets: `*Files likely to change:*`.)
+- `*Existing test coverage:*` — bullet list of test paths and how they're structured. (Legacy tickets: `*Tests likely to extend:*`.)
 - `*Constraints:*` — bullet list of constraints, often citing TDD requirements.
 
-Store each as an array of bullets. Treat `*Files likely to change:*` and `*Existing patterns to extend:*` as the **design backbone** — the plan tasks should map roughly 1:1 onto file groupings here.
+Accept both spellings — tickets created before the Notes format changed are still in flight.
+
+Store each as an array of bullets. These are **orientation, not a design**: the planner recorded what existed at the baseline SHA and deliberately stopped short of naming the files a change touches. Do not treat `*Relevant surfaces:*` as a change manifest or map tasks 1:1 onto it — a directory entry like `src/cmd/` means "handlers live here", not "one task per file in here". `*Constraints:*` is the exception: those are binding, and the plan must respect them.
 
 ### 2c: TDD Reference
 
 Locate `h2. TDD Reference` if present — capture path + anchor. The plan header should link to it.
+
+---
+
+## Step 2.5: Ground the plan in the working tree
+
+The Notes describe the baseline SHA; you're planning against current HEAD in the actual working directory. This step turns orientation into a concrete change surface. **Keep it bounded — this is a verification pass over ground the planner already mapped, not a fresh survey.**
+
+1. **Read the cited code.** For each `*How this works today:*` bullet, `Read` the cited path at the lines given (or `Grep` the symbol if the lines have moved). Confirm the described behavior still holds. This is usually 2-5 files and is the highest-value part of the step.
+2. **Resolve surfaces to files.** For each `*Relevant surfaces:*` entry: if it's a file, confirm it exists; if it's a directory, `Glob` it to see what's actually inside and identify the specific files the AC implicates. This is where the file list gets *created* — by looking, not by inheriting a guess.
+3. **Locate the test surface.** From `*Existing test coverage:*`, find the suite you'll extend and read enough of it to match its structure (table-driven vs per-case, fixture setup, helper imports). If the Notes say coverage is absent, find the nearest sibling suite and follow its conventions rather than inventing a layout.
+4. **Only if the AC names behavior the Notes don't cover**, spawn one `Explore` subagent with a narrow question to find it. Cap at one — if a single scoped Explore can't locate it, the ticket's AC and its research have diverged, which is a drift problem (`/refresh-research`), not something to paper over with a guessed plan.
+
+Bind the result as `SURFACE` — the concrete list of files this change touches, each with a one-line reason, derived from what you just read. **`SURFACE` is yours, not the ticket's.** If it diverges from the Notes' surfaces (a module moved, the real entry point is elsewhere, the change is wider or narrower than the terrain suggested), that's expected and correct — note the divergence in the plan's `## Notes` section so the reviewer sees the reasoning. Do not edit the ticket's Implementation Notes to match; those record the research baseline and `drift-check` compares against them.
 
 ---
 
@@ -78,10 +97,11 @@ Synthesize a short markdown plan. **Hard ceiling: 7 implementation tasks.** Aim 
 
 ### Task-derivation rules
 
-1. **One task per file group in `*Files likely to change:*`** — if two files have the same purpose (e.g., a service and its test), bundle them into one task.
-2. **Add one task for tests** if `*Tests likely to extend:*` lists separate test surfaces from `*Files likely to change:*`. Otherwise fold tests into the matching code task ("Update `foo.ts` + add tests in `foo.test.ts`").
-3. **Add one task for documentation / OpenAPI / config** only if the AC explicitly requires it. Don't add boilerplate "update CHANGELOG" tasks.
-4. **Drop everything else.** No "review requirements", no "research patterns", no "manual testing". Those are not implementation tasks.
+1. **One task per coherent change in `SURFACE`** (from Step 2.5) — group files that move together for one reason (a handler and its test, a type and its consumer) into a single task. Task count follows the shape of the change you found, not the length of any list in the ticket.
+2. **Order tasks so each leaves the tree working** where the change allows it. Prefer the sequence that gets to a passing test earliest. Don't impose a data-model → API → UI ordering by default; that's one strategy among several and the AC rarely requires it.
+3. **Fold tests into the code task they cover** ("Update `foo.ts` + extend `foo.test.ts`"). Give tests their own task only when the test surface is genuinely separate — a new integration suite, or coverage spanning several of the code tasks.
+4. **Add one task for documentation / OpenAPI / config** only if the AC explicitly requires it. Don't add boilerplate "update CHANGELOG" tasks.
+5. **Drop everything else.** No "review requirements", no "research patterns", no "manual testing". Those are not implementation tasks.
 
 ### Wording
 
@@ -92,12 +112,12 @@ Each task should:
 
 ### When Implementation Notes is sparse or missing
 
-If the ticket has AC but no Implementation Notes (or only a stub):
-- Derive tasks directly from Gherkin scenarios — one task per `Given` clause's setup target, collapsed where two scenarios touch the same surface.
-- Include a single trailing task: `Add tests covering all AC scenarios.`
-- Prefix the plan header with a one-line note: `> Plan derived from AC only — no Implementation Notes available. Surface files may be wrong; revise after first read of the codebase.`
+If the ticket has AC but no Implementation Notes (or only a stub), Step 2.5 has no terrain to start from. Widen it rather than guessing:
+- Spawn one `Explore` subagent scoped to the AC's domain to locate the relevant code, then run Step 2.5's read-and-resolve passes over what it finds.
+- Derive tasks from the resulting `SURFACE` as usual.
+- Prefix the plan header with: `> No Implementation Notes on the ticket — surfaces located by direct exploration at HEAD.`
 
-This is a degraded mode and should be rare — `/prework`'s drift check + planner Phase 5.0 should ensure Implementation Notes exist for most tickets.
+This costs one extra subagent, not a wrong plan. It should still be uncommon — `/prework`'s drift check plus planner Phase 5.0 mean most tickets arrive with orientation.
 
 ---
 
@@ -125,9 +145,10 @@ This is a degraded mode and should be rare — `/prework`'s drift check + planne
 
    ## Notes
 
-   {one-line note ONLY when degraded-mode plan or when an unusual decision was made,
-    e.g. "Bundling routes + middleware in one task because they share the same Express plugin."
-    Skip the section entirely otherwise.}
+   {one-line note ONLY when the header carries a degraded-mode warning, when SURFACE
+    diverged from the ticket's Implementation Notes (say how and why), or when an unusual
+    bundling decision was made — e.g. "Bundling routes + middleware in one task because
+    they share the same Express plugin." Skip the section entirely otherwise.}
    ```
 
    No EARS section. No "Testing Strategy" section. No "Documentation Updates" section. No "Research Phase" section. Keep it under ~30 lines including the header.
@@ -157,11 +178,19 @@ Plan generated for {TICKET_KEY}: {n} implementation tasks
   Next step: /ticket-work resumes at S4.2 (execute).
 ```
 
-If degraded mode was used, append:
+If the ticket had no Implementation Notes, append:
 
 ```
-  ⚠ Plan derived from AC only — Implementation Notes were missing.
-    Review the plan in Jira before letting execute proceed.
+  ⚠ No Implementation Notes on the ticket — surfaces located by direct
+    exploration at HEAD. Review the plan in Jira before letting execute proceed.
+```
+
+If `SURFACE` diverged from the ticket's Implementation Notes, append:
+
+```
+  ℹ Plan surface differs from the ticket's Implementation Notes ({what moved}).
+    Notes record the research baseline and were left unchanged; run
+    /refresh-research {TICKET_KEY} if the baseline itself looks stale.
 ```
 
 ---
@@ -177,7 +206,8 @@ If degraded mode was used, append:
 ## What this command does NOT do
 
 - Move Jira status (`/ticket-work` S4.1 handles `ClaudePlanning` transition).
-- Run the Explore subagent or codebase research.
+- Re-survey the codebase from scratch. Step 2.5 verifies and extends the planner's orientation; it is capped at one `Explore` subagent (widened only when the ticket has no Implementation Notes at all).
+- Edit the ticket's Implementation Notes. Those record the research baseline that `drift-check` compares against — divergences go in the plan's `## Notes`, and a genuinely stale baseline is `/refresh-research`'s job.
 - Write to `.plans/` or any persistent local path.
 - Append to the activity log (`/ticket-work` S4.1 handles the activity comment).
 - Squash stage commits (`/ticket-work` S4.1 handles `stage-squash`).

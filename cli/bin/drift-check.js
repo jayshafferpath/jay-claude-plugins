@@ -16,9 +16,11 @@ if (args.includes("--help") || args.length === 0) {
       "against the working tree. Default (full) mode runs:\n" +
       "  - Citation well-formedness (path, line range, baseline reachability)\n" +
       "  - Citation line-range diff (existing behavior)\n" +
-      "  - Symbol presence for each `*Existing patterns to extend:*` bullet\n" +
-      "  - Path existence for `*Files likely to change:*` bullets\n" +
-      "  - Path existence for `*Tests likely to extend:*` bullets\n" +
+      "  - Symbol presence for each `*How this works today:*` bullet\n" +
+      "  - Path existence for `*Relevant surfaces:*` bullets\n" +
+      "  - Path existence for `*Existing test coverage:*` bullets\n" +
+      "    (legacy label spellings are also accepted: `*Existing patterns to\n" +
+      "     extend:*`, `*Files likely to change:*`, `*Tests likely to extend:*`)\n" +
       "  - TDD Reference path + anchor still resolve at HEAD\n" +
       "  - Per-repo sidecar files referenced by Research baseline\n" +
       "\n" +
