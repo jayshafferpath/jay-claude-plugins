@@ -18,72 +18,45 @@ Overwrite `PLAN_FILE` if it exists.
 
 ## Step 2: Gather diff context (parallel)
 
-- `git diff <BASE>...HEAD --stat`
-- `git diff <BASE>...HEAD --name-only`
+- `git diff <BASE>...HEAD --numstat`
 - `git log <BASE>..HEAD --oneline`
-- `gh pr view --json number,title,body,reviews,comments` (tolerate failure)
+- `gh pr view --json number,title,body` (tolerate failure)
+
+`--numstat` yields the changed-file list and the per-file counts in one call — don't
+also run `--stat` or `--name-only`.
 
 ## Step 3: Fan out review agents (single message, parallel)
 
-Pass each agent the file list and diff range — let them read what they need.
+Pass each agent `BASE`, the range `<BASE>...HEAD`, and the file list. Pass file paths,
+never file contents — the agents read what they need.
 
-**Always:**
-- `quality:code-reviewer` — correctness bugs, error handling, dropped Promises, null cases. Skip style.
-- `quality:security-auditor` — secrets, input validation, auth bypass, PII in logs, unsafe exec/SQL.
+- `diff-critic` — always. Correctness defects, contract changes, test gaps.
+- `diff-security` — unless the diff is **security-inert**: no changed file touches
+  auth, input handling, persistence, logging, secrets, crypto, IaC, or shells out,
+  and no dependency was added. When skipped, note it in the plan's Notes.
 
-**Conditional:**
-- `quality:architect-review` — if 3+ source files changed or any public API signature changed.
-- `testing:test-automator` — if any source file changed without a matching test change.
+Prefix every agent prompt with:
 
-Each agent returns findings as `{severity, file, line, summary, fix}` where severity ∈ `critical | high | medium | low`. No style nits. No invented findings — say "clean" if nothing.
+> Only flag issues introduced or worsened by this branch. Do not report pre-existing
+> issues in unchanged code. Project-local conventions in the surrounding files win over
+> any general guide. Return `[]` rather than inventing findings.
 
-## Step 4: PR reviewer comments (if PR exists)
+Both agents are read-only and return a JSON array of
+`{severity, file, line, summary, fix}`. Merge the arrays; when both report the same
+`file:line`, keep the higher severity and one summary.
 
-- `PR_NUM` from `gh pr view`
-- `owner/repo` from `gh repo view --json nameWithOwner -q .nameWithOwner`
-- `gh api repos/<owner>/<repo>/pulls/<PR_NUM>/comments --paginate`
-- `gh api repos/<owner>/<repo>/pulls/<PR_NUM>/reviews`
+## Step 4: PR reviewer comments (skip if no PR)
 
-Capture author, file:line, body, bot flag (`user.login` ends in `[bot]`). Do not classify bot comments — that's `/cop-fight`'s job. Skip step if no PR.
+- `gh pr view --json number -q .number` → `PR_NUM`; skip this step if it fails
+- `gh api repos/{owner}/{repo}/pulls/<PR_NUM>/comments --paginate`
+
+Capture author, `file:line`, body, and bot flag (`user.login` ends in `[bot]`). Do not
+classify bot comments — that's `/cop-fight`'s job.
 
 ## Step 5: Write the plan
 
-```markdown
-# PR Review Plan: <BRANCH>
-
-- **Base**: <BASE>
-- **Files changed**: <N> (<+>/<->)
-- **PR**: <#NUM URL> or "Not yet opened"
-- **Generated**: <YYYY-MM-DD>
-
-## Summary
-<2-3 sentences from commits + diff.>
-
-## Findings
-Group by severity. Omit empty sections.
-
-### Critical
-- [ ] `file.ts:42` — <summary>. Fix: <recommendation>. (source: <agent>)
-
-### High / Medium / Low
-- [ ] ...
-
-## Reviewer Comments
-- [ ] `file.ts:42` — @reviewer: "<body>". <Agree | Disagree | Needs decision> — <rationale>.
-- [ ] `file.ts:42` — github-copilot[bot]: "<claim>". Needs review by /cop-fight.
-
-If no PR: "No PR open — skipped."
-
-## Missing Tests
-- [ ] `file.ts` — no test file. Cover: <functions>.
-
-If skipped: "Test coverage not analyzed."
-
-## Notes
-Open questions, architectural concerns needing a decision.
-```
-
-Every actionable item must be a `- [ ]` checkbox so `pr-execute-plan` can parse it.
+Follow the structure in `commands/_pr-review-format.md`. Every actionable item must be a `- [ ]`
+checkbox so `post-review-summary` and `pr-execute-plan` can parse it.
 
 ## Step 6: Report
 
