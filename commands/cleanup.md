@@ -59,7 +59,7 @@ Parse `$ARGUMENTS` into:
 
 ### 1b: Resolve Stack Context
 
-Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `FETCH=true`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
+Run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={TICKET_KEY}` and `FETCH=true`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
 - `BRANCH_NAME` = ticket's `branch`
 - `SUMMARY` = ticket's `summary`
 
@@ -181,7 +181,7 @@ cd {REPO_ROOT} && git tag -f merged/{TICKET_KEY} {MERGE_SHA}
 cd {REPO_ROOT} && git push --force origin refs/tags/merged/{TICKET_KEY}
 ```
 
-`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is retired only by Step 4d's main-merge pass, so a terminal-cleaned leaf keeps it. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`); commands that consume clean stack state (`/promote-to-main` Step 1b-final, `/ticket-work` S1d and Q4.5, `/stack-rebase` Step 1.5) backfill via that sub-procedure when this tag is missing on a `mergedIntoFeature` ticket, and refuse only when the backfill itself cannot produce the tag.
+`-f` and `--force` make this idempotent — re-running `/cleanup` on the same ticket repoints the tag harmlessly. The tag is retired only by Step 4d's main-merge pass, so a terminal-cleaned leaf keeps it. The tag is the load-bearing input to the **Ensure Cleanup Prerequisites** sub-procedure (`commands/_shared-stack-procedures.md`); commands that consume clean stack state (`/promote-to-main` Step 1b-final, `/ticket-work` S1d and Q4.5, `/stack-rebase` Step 1.5) backfill via that sub-procedure when this tag is missing on a `mergedIntoFeature` ticket, and refuse only when the backfill itself cannot produce the tag.
 
 If the push fails (network, permissions): warn and continue. The local tag is in place; the remote can be re-pushed manually with `git push --force origin refs/tags/merged/{TICKET_KEY}`. The downstream gate will catch the missing remote tag and re-trigger cleanup.
 
@@ -291,7 +291,7 @@ Display: "Deleted branch {BRANCH_NAME} (local + remote)."
 
 Retiring the tag on any run that reached this step would be wrong for a **leaf ticket that merged into its container's feature branch**: it has `DEFER_DESTRUCTIVE = false` (Step 1b — it is not a stack-container, so it is not subject to `/promote-to-main`) and so runs terminal cleanup immediately, but its `MERGE_TARGET` is the feature branch and it has *not* reached main. Deleting the tag there breaks two things:
 
-1. **The prerequisite gate never converges.** The **Ensure Cleanup Prerequisites** sub-procedure (`commands/ticket-work.md`) wants a tag for exactly `mergedIntoFeature === true AND mergedIntoMain === false` — which is this ticket. Step 2d creates the tag, Step 4d deletes it, and the gate's backfill re-runs `/cleanup` forever without ever satisfying itself.
+1. **The prerequisite gate never converges.** The **Ensure Cleanup Prerequisites** sub-procedure (`commands/_shared-stack-procedures.md`) wants a tag for exactly `mergedIntoFeature === true AND mergedIntoMain === false` — which is this ticket. Step 2d creates the tag, Step 4d deletes it, and the gate's backfill re-runs `/cleanup` forever without ever satisfying itself.
 2. **It destroys the Step 8 replay source.** `resolveMergedTag` (`cli/lib/git.js`) makes this tag the fallback that populates `featureMergeSha` (`cli/lib/stack-resolver.js`), which Step 8a calls the load-bearing input for replaying a squash merge whose branch is gone — the NEV-863 failure shape. Step 4b/4c just deleted the branch, so tag plus branch going together in one run leaves only the GitHub PR record; and because Step 8 rewrites the feature branch, that record's `mergeCommit` can become unreachable and prove nothing (see the comment at `cli/lib/stack-resolver.js` on the tag fallback). The ticket's ship record is then unrecoverable.
 
 So: keep the tag whenever the merge target was a feature branch, and retire it only on the main-merge pass.

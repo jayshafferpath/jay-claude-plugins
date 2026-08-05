@@ -52,7 +52,7 @@ Store as `WORK_DIR`.
 
 ### 1c: Resolve Stack Context
 
-Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `REPO_ROOT={WORK_DIR}`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
+Run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={TICKET_KEY}` and `REPO_ROOT={WORK_DIR}`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
 - `BASE_BRANCH` = ticket's `baseBranch`
 - `BRANCH_NAME` = ticket's `branch` (or current branch if null)
 - `SUMMARY` = ticket's `summary`

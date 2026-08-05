@@ -34,6 +34,10 @@ export const QUEUE_QUERIES = Object.freeze({
 // Pure helper. Given a parent issue and its subtask issue, build the labels
 // patch that copies parent labels (minus ClaudeStackComplete) onto the subtask
 // and inherits assignment when the subtask is unassigned.
+//
+// @legacy — reached only via discover-queue, which itself has no in-repo caller
+// since the ticket-work diet removed subtask expansion. See the header comment
+// in cli/bin/discover-queue.js.
 export function buildParentInheritancePatch(parentFields, subtaskFields) {
   const parentLabels = parentFields.labels || [];
   const subtaskLabels = subtaskFields.labels || [];
