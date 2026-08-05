@@ -156,12 +156,5 @@ function nodeColor(ticket) {
   if (["ClaudeExecuting", "ClaudePlanning"].includes(ticket.stateLabel)) {
     return "active";
   }
-  if (
-    ["ClaudePlanNeedsApproval", "ClaudePlanApproved"].includes(
-      ticket.stateLabel,
-    )
-  ) {
-    return "pending";
-  }
   return "idle";
 }

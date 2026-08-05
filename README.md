@@ -484,6 +484,24 @@ npm run dev
 
 Opens at `http://localhost:5173`. Reads Jira via the same credentials as the CLI.
 
+The dashboard renders the same inference the CLI runs, rather than mirroring
+Jira labels:
+
+| Panel | Source | Answers |
+|---|---|---|
+| **Stalled** | `lib/stagnation.js` | which tickets have stopped moving — an in-flight label with no activity for 12h, a failure untouched for 3d, a PR rotting or left behind by its base |
+| **Next actions** | `lib/classify-actions.js` | what each ticket needs next, bucketed as needs-you / awaiting-review / ready-to-run / in-flight / blocked |
+| **Check Drift** (per ticket) | `lib/drift-check.js` | has the code moved under this ticket's research baseline |
+
+Both panels are fed by batched probes (`lib/dashboard-signals.js`): one
+`gh pr list` per repo rather than a Jira round-trip per ticket, with the
+expensive per-ticket git calls gated to tickets that could actually trigger a
+rule. Polling pauses while the tab is hidden. Drift is user-initiated — it
+spawns git operations per citation, so it never rides the refresh.
+
+The view-model assembly (`lib/dashboard-view.js`) is pure and unit-tested, so
+the rules can be verified without Jira, gh, or a browser.
+
 ## Development
 
 ```bash

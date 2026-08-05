@@ -20,6 +20,8 @@ export function TicketDetail({ ticketKey, onAction }) {
   const [showRawPlan, setShowRawPlan] = useState(false);
   const [reviewRequested, setReviewRequested] = useState(false);
   const [reviewError, setReviewError] = useState(null);
+  const [drift, setDrift] = useState(null);
+  const [driftRunning, setDriftRunning] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +48,6 @@ export function TicketDetail({ ticketKey, onAction }) {
   if (loading) return <div className="detail-panel">Loading...</div>;
   if (!detail) return <div className="detail-panel">Failed to load details.</div>;
 
-  const canApprovePlan = detail.stateLabel === "ClaudePlanNeedsApproval";
   const canRequestReview = !!detail.pr;
 
   return (
@@ -279,39 +280,66 @@ export function TicketDetail({ ticketKey, onAction }) {
         )}
       </div>
 
-      {(canApprovePlan || canRequestReview) && (
-        <div className="detail-actions">
-          {canApprovePlan && (
-            <button
-              className="btn btn--warn"
-              onClick={() => onAction("approve-plan", ticketKey)}
-            >
-              Approve Plan
-            </button>
-          )}
-          {canRequestReview && (
-            <button
-              className="btn btn--primary"
-              disabled={reviewRequested}
-              onClick={async () => {
-                setReviewError(null);
-                const res = await fetch(`/api/tickets/${ticketKey}/request-review`, { method: "POST" });
-                const data = await res.json();
-                if (data.ok) {
-                  setReviewRequested(true);
-                } else {
-                  setReviewError(data.error);
-                }
-              }}
-            >
-              {reviewRequested ? "Review Requested" : "Request Review"}
-            </button>
-          )}
-          {reviewError && (
-            <span className="action-error">{reviewError}</span>
-          )}
-        </div>
-      )}
+      <div className="detail-actions">
+        {/* Drift check is user-initiated: it spawns git operations per citation,
+            so it must not ride along on the 10s poll. */}
+        <button
+          className="btn"
+          disabled={driftRunning}
+          onClick={async () => {
+            setDriftRunning(true);
+            setDrift(null);
+            try {
+              const res = await fetch(
+                `/api/tickets/${ticketKey}/drift-check`,
+                { method: "POST" },
+              );
+              setDrift(await res.json());
+            } catch (err) {
+              setDrift({ ok: false, error: err.message });
+            } finally {
+              setDriftRunning(false);
+            }
+          }}
+        >
+          {driftRunning ? "Checking drift..." : "Check Drift"}
+        </button>
+        {drift && !drift.ok && (
+          <span className="action-error">{drift.error}</span>
+        )}
+        {drift?.ok && (
+          <span
+            className={
+              drift.report.status === "drifted"
+                ? "drift-result drift-result--drifted"
+                : "drift-result"
+            }
+          >
+            {drift.report.status === "no-notes"
+              ? "no research notes on ticket"
+              : `${drift.report.status} — ${drift.report.drifted}/${drift.report.total} citations drifted`}
+          </span>
+        )}
+        {canRequestReview && (
+          <button
+            className="btn btn--primary"
+            disabled={reviewRequested}
+            onClick={async () => {
+              setReviewError(null);
+              const res = await fetch(`/api/tickets/${ticketKey}/request-review`, { method: "POST" });
+              const data = await res.json();
+              if (data.ok) {
+                setReviewRequested(true);
+              } else {
+                setReviewError(data.error);
+              }
+            }}
+          >
+            {reviewRequested ? "Review Requested" : "Request Review"}
+          </button>
+        )}
+        {reviewError && <span className="action-error">{reviewError}</span>}
+      </div>
     </div>
   );
 }
