@@ -484,6 +484,21 @@ npm run dev
 
 Opens at `http://localhost:5173`. Reads Jira via the same credentials as the CLI.
 
+`npm run dev` runs the API (port 3789) and Vite under `concurrently`. If an older
+server still holds 3789 — a previous run that outlived its terminal — the new API
+exits on `EADDRINUSE` while Vite keeps serving and proxying to the stale one. Any
+panel newer than that server then 404s. The server now says so on startup, and a
+404 in the on-demand panels reports it as a stale server rather than a missing
+route. To clear it:
+
+```bash
+lsof -nP -iTCP:3789 -sTCP:LISTEN
+kill <pid>
+```
+
+Note that `npm run dev:api` uses `node --watch`, which does not retry the bind —
+once its child has died on a port conflict, restart the command.
+
 The dashboard renders the same inference the CLI runs, rather than mirroring
 Jira labels:
 

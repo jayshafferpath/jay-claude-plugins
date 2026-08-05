@@ -10,6 +10,7 @@
 // searches plus one per ClaudeReady parent.
 
 import { useCallback, useEffect, useState } from "react";
+import { fetchPanel } from "./fetchPanel.js";
 
 export function BacklogPanel({ jiraBaseUrl }) {
   const [backlog, setBacklog] = useState(null);
@@ -21,9 +22,7 @@ export function BacklogPanel({ jiraBaseUrl }) {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/backlog");
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      setBacklog(await res.json());
+      setBacklog(await fetchPanel("/api/backlog"));
     } catch (err) {
       setError(err.message);
     } finally {

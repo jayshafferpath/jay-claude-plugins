@@ -660,8 +660,31 @@ app.post("/api/tickets/:key/request-review", async (request) => {
 const PORT = Number.parseInt(process.env.DASHBOARD_PORT || "3789", 10);
 
 app.listen({ port: PORT }, (err) => {
-  if (err) {
-    app.log.error(err);
+  if (!err) return;
+
+  // Called out by name rather than left as a pino JSON blob. `npm run dev` runs
+  // the API and Vite under `concurrently`, so when an older server already holds
+  // the port this process dies while the UI keeps serving — and the browser then
+  // talks to the stale server, whose routes are whatever that build had. That
+  // surfaces as a bare 404 on newer endpoints, which reads like a missing route
+  // rather than a server that needs restarting.
+  if (err.code === "EADDRINUSE") {
+    console.error(
+      [
+        `Port ${PORT} is already in use — another dashboard server is running.`,
+        "",
+        "The browser will keep talking to that older server, so new endpoints",
+        "will 404 until it's replaced. Find and stop it:",
+        "",
+        `  lsof -nP -iTCP:${PORT} -sTCP:LISTEN`,
+        `  kill <pid>`,
+        "",
+        `Or run alongside it: DASHBOARD_PORT=${PORT + 1} npm run dev:api`,
+      ].join("\n"),
+    );
     process.exit(1);
   }
+
+  app.log.error(err);
+  process.exit(1);
 });

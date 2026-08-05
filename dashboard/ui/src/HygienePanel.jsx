@@ -8,6 +8,7 @@
 // accumulate over days, not seconds.
 
 import { useCallback, useEffect, useState } from "react";
+import { fetchPanel } from "./fetchPanel.js";
 
 export function HygienePanel() {
   const [hygiene, setHygiene] = useState(null);
@@ -19,9 +20,7 @@ export function HygienePanel() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/hygiene");
-      if (!res.ok) throw new Error(`API error: ${res.status}`);
-      setHygiene(await res.json());
+      setHygiene(await fetchPanel("/api/hygiene"));
     } catch (err) {
       setError(err.message);
     } finally {
