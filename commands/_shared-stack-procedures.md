@@ -47,6 +47,15 @@ When `container` is `null` (standalone ticket with no Story/Epic container), the
 ticket-specific fields still come from `stack[0]` and the container-level
 bindings are null. Each caller decides how to handle the standalone case.
 
+**Container keys resolve to themselves.** Passing an Epic key — or a Story key
+with no enclosing Epic — returns that issue as `container`, with `STACK_ORDER`
+holding its members. The container is *not* a member of its own stack, so
+`STACK_ORDER.find(s => s.key === KEY)` is `null` and `ticketIndex` falls back to
+`0`; use the container bindings rather than a stack entry in that case. A Story
+*under* an Epic still resolves to the Epic even when it has subtasks of its own
+— that is the nested-container case, disambiguated by comparing `container.key`
+to the key you passed (see `commands/_container-flows.md`).
+
 Pass `FETCH=true` whenever the caller will act on `mergedIntoFeature` /
 `mergedIntoMain` — those flags are computed against local origin refs and go
 stale (see design notes).
