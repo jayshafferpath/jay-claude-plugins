@@ -1,5 +1,10 @@
 import { TicketRow } from "./TicketRow.jsx";
 import { computeLayers, getParents } from "./dagLayout.js";
+import {
+  BlockedOnContainerBanner,
+  StackRebaseBanner,
+} from "./StackFlags.jsx";
+import { shouldShowRepo } from "./TicketBadges.jsx";
 
 function ticketColor(ticket) {
   if (ticket.stateLabel === "ClaudeFailed") return "failed";
@@ -10,8 +15,20 @@ function ticketColor(ticket) {
   return "idle";
 }
 
-export function StackList({ stacks, onAction, jiraBaseUrl }) {
+export function StackList({
+  stacks,
+  onAction,
+  jiraBaseUrl,
+  actionsEnabled,
+  onRun,
+  runningJobByTicket,
+}) {
   const filtered = stacks.filter((s) => !s.featureBranch);
+  // Repo is decided across every rendered stack, not per stack: the badge is
+  // there to disambiguate, and a board where each stack sits in a different repo
+  // needs it even though no single stack mixes repos.
+  const showRepo = shouldShowRepo(filtered.flatMap((s) => s.tickets));
+
   return (
     <div>
       {filtered.map((stack) => {
@@ -28,6 +45,10 @@ export function StackList({ stacks, onAction, jiraBaseUrl }) {
                 <span className="feature-branch">{stack.featureBranch}</span>
               )}
             </div>
+            <BlockedOnContainerBanner
+              blockedOnContainer={stack.blockedOnContainer}
+            />
+            <StackRebaseBanner needsStackRebase={stack.needsStackRebase} />
             {flatOrder.map((ticket) => {
               const color = ticketColor(ticket);
               const parents = isStack ? getParents(ticket, stack.tickets) : [];
@@ -42,6 +63,10 @@ export function StackList({ stacks, onAction, jiraBaseUrl }) {
                   parents={parents}
                   layer={layer}
                   jiraBaseUrl={jiraBaseUrl}
+                  showRepo={showRepo}
+                  actionsEnabled={actionsEnabled}
+                  onRun={onRun}
+                  runningJob={runningJobByTicket?.get(ticket.key)}
                 />
               );
             })}

@@ -6,7 +6,6 @@ export function computeLayers(tickets, mergeOrder) {
 }
 
 function computeLayersFromMergeOrder(tickets, mergeOrder) {
-  const keySet = new Set(tickets.map((t) => t.key));
   const orderIndex = new Map(mergeOrder.map((key, i) => [key, i]));
 
   const depth = new Map();

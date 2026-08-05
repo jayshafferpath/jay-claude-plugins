@@ -13,45 +13,18 @@
 //   2. fold their findings back onto the per-ticket objects the UI renders
 
 import { classifyActions } from "./classify-actions.js";
+// The presentation tables live in dashboard-queues.js so the browser bundle can
+// import them without pulling in this module's server-only dependencies
+// (classify-actions and stagnation). Imported here for use below, and
+// re-exported because server-side callers already import them from this path.
+import {
+  ACTION_PRESENTATION,
+  QUEUE_ORDER,
+  QUEUE_TITLES,
+} from "./dashboard-queues.js";
 import { detectStagnation } from "./stagnation.js";
 
-// Human-readable label + urgency for each nextAction the classifier emits.
-// The dashboard's old two-case actionHint() only knew about "awaiting review"
-// and "investigate"; these are the remaining states it silently rendered as
-// "idle". `tone` drives colour, so the UI never has to re-derive severity.
-export const ACTION_PRESENTATION = Object.freeze({
-  "cleanup-terminal": { hint: "run /cleanup-main", tone: "ready" },
-  "cleanup-phase-1": { hint: "run /cleanup-feature", tone: "ready" },
-  "promote-to-main": { hint: "run /promote-to-main", tone: "ready" },
-  "awaiting-review": { hint: "awaiting review", tone: "review" },
-  failed: { hint: "investigate", tone: "failed" },
-  "in-flight": { hint: "agent working", tone: "active" },
-  "ticket-work": { hint: "ready to start", tone: "ready" },
-  "blocked-on-stack": { hint: "blocked on stack", tone: "blocked" },
-  "blocked-on-container": { hint: "blocked on container", tone: "blocked" },
-  idle: { hint: null, tone: "idle" },
-});
-
-// Ordering for the grouped queue view, worst/most-actionable first. `asks` and
-// `manual` come before `autoSafe` because a human is the bottleneck there,
-// whereas auto-safe work is mechanical and can be batched.
-export const QUEUE_ORDER = Object.freeze([
-  "asks",
-  "manual",
-  "autoSafe",
-  "inFlight",
-  "blocked",
-  "idle",
-]);
-
-export const QUEUE_TITLES = Object.freeze({
-  asks: "Needs you",
-  manual: "Awaiting review",
-  autoSafe: "Ready to run",
-  inFlight: "In flight",
-  blocked: "Blocked",
-  idle: "Idle",
-});
+export { ACTION_PRESENTATION, QUEUE_ORDER, QUEUE_TITLES };
 
 // Adapt the dashboard's flat stack shape to the snapshot shape the classifier
 // and stagnation detector were written against.
@@ -108,6 +81,7 @@ export function queueForClassification(classification) {
   if (!classification) return "idle";
   const { nextAction, autoSafe } = classification;
   if (autoSafe) return "autoSafe";
+  if (nextAction === "unknown") return "unknown";
   if (nextAction === "failed" || nextAction === "ticket-work") return "asks";
   if (nextAction === "awaiting-review") return "manual";
   if (
@@ -153,11 +127,16 @@ export function buildDashboardView({ stacks, now, thresholds } = {}) {
 
   const queues = Object.fromEntries(QUEUE_ORDER.map((q) => [q, []]));
 
-  const decorated = source.map((stack) => ({
+  const decorated = source.map((stack, stackIndex) => ({
     ...stack,
+    // Zipped by index, not looked up by container key. classifyActions maps
+    // 1:1 over the snapshot, and every standalone stack classifies to
+    // `container: null` — matching on key made the flag unreachable for those
+    // stacks and ambiguous whenever two of them coexisted.
     needsStackRebase:
-      classified.stacks.find((s) => s.container === stack.containerKey)
-        ?.stackFlags?.needsStackRebase || false,
+      classified.stacks[stackIndex]?.stackFlags?.needsStackRebase || false,
+    blockedOnContainer:
+      classified.stacks[stackIndex]?.stackFlags?.blockedOnContainer || null,
     tickets: (stack.tickets || []).map((ticket) => {
       const classification = byKey.get(ticket.key) || null;
       const nextAction = classification?.nextAction || "idle";

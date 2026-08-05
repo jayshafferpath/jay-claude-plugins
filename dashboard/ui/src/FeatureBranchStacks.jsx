@@ -1,6 +1,11 @@
 import { useState } from "react";
 import { computeLayers, getParents } from "./dagLayout.js";
 import { TicketDetail } from "./TicketDetail.jsx";
+import {
+  BlockedOnContainerBanner,
+  StackRebaseBanner,
+} from "./StackFlags.jsx";
+import { RepoBadge, StallBadges, shouldShowRepo } from "./TicketBadges.jsx";
 
 export function FeatureBranchStacks({ stacks, jiraBaseUrl, onAction }) {
   const featureStacks = stacks.filter((s) => s.featureBranch);
@@ -42,6 +47,10 @@ export function FeatureBranchStacks({ stacks, jiraBaseUrl, onAction }) {
                   </span>
                 </div>
               </div>
+              <BlockedOnContainerBanner
+                blockedOnContainer={stack.blockedOnContainer}
+              />
+              <StackRebaseBanner needsStackRebase={stack.needsStackRebase} />
               <FeatureDag
                 layers={layers}
                 tickets={stack.tickets}
@@ -49,6 +58,7 @@ export function FeatureBranchStacks({ stacks, jiraBaseUrl, onAction }) {
                 featureBranch={stack.featureBranch}
                 mergeOrder={mergeOrder}
                 onAction={onAction}
+                showRepo={shouldShowRepo(stack.tickets)}
               />
             </div>
           );
@@ -58,7 +68,15 @@ export function FeatureBranchStacks({ stacks, jiraBaseUrl, onAction }) {
   );
 }
 
-function FeatureDag({ layers, tickets, jiraBaseUrl, featureBranch, mergeOrder, onAction }) {
+function FeatureDag({
+  layers,
+  tickets,
+  jiraBaseUrl,
+  featureBranch,
+  mergeOrder,
+  onAction,
+  showRepo,
+}) {
   const [expandedKey, setExpandedKey] = useState(null);
 
   return (
@@ -105,6 +123,12 @@ function FeatureDag({ layers, tickets, jiraBaseUrl, featureBranch, mergeOrder, o
                     <span className="feature-dag-node-state">
                       {ticket.state}
                     </span>
+                    <RepoBadge
+                      repo={ticket.repo}
+                      resolved={ticket.repoResolved}
+                      show={showRepo}
+                    />
+                    <StallBadges findings={ticket.stagnation} />
                     {parents.length > 0 && (
                       <span className="feature-dag-node-base">
                         ← {parents.length === 1 ? parents[0] : `${parents.length} bases`}

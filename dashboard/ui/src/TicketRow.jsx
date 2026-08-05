@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { TicketDetail } from "./TicketDetail.jsx";
+import { RepoBadge, StallBadges } from "./TicketBadges.jsx";
+import { TicketAction } from "./TicketAction.jsx";
 
 const BADGE_CLASS = {
   FAILED: "badge--failed",
@@ -14,7 +16,19 @@ const BADGE_CLASS = {
   unknown: "badge--unknown",
 };
 
-export function TicketRow({ ticket, onAction, treeColor, showTree, parents, layer, jiraBaseUrl }) {
+export function TicketRow({
+  ticket,
+  onAction,
+  treeColor,
+  showTree,
+  parents,
+  layer,
+  jiraBaseUrl,
+  showRepo,
+  actionsEnabled,
+  onRun,
+  runningJob,
+}) {
   const [expanded, setExpanded] = useState(false);
 
   const badgeClass = ticket.waitingOn
@@ -52,6 +66,11 @@ export function TicketRow({ ticket, onAction, treeColor, showTree, parents, laye
             <span className="ticket-key">{ticket.key}</span>
           )}
           <span className="ticket-summary">{ticket.summary}</span>
+          <RepoBadge
+            repo={ticket.repo}
+            resolved={ticket.repoResolved}
+            show={showRepo}
+          />
           {showTree && parents.length > 0 && (
             <span className="ticket-deps">
               {parents.length > 1 ? `blocked by ${parents.length}` : `← ${parents[0]}`}
@@ -69,9 +88,18 @@ export function TicketRow({ ticket, onAction, treeColor, showTree, parents, laye
             </a>
           )}
           <span className={`badge ${badgeClass}`}>{displayState}</span>
+          <StallBadges findings={ticket.stagnation} />
           {ticket.actionHint && !ticket.waitingOn && (
-            <span className="action-hint">{ticket.actionHint}</span>
+            <span className={`action-hint action-hint--${ticket.actionTone}`}>
+              {ticket.actionHint}
+            </span>
           )}
+          <TicketAction
+            ticket={ticket}
+            actionsEnabled={actionsEnabled}
+            onRun={onRun}
+            runningJob={runningJob}
+          />
         </div>
         {expanded && <TicketDetail ticketKey={ticket.key} onAction={onAction} />}
       </div>

@@ -12,16 +12,40 @@ import {
   getFeatureBranchMergeOrder,
   getPrDetails,
   getPrDiffStat,
+  getWorktreeList,
 } from "../../cli/lib/git.js";
+import { classifyWorktrees } from "../../cli/lib/dashboard-hygiene.js";
+import {
+  groupByDay,
+  mergeTimeline,
+} from "../../cli/lib/dashboard-timeline.js";
 import {
   attachBranches,
   attachFreshness,
+  attachRepoIdentity,
   attachSignals,
   collectRepoSignals,
   groupTicketsByRepo,
 } from "../../cli/lib/dashboard-signals.js";
 import { buildDashboardView } from "../../cli/lib/dashboard-view.js";
+import {
+  isExecutionEnabled,
+  resolveAction,
+  validateActionRequest,
+} from "../../cli/lib/dashboard-actions.js";
+import {
+  findRunningJobForTicket,
+  getJob,
+  listJobs,
+  serializeJob,
+  startCommandJob,
+} from "./run-command.js";
 import { driftCheck } from "../../cli/lib/drift-check.js";
+import { discoverQueue } from "../../cli/lib/queue.js";
+import {
+  diffBacklog,
+  pendingInheritance,
+} from "../../cli/lib/dashboard-backlog.js";
 import { isInFlight } from "../../cli/lib/labels.js";
 import {
   readActivityLog,
@@ -62,6 +86,10 @@ async function buildStacks(issues) {
   const inFlightKeys = new Set(
     allTickets.filter((t) => isInFlight(t.labels || [])).map((t) => t.key),
   );
+
+  // Which repo each ticket lives in. A stack can span repos via `repo:` labels,
+  // so this is per ticket rather than per stack.
+  attachRepoIdentity(allTickets, DEV_ROOT);
 
   // Feature-branch → merge order, and the repo each stack lives in. Both are
   // per-stack, so they stay outside the per-repo signal loop.
@@ -110,32 +138,56 @@ async function buildStacks(issues) {
   return stacks;
 }
 
-app.get("/api/stacks", async () => {
+const STACK_FIELDS = [
+  "key",
+  "summary",
+  "status",
+  "labels",
+  "issuelinks",
+  "parent",
+  "issuetype",
+  "updated",
+];
+
+// The full decorated snapshot: Jira → stacks → classifier + stagnation.
+//
+// Shared by /api/stacks and the action endpoints. Those endpoints re-derive it
+// rather than trusting the action name the browser sent, so a button clicked
+// against a stale render can't run a command the ticket no longer needs.
+async function buildSnapshot() {
   const issues = await searchIssues(
     'labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done',
-    [
-      "key",
-      "summary",
-      "status",
-      "labels",
-      "issuelinks",
-      "parent",
-      "issuetype",
-      "updated",
-    ],
+    STACK_FIELDS,
   );
   const filtered = issues.filter((i) => i.fields.issuetype?.name !== "Epic");
   const stacks = await buildStacks(filtered);
 
-  // Fold in the classifier + stagnation rules. `now` is injected rather than
-  // read inside the lib so the rules stay deterministic under test.
+  // `now` is injected rather than read inside the lib so the rules stay
+  // deterministic under test.
   const view = buildDashboardView({ stacks, now: Date.now() });
+
+  // What command each ticket's next action maps to. Attached server-side so the
+  // UI doesn't re-derive the lifecycle's command names.
+  for (const stack of view.stacks) {
+    for (const ticket of stack.tickets) {
+      ticket.action = resolveAction(ticket);
+    }
+  }
+
+  return view;
+}
+
+app.get("/api/stacks", async () => {
+  const view = await buildSnapshot();
 
   return {
     jiraBaseUrl: JIRA_DOMAIN ? `https://${JIRA_DOMAIN}/browse` : null,
     stacks: view.stacks,
     queues: view.queues,
     stagnation: view.stagnation,
+    // Lets the UI show why an action button is absent rather than silently
+    // hiding it.
+    actionsEnabled: isExecutionEnabled(),
   };
 });
 
@@ -360,6 +412,195 @@ app.post("/api/tickets/:key/drift-check", async (request) => {
   }
 });
 
+// Run the mechanical next action for a ticket.
+//
+// Gated three ways, because these commands delete remote branches and transition
+// Jira:
+//   1. DASHBOARD_ALLOW_ACTIONS=true must be set (validateActionRequest)
+//   2. the ticket's *live* classification must still want this action, so a
+//      click on a stale render is rejected rather than replayed
+//   3. only one run per ticket at a time
+//
+// Returns a job id; the command takes minutes, so the UI polls /api/jobs/:id.
+app.post("/api/tickets/:key/run-action", async (request, reply) => {
+  const { key } = request.params;
+  const requestedAction = request.body?.action || null;
+
+  const view = await buildSnapshot();
+  const ticket = view.stacks
+    .flatMap((s) => s.tickets)
+    .find((t) => t.key === key);
+
+  const validation = validateActionRequest({
+    ticket,
+    action: requestedAction,
+    env: process.env,
+  });
+
+  if (!validation.ok) {
+    reply.code(400);
+    return { ok: false, error: validation.error };
+  }
+
+  const existing = findRunningJobForTicket(key);
+  if (existing) {
+    reply.code(409);
+    return {
+      ok: false,
+      error: `A command is already running for ${key}`,
+      jobId: existing.id,
+    };
+  }
+
+  // Commands operate on branches and worktrees, so they must run in the
+  // ticket's repo rather than the dashboard's own directory.
+  const repoRoot = resolveRepoRoot(ticket.labels || [], DEV_ROOT);
+  if (!repoRoot) {
+    reply.code(400);
+    return {
+      ok: false,
+      error: "No repo: label resolves to a local clone",
+    };
+  }
+
+  const job = startCommandJob({
+    ticketKey: key,
+    prompt: validation.prompt,
+    cwd: repoRoot,
+    now: new Date().toISOString(),
+  });
+
+  return { ok: true, job: serializeJob(job) };
+});
+
+app.get("/api/jobs", async () => ({
+  actionsEnabled: isExecutionEnabled(),
+  jobs: listJobs()
+    .map((job) => serializeJob(job))
+    .sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+}));
+
+app.get("/api/jobs/:id", async (request, reply) => {
+  const job = getJob(request.params.id);
+  if (!job) {
+    reply.code(404);
+    return { ok: false, error: "Unknown job" };
+  }
+  return { ok: true, job: serializeJob(job, { includeLog: true }) };
+});
+
+// Eligible work the board's own JQL can't see.
+//
+// Deliberately its own endpoint rather than folded into /api/stacks: discoverQueue
+// costs three Jira searches plus one per ClaudeReady parent, which has no place
+// in a 10s poll. The UI fetches this on load and on demand.
+app.get("/api/backlog", async () => {
+  const queue = await discoverQueue();
+
+  // What the board already shows, so the backlog lists only what it's missing.
+  const view = await buildSnapshot();
+  const knownKeys = new Set(
+    view.stacks.flatMap((s) => s.tickets).map((t) => t.key),
+  );
+
+  const backlog = diffBacklog({ queue, knownKeys });
+
+  return {
+    tickets: backlog.tickets,
+    counts: backlog.counts,
+    pendingInheritance: pendingInheritance(queue),
+  };
+});
+
+// Worktrees left on disk that no active ticket claims.
+//
+// One `git worktree list` per repo the board touches. On demand rather than
+// polled: stale worktrees accumulate over days, so there's no value in checking
+// every 10 seconds.
+app.get("/api/hygiene", async () => {
+  const view = await buildSnapshot();
+  const allTickets = view.stacks.flatMap((s) => s.tickets);
+  const activeKeys = new Set(allTickets.map((t) => t.key));
+
+  // Group by repo so each root is probed once even when several stacks share it.
+  const byRepo = groupTicketsByRepo(allTickets, DEV_ROOT);
+  const repos = [];
+
+  for (const repoRoot of byRepo.keys()) {
+    if (!repoRoot) continue;
+    const result = classifyWorktrees({
+      worktrees: getWorktreeList(repoRoot),
+      activeKeys,
+      repoRoot,
+    });
+    repos.push({
+      repoRoot,
+      name: repoRoot.split("/").filter(Boolean).pop(),
+      ...result,
+    });
+  }
+
+  return {
+    repos,
+    counts: {
+      orphaned: repos.reduce((n, r) => n + r.counts.orphaned, 0),
+      total: repos.reduce((n, r) => n + r.counts.total, 0),
+    },
+  };
+});
+
+// Every ticket's activity log, interleaved into one stream.
+//
+// Costs one Jira round-trip per ticket on the board, so it's on demand rather
+// than polled. Answers "what did the agents do overnight?", which the per-ticket
+// panels structurally can't.
+app.get("/api/timeline", async (request) => {
+  const limit = Number.parseInt(request.query?.limit || "150", 10);
+
+  const view = await buildSnapshot();
+  const tickets = view.stacks.flatMap((s) => s.tickets);
+
+  // Fetched concurrently: these are independent reads, and serially they'd take
+  // one round-trip per ticket in sequence.
+  const logs = await Promise.all(
+    tickets.map(async (ticket) => {
+      try {
+        const result = await readActivityLog(ticket.key);
+        if (!result) return null;
+        return {
+          key: ticket.key,
+          summary: ticket.summary,
+          entries: result.entries.map((entry) => {
+            const { timestamp, heading } = parseEntryHeading(entry.heading);
+            return {
+              timestamp,
+              heading,
+              blocks: flattenActivityBody(entry.bodyNodes),
+            };
+          }),
+        };
+      } catch {
+        // One unreadable log shouldn't blank the whole timeline.
+        return null;
+      }
+    }),
+  );
+
+  const present = logs.filter(Boolean);
+  const timeline = mergeTimeline({ logs: present, limit });
+
+  // Summaries so the UI can label a ticket key without another fetch.
+  const summaries = Object.fromEntries(
+    present.map((log) => [log.key, log.summary]),
+  );
+
+  return {
+    days: groupByDay(timeline.entries),
+    counts: timeline.counts,
+    summaries,
+  };
+});
+
 const REVIEW_REQUESTED_MARKER = "[claude-review-requested]";
 
 app.post("/api/tickets/:key/request-review", async (request) => {
@@ -414,7 +655,11 @@ app.post("/api/tickets/:key/request-review", async (request) => {
   return { ok: true };
 });
 
-app.listen({ port: 3789 }, (err) => {
+// Overridable so a second instance can run alongside the usual one — useful for
+// trying a change without stopping the dashboard you're working from.
+const PORT = Number.parseInt(process.env.DASHBOARD_PORT || "3789", 10);
+
+app.listen({ port: PORT }, (err) => {
   if (err) {
     app.log.error(err);
     process.exit(1);

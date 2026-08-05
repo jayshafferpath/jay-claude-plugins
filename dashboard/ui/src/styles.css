@@ -514,6 +514,590 @@ a.ticket-key:hover {
   color: #d29922;
 }
 
+/* Tone comes from the classifier via ACTION_PRESENTATION, so a hint's colour
+   matches its urgency instead of every hint reading as a warning. */
+.action-hint--ready { color: #238636; }
+.action-hint--review { color: #d29922; }
+.action-hint--failed { color: #da3633; }
+.action-hint--active { color: #58a6ff; }
+.action-hint--blocked { color: #8b949e; }
+.action-hint--unknown { color: #a371f7; }
+.action-hint--idle { color: #8b949e; }
+
+/* Per-ticket stagnation badges. Previously these findings only appeared in the
+   global panel, so a stalled row in a stack looked healthy. */
+.stall-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.stall-badge--abandoned-in-flight {
+  background: rgba(218, 54, 51, 0.15);
+  color: #f85149;
+}
+
+.stall-badge--unattended-failure {
+  background: rgba(219, 109, 40, 0.15);
+  color: #db6d28;
+}
+
+.stall-badge--rotting-pr {
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
+}
+
+/* Which repo a ticket lives in. Only rendered when a view mixes repos or a
+   `repo:` label points at a clone that isn't on disk. */
+.repo-badge {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.repo-badge--unresolved {
+  border-color: #9e6a03;
+  color: #d29922;
+}
+
+/* Stack-level classifier flags. */
+.stack-flag {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 1px 0;
+  padding: 8px 16px;
+  font-size: 12px;
+  background: #161b22;
+  border-left: 3px solid #30363d;
+}
+
+.stack-flag--rebase {
+  border-left-color: #d29922;
+  color: #d29922;
+}
+
+.stack-flag--blocked {
+  border-left-color: #8b949e;
+  color: #8b949e;
+}
+
+.stack-flag-icon {
+  font-size: 13px;
+}
+
+.stack-flag-text {
+  flex: 1;
+}
+
+.stack-flag-command {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+
+/* Per-ticket actions: copy the command, or run it when the server allows. */
+.ticket-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.ticket-action-copy {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ticket-action-copy:hover {
+  border-color: #58a6ff;
+  color: #c9d1d9;
+}
+
+.ticket-action-run {
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #3fb950;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.ticket-action-run:hover {
+  border-color: #3fb950;
+  background: rgba(63, 185, 80, 0.1);
+}
+
+/* The confirm step deliberately states consequences before running: these
+   commands delete remote branches and transition Jira. */
+.ticket-action-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  background: rgba(218, 54, 51, 0.08);
+  border: 1px solid #6e2c2c;
+}
+
+.ticket-action-effects {
+  max-width: 380px;
+  color: #d29922;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.ticket-action-confirm-yes,
+.ticket-action-confirm-no {
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ticket-action-confirm-yes {
+  background: #da3633;
+  border: 1px solid #da3633;
+  color: #fff;
+}
+
+.ticket-action-confirm-no {
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #8b949e;
+}
+
+.ticket-action--running {
+  color: #58a6ff;
+  font-size: 10px;
+}
+
+.ticket-action-spinner {
+  margin-right: 4px;
+}
+
+.action-error-banner {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  background: rgba(218, 54, 51, 0.1);
+  border: 1px solid #6e2c2c;
+  color: #f85149;
+  font-size: 12px;
+}
+
+/* Eligible work the board's own JQL can't see. */
+.backlog-panel {
+  margin-bottom: 20px;
+}
+
+.backlog-count {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.backlog-refresh {
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  background: transparent;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.backlog-refresh:hover:not(:disabled) {
+  border-color: #58a6ff;
+  color: #c9d1d9;
+}
+
+.backlog-refresh:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.backlog-empty,
+.backlog-error {
+  padding: 8px 16px;
+  background: #161b22;
+  font-size: 12px;
+}
+
+.backlog-empty { color: #8b949e; }
+.backlog-error { color: #f85149; }
+
+.backlog-note {
+  margin-bottom: 1px;
+  padding: 6px 16px;
+  background: #161b22;
+  color: #8b949e;
+  font-size: 11px;
+}
+
+.backlog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.backlog-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+  background: #161b22;
+  border-left: 3px solid #58a6ff;
+  font-size: 12px;
+}
+
+.backlog-key {
+  color: #58a6ff;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.backlog-key:hover { text-decoration: underline; }
+
+.backlog-summary {
+  flex: 1;
+  color: #c9d1d9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.backlog-type {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #21262d;
+  color: #8b949e;
+  font-size: 10px;
+}
+
+.backlog-via {
+  color: #a371f7;
+  font-size: 10px;
+  cursor: help;
+  white-space: nowrap;
+}
+
+.backlog-inheritance {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 1px;
+  padding: 8px 16px;
+  background: #161b22;
+  border-left: 3px solid #d29922;
+  font-size: 11px;
+}
+
+.backlog-inheritance-label { color: #d29922; }
+
+.backlog-inheritance-item {
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+/* Worktrees left on disk that no active ticket claims. */
+.hygiene-panel {
+  margin-bottom: 20px;
+}
+
+.hygiene-count {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(210, 153, 34, 0.15);
+  color: #d29922;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.hygiene-repo {
+  margin-bottom: 8px;
+}
+
+.hygiene-repo-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 16px;
+  background: #0d1117;
+  font-size: 11px;
+}
+
+.hygiene-repo-name {
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-weight: 600;
+}
+
+.hygiene-repo-counts { color: #8b949e; }
+
+.hygiene-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 1px;
+  padding: 6px 16px;
+  background: #161b22;
+  border-left: 3px solid #30363d;
+  font-size: 11px;
+}
+
+.hygiene-item--orphaned { border-left-color: #d29922; }
+.hygiene-item--active { border-left-color: #238636; }
+.hygiene-item--unknown { border-left-color: #8b949e; }
+.hygiene-item--main { border-left-color: #58a6ff; }
+
+.hygiene-status {
+  min-width: 64px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.hygiene-status--orphaned { color: #d29922; }
+.hygiene-status--active { color: #3fb950; }
+.hygiene-status--unknown { color: #8b949e; }
+.hygiene-status--main { color: #58a6ff; }
+
+.hygiene-path {
+  flex: 1;
+  overflow: hidden;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hygiene-branch {
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: #21262d;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+}
+
+.hygiene-command {
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #0d1117;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+/* Cross-ticket activity stream. */
+.timeline-panel {
+  margin-bottom: 20px;
+}
+
+.timeline-toggle {
+  padding: 0;
+  background: none;
+  border: none;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.timeline-count {
+  margin-left: 8px;
+  color: #8b949e;
+  font-size: 11px;
+  font-weight: 400;
+}
+
+.timeline-day {
+  margin-bottom: 8px;
+}
+
+.timeline-day-head {
+  padding: 6px 16px;
+  background: #0d1117;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.timeline-entry {
+  margin-bottom: 1px;
+  padding: 8px 16px;
+  background: #161b22;
+  border-left: 3px solid #30363d;
+}
+
+.timeline-entry-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.timeline-time {
+  min-width: 52px;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 10px;
+}
+
+.timeline-key {
+  color: #58a6ff;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.timeline-key:hover { text-decoration: underline; }
+
+.timeline-heading {
+  flex: 1;
+  color: #c9d1d9;
+}
+
+.timeline-block {
+  margin: 4px 0 0 62px;
+}
+
+.timeline-text {
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.timeline-bullets {
+  margin: 0;
+  padding-left: 16px;
+  color: #8b949e;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* Launched commands and their output. */
+.jobs-panel {
+  margin-bottom: 20px;
+}
+
+.jobs-running-count {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: rgba(88, 166, 255, 0.15);
+  color: #58a6ff;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.jobs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.job {
+  background: #161b22;
+  border-left: 3px solid #30363d;
+}
+
+.job--running { border-left-color: #58a6ff; }
+.job--succeeded { border-left-color: #238636; }
+.job--failed { border-left-color: #da3633; }
+
+.job-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.job-head:hover {
+  background: #1c2128;
+}
+
+.job-status--running { color: #58a6ff; }
+.job-status--succeeded { color: #3fb950; }
+.job-status--failed { color: #f85149; }
+
+.job-prompt {
+  flex: 1;
+  color: #c9d1d9;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+}
+
+.job-time {
+  color: #8b949e;
+  font-size: 10px;
+}
+
+.job-exit {
+  color: #f85149;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.job-error {
+  padding: 0 16px 8px 16px;
+  color: #f85149;
+  font-size: 11px;
+}
+
+.job-log {
+  max-height: 320px;
+  margin: 0;
+  padding: 12px 16px;
+  overflow: auto;
+  background: #0d1117;
+  border-top: 1px solid #30363d;
+  color: #8b949e;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .detail-panel {
   padding: 16px;
   background: #0d1117;
@@ -1229,6 +1813,7 @@ a.ticket-key:hover {
 .queue-column--asks .queue-column-title { color: #da3633; }
 .queue-column--manual .queue-column-title { color: #d29922; }
 .queue-column--autoSafe .queue-column-title { color: #238636; }
+.queue-column--unknown .queue-column-title { color: #a371f7; }
 
 .queue-column-count {
   font-size: 12px;
@@ -1294,6 +1879,7 @@ a.ticket-key:hover {
 .queue-item-hint--failed { color: #da3633; }
 .queue-item-hint--active { color: #58a6ff; }
 .queue-item-hint--blocked { color: #8b949e; }
+.queue-item-hint--unknown { color: #a371f7; }
 .queue-item-hint--idle { color: #8b949e; }
 
 .queue-item-reason {

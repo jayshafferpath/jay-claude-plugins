@@ -490,17 +490,39 @@ Jira labels:
 | Panel | Source | Answers |
 |---|---|---|
 | **Stalled** | `lib/stagnation.js` | which tickets have stopped moving — an in-flight label with no activity for 12h, a failure untouched for 3d, a PR rotting or left behind by its base |
-| **Next actions** | `lib/classify-actions.js` | what each ticket needs next, bucketed as needs-you / awaiting-review / ready-to-run / in-flight / blocked |
+| **Next actions** | `lib/classify-actions.js` | what each ticket needs next, bucketed as needs-you / awaiting-review / ready-to-run / in-flight / blocked / indeterminate |
+| **Available to start** | `lib/queue.js` | what could I pick up that isn't on the board — the board queries `ClaudeWork`, so `ClaudeReady` work never tagged into a stack is otherwise invisible |
+| **Activity** | per-ticket activity logs | what did the agents do overnight, as one chronological stream across every ticket |
+| **Worktrees** | `git worktree list` | which worktrees are left on disk with no active ticket claiming them |
 | **Check Drift** (per ticket) | `lib/drift-check.js` | has the code moved under this ticket's research baseline |
 
-Both panels are fed by batched probes (`lib/dashboard-signals.js`): one
+The always-on panels are fed by batched probes (`lib/dashboard-signals.js`): one
 `gh pr list` per repo rather than a Jira round-trip per ticket, with the
 expensive per-ticket git calls gated to tickets that could actually trigger a
-rule. Polling pauses while the tab is hidden. Drift is user-initiated — it
-spawns git operations per citation, so it never rides the refresh.
+rule. Polling pauses while the tab is hidden.
 
-The view-model assembly (`lib/dashboard-view.js`) is pure and unit-tested, so
-the rules can be verified without Jira, gh, or a browser.
+Three things never ride the 10s refresh, because each costs real work per ticket
+or per citation: **Check Drift** (git ops per citation), **Available to start**
+(three Jira searches plus one per `ClaudeReady` parent), and **Activity** (one
+Jira read per ticket, so it only loads when you open it).
+
+The view-model assembly (`lib/dashboard-view.js`) is pure and unit-tested, as are
+the action, backlog, hygiene, and timeline folds — so the rules can be verified
+without Jira, gh, or a browser.
+
+### Running commands from the dashboard
+
+Every ticket shows the slash command that clears its next action, as
+copy-to-clipboard. The dashboard can also *run* the mechanical ones
+(`/cleanup-main`, `/cleanup-feature`, `/promote-to-main`) as headless
+`claude -p` jobs, with a log panel for their output.
+
+That is **off by default** and enabled with `DASHBOARD_ALLOW_ACTIONS=true`. It's
+an env var rather than a UI toggle deliberately: these commands delete remote
+branches and transition Jira, a headless run passes `--yes` with nobody
+reviewing the plan, and a toggle in a browser tab is too easy to leave on. Each
+run also re-derives the ticket's classification server-side before spawning, so a
+button clicked against a stale render is rejected rather than replayed.
 
 ## Development
 

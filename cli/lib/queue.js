@@ -61,6 +61,12 @@ export function buildParentInheritancePatch(parentFields, subtaskFields) {
 function summarize(issue, opts = {}) {
   return {
     key: issue.key,
+    // Carried through so callers can tell an unstarted ticket from a finished
+    // one. The subtask-expansion query has no status filter, and the label-based
+    // exclusion list can't see status at all, so without this a shipped subtask
+    // is indistinguishable from a fresh one.
+    statusName: issue.fields?.status?.name || null,
+    statusCategory: issue.fields?.status?.statusCategory?.key || null,
     summary: issue.fields?.summary || "",
     labels: issue.fields?.labels || [],
     issueType: issue.fields?.issuetype?.name || null,

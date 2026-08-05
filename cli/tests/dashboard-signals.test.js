@@ -1,10 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   attachBranches,
   attachFreshness,
+  attachRepoIdentity,
   attachSignals,
   collectRepoSignals,
   groupTicketsByRepo,
+  repoIdentity,
 } from "../lib/dashboard-signals.js";
 
 // Stub probe set so the batching logic is testable without git or gh.
@@ -61,6 +66,78 @@ describe("groupTicketsByRepo", () => {
 
   it("tolerates missing input", () => {
     expect(groupTicketsByRepo(undefined, null).size).toBe(0);
+  });
+});
+
+describe("repoIdentity", () => {
+  // resolveRepoRoot hits the filesystem, so the "cloned locally" case needs a
+  // real directory under a real dev root.
+  let devRoot;
+
+  beforeAll(() => {
+    devRoot = mkdtempSync(join(tmpdir(), "repo-identity-"));
+    mkdirSync(join(devRoot, "cloned-repo"));
+  });
+
+  afterAll(() => {
+    rmSync(devRoot, { recursive: true, force: true });
+  });
+
+  it("reports the repo name and that it resolves to a local clone", () => {
+    expect(repoIdentity(["repo:cloned-repo"], devRoot)).toEqual({
+      name: "cloned-repo",
+      resolved: true,
+    });
+  });
+
+  it("keeps the name but reports unresolved when the clone is absent", () => {
+    // The distinction resolveRepoRoot collapses: this ticket *is* tagged, which
+    // is why it has no branch or PR state — not because work hasn't started.
+    expect(repoIdentity(["repo:never-cloned"], devRoot)).toEqual({
+      name: "never-cloned",
+      resolved: false,
+    });
+  });
+
+  it("reports no repo when the label is missing", () => {
+    expect(repoIdentity(["ClaudeReady"], devRoot)).toEqual({
+      name: null,
+      resolved: false,
+    });
+  });
+
+  it("treats an empty repo: label as no repo", () => {
+    expect(repoIdentity(["repo:"], devRoot)).toEqual({
+      name: null,
+      resolved: false,
+    });
+  });
+
+  it("reports unresolved rather than throwing without a dev root", () => {
+    expect(repoIdentity(["repo:some-repo"], null)).toEqual({
+      name: "some-repo",
+      resolved: false,
+    });
+  });
+
+  it("tolerates missing labels", () => {
+    expect(repoIdentity(undefined, devRoot).name).toBeNull();
+  });
+});
+
+describe("attachRepoIdentity", () => {
+  it("attaches repo and repoResolved per ticket", () => {
+    const tickets = [
+      { key: "A-1", labels: ["repo:alpha"] },
+      { key: "A-2", labels: [] },
+    ];
+    attachRepoIdentity(tickets, null);
+    expect(tickets[0]).toMatchObject({ repo: "alpha", repoResolved: false });
+    expect(tickets[1]).toMatchObject({ repo: null, repoResolved: false });
+  });
+
+  it("tolerates missing tickets", () => {
+    expect(() => attachRepoIdentity(undefined, null)).not.toThrow();
   });
 });
 
