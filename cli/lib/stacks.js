@@ -117,6 +117,10 @@ export function buildStacks(issues) {
       summary: fields.summary,
       labels,
       statusName: fields.status?.name || null,
+      // Carried through for the stagnation rules, which need a time axis to
+      // tell a ticket that just entered a state from one stuck in it. Absent
+      // when the caller's JQL didn't request the `updated` field.
+      updatedAt: fields.updated || null,
       blockers,
       blocks,
       waitingOn: unfinishedBlockers.length ? unfinishedBlockers[0] : null,

@@ -1111,3 +1111,205 @@ a.ticket-key:hover {
 .feature-dag-node-pr:hover {
   background: #30363d;
 }
+
+/* --- Stagnation panel (time-based stalls) --- */
+
+.stagnation-panel {
+  margin-bottom: 24px;
+}
+
+.stagnation-count {
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: #da3633;
+  color: #fff;
+  font-size: 11px;
+}
+
+.stagnation-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px;
+}
+
+.stagnation-item {
+  padding: 10px 12px;
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-left: 3px solid #8b949e;
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.stagnation-item--abandoned-in-flight { border-left-color: #da3633; }
+.stagnation-item--unattended-failure { border-left-color: #db6d28; }
+.stagnation-item--rotting-pr { border-left-color: #d29922; }
+
+.stagnation-item-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.stagnation-key {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.stagnation-kind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #8b949e;
+}
+
+.stagnation-pr {
+  margin-left: auto;
+  font-size: 11px;
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.stagnation-detail {
+  font-size: 12px;
+  color: #c9d1d9;
+  line-height: 1.4;
+}
+
+.stagnation-action {
+  margin-top: 4px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: #d29922;
+}
+
+/* --- Queue view (classifier next-actions) --- */
+
+.queue-view {
+  margin-bottom: 24px;
+}
+
+.queue-columns {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.queue-column {
+  background: #161b22;
+  border: 1px solid #21262d;
+  border-radius: 6px;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.queue-column-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #21262d;
+  background: #1c2128;
+}
+
+.queue-column-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: #8b949e;
+}
+
+.queue-column--asks .queue-column-title { color: #da3633; }
+.queue-column--manual .queue-column-title { color: #d29922; }
+.queue-column--autoSafe .queue-column-title { color: #238636; }
+
+.queue-column-count {
+  font-size: 12px;
+  font-weight: 600;
+  color: #c9d1d9;
+}
+
+.queue-items {
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.queue-item {
+  padding: 8px 10px;
+  background: #0d1117;
+  border: 1px solid #21262d;
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.queue-item-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.queue-item-key {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: #58a6ff;
+  text-decoration: none;
+}
+
+.queue-item-pr {
+  margin-left: auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: #58a6ff;
+  text-decoration: none;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: #1c2128;
+}
+
+.queue-item-summary {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #c9d1d9;
+  line-height: 1.35;
+}
+
+.queue-item-hint {
+  margin-top: 5px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.queue-item-hint--ready { color: #238636; }
+.queue-item-hint--review { color: #d29922; }
+.queue-item-hint--failed { color: #da3633; }
+.queue-item-hint--active { color: #58a6ff; }
+.queue-item-hint--blocked { color: #8b949e; }
+.queue-item-hint--idle { color: #8b949e; }
+
+.queue-item-reason {
+  margin-top: 2px;
+  font-size: 10px;
+  color: #6e7681;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+/* --- Drift check result --- */
+
+.drift-result {
+  font-size: 12px;
+  color: #238636;
+}
+
+.drift-result--drifted {
+  color: #d29922;
+}

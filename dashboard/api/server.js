@@ -1,9 +1,11 @@
 import { loadEnv } from "../../cli/lib/env.js";
 loadEnv();
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import Fastify from "fastify";
 import cors from "@fastify/cors";
-import { searchIssues, getIssue, swapLabel, getComments, addComment, getPrFromDevStatus } from "../../cli/lib/jira.js";
+import { searchIssues, getIssue, getComments, addComment, getPrFromDevStatus } from "../../cli/lib/jira.js";
 import {
   findBranch,
   findWorktree,
@@ -12,6 +14,16 @@ import {
   getPrDiffStat,
 } from "../../cli/lib/git.js";
 import {
+  attachBranches,
+  attachFreshness,
+  attachSignals,
+  collectRepoSignals,
+  groupTicketsByRepo,
+} from "../../cli/lib/dashboard-signals.js";
+import { buildDashboardView } from "../../cli/lib/dashboard-view.js";
+import { driftCheck } from "../../cli/lib/drift-check.js";
+import { isInFlight } from "../../cli/lib/labels.js";
+import {
   readActivityLog,
   readChecklistFromJira,
   readExecutionPlanFromJira,
@@ -19,10 +31,14 @@ import {
 } from "../../cli/lib/checklist.js";
 import { extractTextFromAdf } from "../../cli/lib/adf.js";
 import {
+  findReviewPlanFile,
+  formatSummary,
+} from "../../cli/lib/review-summary.js";
+import {
   attachFeatureBranches,
   buildStacks as buildStacksCore,
 } from "../../cli/lib/stacks.js";
-import { labelState, actionHint, resolveRepoRoot } from "../../cli/lib/util.js";
+import { labelState, resolveRepoRoot } from "../../cli/lib/util.js";
 import { loadDevRoot, getJiraAuth } from "../../cli/lib/config.js";
 
 const DEV_ROOT = loadDevRoot();
@@ -31,33 +47,54 @@ const app = Fastify({ logger: true });
 
 await app.register(cors, { origin: true });
 
+// Assemble the stacks snapshot.
+//
+// All git/gh probing is batched per repo (see dashboard-signals) rather than
+// per ticket: the old implementation made two Jira round-trips per ticket via
+// getPrFromDevStatus on every 10s poll. `repo:` labels mean one stack can span
+// repos, so signals are collected per resolved repo root.
 async function buildStacks(issues) {
   const stacks = buildStacksCore(issues);
 
   await attachFeatureBranches(stacks);
 
+  const allTickets = stacks.flatMap((s) => s.tickets);
+  const inFlightKeys = new Set(
+    allTickets.filter((t) => isInFlight(t.labels || [])).map((t) => t.key),
+  );
+
+  // Feature-branch → merge order, and the repo each stack lives in. Both are
+  // per-stack, so they stay outside the per-repo signal loop.
+  const rootByStack = new Map();
   for (const stack of stacks) {
-    if (stack.featureBranch) {
-      const repoRoot = resolveRepoRoot(
-        stack.tickets[0]?.labels || [],
-        DEV_ROOT,
+    const repoRoot = resolveRepoRoot(stack.tickets[0]?.labels || [], DEV_ROOT);
+    rootByStack.set(stack, repoRoot);
+    if (stack.featureBranch && repoRoot) {
+      stack.mergeOrder = getFeatureBranchMergeOrder(
+        stack.featureBranch,
+        repoRoot,
       );
-      if (repoRoot) {
-        stack.mergeOrder = getFeatureBranchMergeOrder(
-          stack.featureBranch,
-          repoRoot,
-        );
-      }
     }
   }
 
-  const allTickets = stacks.flatMap((s) => s.tickets);
-  await Promise.all(
-    allTickets.map(async (ticket) => {
-      const pr = await getPrFromDevStatus(ticket.key);
-      ticket.pr = pr ? { url: pr.url, state: pr.state } : null;
-    }),
-  );
+  // One set of probes per repo, shared by every ticket in it.
+  const byRepo = groupTicketsByRepo(allTickets, DEV_ROOT);
+  const signalsByRoot = new Map();
+  for (const [repoRoot, tickets] of byRepo) {
+    const signals = collectRepoSignals(repoRoot);
+    signalsByRoot.set(repoRoot, signals);
+    attachBranches(tickets, repoRoot);
+  }
+
+  for (const stack of stacks) {
+    const repoRoot = rootByStack.get(stack);
+    const signals = signalsByRoot.get(repoRoot);
+    if (!signals) continue;
+    attachSignals(stack.tickets, signals, {
+      featureBranch: stack.featureBranch,
+    });
+    attachFreshness(stack.tickets, repoRoot, { inFlightKeys });
+  }
 
   // Display state resolves after the PR fetch so "PR open" can come from the
   // live PR rather than a label.
@@ -68,7 +105,6 @@ async function buildStacks(issues) {
     });
     ticket.state = state.display;
     ticket.stateLabel = state.label;
-    ticket.actionHint = actionHint(state.label);
   }
 
   return stacks;
@@ -77,15 +113,29 @@ async function buildStacks(issues) {
 app.get("/api/stacks", async () => {
   const issues = await searchIssues(
     'labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done',
-    ["key", "summary", "status", "labels", "issuelinks", "parent", "issuetype"]
+    [
+      "key",
+      "summary",
+      "status",
+      "labels",
+      "issuelinks",
+      "parent",
+      "issuetype",
+      "updated",
+    ],
   );
-  const filtered = issues.filter(
-    (i) => i.fields.issuetype?.name !== "Epic"
-  );
+  const filtered = issues.filter((i) => i.fields.issuetype?.name !== "Epic");
   const stacks = await buildStacks(filtered);
+
+  // Fold in the classifier + stagnation rules. `now` is injected rather than
+  // read inside the lib so the rules stay deterministic under test.
+  const view = buildDashboardView({ stacks, now: Date.now() });
+
   return {
     jiraBaseUrl: JIRA_DOMAIN ? `https://${JIRA_DOMAIN}/browse` : null,
-    stacks,
+    stacks: view.stacks,
+    queues: view.queues,
+    stagnation: view.stagnation,
   };
 });
 
@@ -120,7 +170,7 @@ app.get("/api/tickets/:key", async (request) => {
   const pr = await getPrFromDevStatus(key);
   const checklist = await readChecklistFromJira(key);
   const execPlan = await readExecutionPlanFromJira(key);
-  const reviewPlan = null;
+  const reviewPlan = readReviewPlan(key, repoRoot);
   const state = labelState(labels, {
     openPr: pr?.state === "OPEN" ? pr : null,
     statusName: status,
@@ -146,12 +196,6 @@ app.get("/api/tickets/:key", async (request) => {
   };
 });
 
-app.post("/api/tickets/:key/approve-plan", async (request) => {
-  const { key } = request.params;
-  await swapLabel(key, "ClaudePlanNeedsApproval", "ClaudePlanApproved");
-  return { ok: true, action: "plan approved" };
-});
-
 app.get("/api/tickets/:key/plan", async (request) => {
   const { key } = request.params;
   const planData = await readPlanSectionsFromJira(key);
@@ -172,6 +216,27 @@ app.get("/api/tickets/:key/plan", async (request) => {
     raw: null,
   };
 });
+
+// Review-plan progress for the detail panel. The plan is a markdown file under
+// the repo's .plans/ directory written by /jay-pr-review, so this needs the
+// ticket's resolved repo root — no repo, no plan.
+//
+// Returns the { resolved, total } shape TicketDetail renders, or null when
+// there is no plan file or it contains no checklist items.
+function readReviewPlan(ticketKey, repoRoot) {
+  if (!repoRoot) return null;
+  try {
+    const planFile = findReviewPlanFile(join(repoRoot, ".plans"), ticketKey);
+    if (!planFile) return null;
+    const { issuesFound, issuesResolved } = formatSummary(
+      readFileSync(planFile, "utf-8"),
+    );
+    if (!issuesFound) return null;
+    return { total: issuesFound, resolved: issuesResolved };
+  } catch {
+    return null;
+  }
+}
 
 function flattenActivityBody(bodyNodes) {
   const blocks = [];
@@ -273,6 +338,26 @@ app.get("/api/tickets/:key/pr-details", async (request) => {
     reviews: [],
     diffStat: null,
   };
+});
+
+// On-demand drift check. Deliberately POST and never called from the polling
+// path: driftCheck spawns git operations per citation, so it must stay a
+// user-initiated action rather than something the 10s refresh triggers.
+app.post("/api/tickets/:key/drift-check", async (request) => {
+  const { key } = request.params;
+  const issue = await getIssue(key);
+  const repoRoot = resolveRepoRoot(issue.fields.labels || [], DEV_ROOT);
+
+  if (!repoRoot) {
+    return { ok: false, error: "No repo: label resolves to a local clone" };
+  }
+
+  try {
+    const report = await driftCheck(key, { repoRoot, lite: true });
+    return { ok: true, report };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 const REVIEW_REQUESTED_MARKER = "[claude-review-requested]";
