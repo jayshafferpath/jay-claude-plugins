@@ -239,7 +239,7 @@ describe("seed-checklist e2e", () => {
       "- [x] 1. Plan generated with /jira-start (skipped: trivial)",
     );
     expect(result.markdown).toContain(
-      "- [x] 4. Refactoring pass with @refactor agent (skipped: trivial)",
+      "- [x] 4. Combined review pass (review + refactor + plan) (skipped: trivial)",
     );
   });
 

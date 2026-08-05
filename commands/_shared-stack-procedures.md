@@ -131,8 +131,9 @@ step 2 with no work.
 - `/promote-to-main` — Step 1b-final, before the tag walk.
 - `/ticket-work` S1d — after stack resolution, before `ensure-work-dir` and the
   S2.5 rebase consume `BASE_BRANCH`.
-- `/ticket-work` Q4.5 — once per `(REPO_ROOT, CONTAINER_KEY)` group. Skips the
-  offending group rather than stopping the whole queue.
+- Multi-ticket runner Q4.5 (`commands/_container-flows.md`) — once per
+  `(REPO_ROOT, CONTAINER_KEY)` group. Skips the offending group rather than
+  stopping the whole queue.
 - `/stack-rebase` Step 1.5 — before the scenario check and cascade rebase.
 
 `/orchestrate` deliberately does **not** call this — it runs its own tag sweep
@@ -143,9 +144,10 @@ it never resolves stack context. Both rationales are in `docs/design-notes.md`.
 
 # Shared sub-procedure: PR Push & Review
 
-Called from `/ticket-work` S4.8–S4.10 (per-ticket PR flow), `/ticket-work` C3
-(Mode C feature-branch PR flow), and `/promote-to-main`. Captures the common
-shape — generate description, push as draft, sanity-review, post review summary.
+Called from `/ticket-work` S4.8–S4.10 (per-ticket PR flow), Mode C's C3
+(feature-branch PR flow, in `commands/_container-flows.md`), and
+`/promote-to-main`. Captures the common shape — generate description, push as
+draft, sanity-review, post review summary.
 
 CI green and Copilot comment resolution are **not** part of this sub-procedure.
 The user runs `/cop-fight` on demand after the PR opens.

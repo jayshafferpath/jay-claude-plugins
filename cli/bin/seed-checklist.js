@@ -45,8 +45,8 @@ const STEP_LABELS = [
   "Plan generated with /jira-start",
   "Plan executed with /plan-execute",
   "Acceptance criteria verified against Gherkin",
-  "Refactoring pass with @refactor agent",
-  "PR review plan generated with /jay-pr-review",
+  "Combined review pass (review + refactor + plan)",
+  "PR review plan generated (merged into step 4)",
   "Stack ready (unblocks downstream) — TERMINAL STATE",
   "PR approval gate (retired)",
   "PR description and title generated with /jay-pr-description",
@@ -67,8 +67,8 @@ const RETIRED_STEPS = new Set([7]);
 // done with a `(skipped: trivial)` suffix at seed time so render.js, gate
 // logic, and the S4 loop in commands/ticket-work.md keep working unchanged.
 //   1 → /jira-start (no plan needed for trivial)
-//   4 → @refactor agent (small surface, low ROI)
-//   5 → /jay-pr-review plan
+//   4 → the combined review pass (small surface, low ROI)
+//   5 → retired into step 4; never runs on its own
 const TRIVIAL_SKIPPED_STEPS = new Set([1, 4, 5]);
 const TRIVIAL_SKIP_SUFFIX = " (skipped: trivial)";
 const RETIRED_SKIP_SUFFIX = " (skipped: retired)";
