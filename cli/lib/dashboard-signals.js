@@ -36,6 +36,31 @@ export function groupTicketsByRepo(tickets, devRoot) {
   return byRoot;
 }
 
+// The repo a ticket belongs to, from its `repo:` label.
+//
+// Distinct from resolveRepoRoot, which returns null both when the label is
+// missing and when it names a clone that isn't on disk. The UI needs to tell
+// those apart: "no repo label" is a tagging gap, while "labelled but not
+// cloned" explains why the ticket has no git-derived signals.
+export function repoIdentity(labels, devRoot) {
+  const repoLabel = (labels || []).find((l) => l.startsWith("repo:"));
+  if (!repoLabel) return { name: null, resolved: false };
+  const name = repoLabel.slice(5);
+  if (!name) return { name: null, resolved: false };
+  return { name, resolved: resolveRepoRoot(labels, devRoot) !== null };
+}
+
+// Fold repo identity onto each ticket. Pure apart from the existsSync inside
+// resolveRepoRoot, which the caller has already paid for when grouping.
+export function attachRepoIdentity(tickets, devRoot) {
+  for (const ticket of tickets || []) {
+    const { name, resolved } = repoIdentity(ticket.labels || [], devRoot);
+    ticket.repo = name;
+    ticket.repoResolved = resolved;
+  }
+  return tickets;
+}
+
 // Default probe set. Injectable so the batching logic can be tested without
 // spawning git or gh — the real implementations live in git.js.
 const DEFAULT_PROBES = Object.freeze({

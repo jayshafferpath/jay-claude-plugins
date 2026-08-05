@@ -4,26 +4,21 @@
 // failed) with the real bucketing from cli/lib/classify-actions.js. The order
 // is intentional: "Needs you" and "Awaiting review" outrank "Ready to run"
 // because a human is the bottleneck there, while auto-safe work is mechanical.
+//
+// The ordering and titles come from the lib the server buckets with, so the
+// column order can't drift from the queues it renders.
 
-const QUEUE_ORDER = [
-  "asks",
-  "manual",
-  "autoSafe",
-  "inFlight",
-  "blocked",
-  "idle",
-];
+import { QUEUE_ORDER, QUEUE_TITLES } from "../../../cli/lib/dashboard-queues.js";
+import { TicketAction } from "./TicketAction.jsx";
 
-const QUEUE_TITLES = {
-  asks: "Needs you",
-  manual: "Awaiting review",
-  autoSafe: "Ready to run",
-  inFlight: "In flight",
-  blocked: "Blocked",
-  idle: "Idle",
-};
-
-export function QueueView({ stacks, queues, jiraBaseUrl }) {
+export function QueueView({
+  stacks,
+  queues,
+  jiraBaseUrl,
+  actionsEnabled,
+  onRun,
+  runningJobByTicket,
+}) {
   if (!queues) return null;
 
   const ticketsByKey = new Map();
@@ -34,7 +29,9 @@ export function QueueView({ stacks, queues, jiraBaseUrl }) {
   }
 
   // Idle is hidden unless it's all there is — an idle ticket needs no decision,
-  // so showing it alongside actionable work just adds noise.
+  // so showing it alongside actionable work just adds noise. "unknown" is not
+  // collapsed the same way: it means the classifier couldn't judge the ticket,
+  // which is a gap worth seeing even when there's real work to do.
   const populated = QUEUE_ORDER.filter((q) => (queues[q] || []).length > 0);
   const actionable = populated.filter((q) => q !== "idle");
   const visible = actionable.length > 0 ? actionable : populated;
@@ -96,6 +93,12 @@ export function QueueView({ stacks, queues, jiraBaseUrl }) {
                         {ticket.nextActionReason}
                       </div>
                     )}
+                    <TicketAction
+                      ticket={ticket}
+                      actionsEnabled={actionsEnabled}
+                      onRun={onRun}
+                      runningJob={runningJobByTicket?.get(ticket.key)}
+                    />
                   </div>
                 );
               })}

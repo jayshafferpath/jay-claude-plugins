@@ -5,12 +5,19 @@ import { StackList } from "./StackList.jsx";
 import { SummaryBar } from "./SummaryBar.jsx";
 import { StagnationPanel } from "./StagnationPanel.jsx";
 import { QueueView } from "./QueueView.jsx";
+import { JobsPanel } from "./JobsPanel.jsx";
+import { BacklogPanel } from "./BacklogPanel.jsx";
+import { HygienePanel } from "./HygienePanel.jsx";
+import { TimelinePanel } from "./TimelinePanel.jsx";
 
 export function App() {
   const [stacks, setStacks] = useState([]);
   const [queues, setQueues] = useState(null);
   const [stagnation, setStagnation] = useState(null);
   const [jiraBaseUrl, setJiraBaseUrl] = useState(null);
+  const [actionsEnabled, setActionsEnabled] = useState(false);
+  const [jobs, setJobs] = useState([]);
+  const [actionError, setActionError] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -23,6 +30,7 @@ export function App() {
       setQueues(data.queues || null);
       setStagnation(data.stagnation || null);
       setJiraBaseUrl(data.jiraBaseUrl);
+      setActionsEnabled(data.actionsEnabled === true);
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -31,8 +39,40 @@ export function App() {
     }
   }, []);
 
+  const fetchJobs = useCallback(async () => {
+    try {
+      const res = await fetch("/api/jobs");
+      const data = await res.json();
+      setJobs(data.jobs || []);
+    } catch {
+      // Job history is supplementary — a failure here shouldn't blank the board.
+    }
+  }, []);
+
+  const runAction = useCallback(
+    async (key, action) => {
+      setActionError(null);
+      try {
+        const res = await fetch(`/api/tickets/${key}/run-action`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action }),
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          setActionError(data.error || "Failed to start command");
+        }
+      } catch (err) {
+        setActionError(err.message);
+      }
+      await fetchJobs();
+    },
+    [fetchJobs],
+  );
+
   useEffect(() => {
     fetchStacks();
+    fetchJobs();
 
     // Pause polling while the tab is hidden. Each tick does real work (a gh
     // call per repo), and a backgrounded dashboard left open all day has no
@@ -64,7 +104,18 @@ export function App() {
       stop();
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [fetchStacks]);
+  }, [fetchStacks, fetchJobs]);
+
+  // Refresh the board when a command finishes: it has just changed branches,
+  // labels, and Jira state, so the current render is stale.
+  const runningJobCount = jobs.filter((j) => j.status === "running").length;
+  useEffect(() => {
+    if (runningJobCount === 0 && jobs.length > 0) fetchStacks();
+  }, [runningJobCount, jobs.length, fetchStacks]);
+
+  const runningJobByTicket = new Map(
+    jobs.filter((j) => j.status === "running").map((j) => [j.ticketKey, j]),
+  );
 
   const handleAction = async (action, key) => {
     const endpoints = {
@@ -99,18 +150,45 @@ export function App() {
         stalled={stagnation?.counts?.total || 0}
       />
 
+      {actionError && <div className="action-error-banner">{actionError}</div>}
+
       <StagnationPanel stagnation={stagnation} jiraBaseUrl={jiraBaseUrl} />
+
+      <JobsPanel jobs={jobs} onRefresh={fetchJobs} />
+
+      {/* Outside the stacks.length check: an empty board is exactly when
+          "what could I start?" matters most. */}
+      <BacklogPanel jiraBaseUrl={jiraBaseUrl} />
 
       {stacks.length === 0 ? (
         <div className="empty">No active Claude tickets found.</div>
       ) : (
         <>
-          <QueueView stacks={stacks} queues={queues} jiraBaseUrl={jiraBaseUrl} />
+          <QueueView
+            stacks={stacks}
+            queues={queues}
+            jiraBaseUrl={jiraBaseUrl}
+            actionsEnabled={actionsEnabled}
+            onRun={runAction}
+            runningJobByTicket={runningJobByTicket}
+          />
           <FeatureBranchStacks stacks={stacks} jiraBaseUrl={jiraBaseUrl} onAction={handleAction} />
           <StackOverview stacks={stacks} jiraBaseUrl={jiraBaseUrl} />
-          <StackList stacks={stacks} onAction={handleAction} jiraBaseUrl={jiraBaseUrl} />
+          <StackList
+            stacks={stacks}
+            onAction={handleAction}
+            jiraBaseUrl={jiraBaseUrl}
+            actionsEnabled={actionsEnabled}
+            onRun={runAction}
+            runningJobByTicket={runningJobByTicket}
+          />
         </>
       )}
+
+      {/* Ops hygiene sits last: it answers "what did the agents do?" and "what
+          did they leave behind?", neither of which is a decision you make first. */}
+      <TimelinePanel jiraBaseUrl={jiraBaseUrl} />
+      <HygienePanel />
     </div>
   );
 }

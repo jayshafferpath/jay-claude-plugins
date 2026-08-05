@@ -4,6 +4,8 @@ import {
   buildDashboardView,
   indexClassifications,
   indexStagnation,
+  QUEUE_ORDER,
+  QUEUE_TITLES,
   queueForClassification,
   toClassifierSnapshot,
 } from "../lib/dashboard-view.js";
@@ -115,7 +117,7 @@ describe("queueForClassification", () => {
     ["blocked-on-container", "blocked"],
     ["in-flight", "inFlight"],
     ["idle", "idle"],
-    ["unknown", "idle"],
+    ["unknown", "unknown"],
   ])("routes %s to the %s queue", (nextAction, expected) => {
     expect(queueForClassification({ nextAction, autoSafe: false })).toBe(
       expected,
@@ -124,6 +126,19 @@ describe("queueForClassification", () => {
 
   it("defaults a missing classification to idle", () => {
     expect(queueForClassification(null)).toBe("idle");
+  });
+
+  it("routes every queue it can emit to a titled column", () => {
+    // Pins the two tables together: a queue name with no QUEUE_TITLES entry
+    // renders as an untitled column, and one missing from QUEUE_ORDER never
+    // renders at all.
+    for (const nextAction of Object.keys(ACTION_PRESENTATION)) {
+      const queue = queueForClassification({ nextAction, autoSafe: false });
+      expect(QUEUE_ORDER).toContain(queue);
+      expect(QUEUE_TITLES[queue]).toBeTruthy();
+    }
+    expect(queueForClassification({ autoSafe: true })).toBe("autoSafe");
+    expect(QUEUE_ORDER).toContain("autoSafe");
   });
 });
 
@@ -263,6 +278,46 @@ describe("buildDashboardView", () => {
     expect(view.stacks[0].needsStackRebase).toBe(true);
   });
 
+  it("marks a standalone stack needing rebase", () => {
+    // Regression: the flag used to be looked up by matching the classifier's
+    // `container` against stack.containerKey. toClassifierSnapshot maps the
+    // "Standalone" sentinel to null, so that comparison was null === "Standalone"
+    // and the flag could never be true for a standalone stack.
+    const view = buildDashboardView({
+      stacks: [
+        stack({
+          containerKey: "Standalone",
+          tickets: [
+            ticket("A-1", { mergedIntoFeature: true }),
+            ticket("A-2", { blockers: ["A-1"], mergedIntoFeature: false }),
+          ],
+        }),
+      ],
+      now: NOW,
+    });
+    expect(view.stacks[0].needsStackRebase).toBe(true);
+  });
+
+  it("keeps per-stack flags aligned when several stacks classify alike", () => {
+    // Two standalone stacks both classify to `container: null`, so a key-based
+    // lookup would resolve both to whichever came first.
+    const view = buildDashboardView({
+      stacks: [
+        stack({ containerKey: "Standalone", tickets: [ticket("A-1")] }),
+        stack({
+          containerKey: "Standalone",
+          tickets: [
+            ticket("B-1", { mergedIntoFeature: true }),
+            ticket("B-2", { blockers: ["B-1"], mergedIntoFeature: false }),
+          ],
+        }),
+      ],
+      now: NOW,
+    });
+    expect(view.stacks[0].needsStackRebase).toBe(false);
+    expect(view.stacks[1].needsStackRebase).toBe(true);
+  });
+
   it("does not mutate the input stacks", () => {
     const input = [stack({ tickets: [ticket("A-1")] })];
     buildDashboardView({ stacks: input, now: NOW });
@@ -270,9 +325,11 @@ describe("buildDashboardView", () => {
     expect(input[0].needsStackRebase).toBeUndefined();
   });
 
-  it("falls back to a null hint for an action with no presentation entry", () => {
-    // A ticket awaiting a merge probe classifies as "unknown", which has no
-    // ACTION_PRESENTATION entry — it must still render, not crash.
+  it("surfaces a probe-pending ticket as explicitly indeterminate", () => {
+    // A ticket awaiting a merge probe classifies as "unknown". It gets its own
+    // hint, tone, and queue rather than falling into idle: idle is collapsed by
+    // the UI whenever actionable work exists, so a ticket the classifier could
+    // not judge would silently vanish from the picture.
     const view = buildDashboardView({
       stacks: [
         stack({
@@ -287,10 +344,19 @@ describe("buildDashboardView", () => {
 
     const decorated = view.stacks[0].tickets[0];
     expect(decorated.nextAction).toBe("unknown");
-    expect(decorated.actionHint).toBeNull();
-    expect(decorated.actionTone).toBe("idle");
-    // Still visible somewhere rather than silently dropped.
-    expect(view.queues.idle).toContain("EPIC-1");
+    expect(decorated.actionHint).toBe("state unknown");
+    expect(decorated.actionTone).toBe("unknown");
+    expect(view.queues.unknown).toContain("EPIC-1");
+    expect(view.queues.idle).not.toContain("EPIC-1");
+  });
+
+  it("falls back to a null hint for an action with no presentation entry", () => {
+    // Guards the ACTION_PRESENTATION lookup itself: a nextAction the table has
+    // never heard of must render as idle rather than throw.
+    expect(ACTION_PRESENTATION["not-a-real-action"]).toBeUndefined();
+    expect(queueForClassification({ nextAction: "not-a-real-action" })).toBe(
+      "idle",
+    );
   });
 
   it("defaults needsStackRebase to false when the stack has no classifier entry", () => {
