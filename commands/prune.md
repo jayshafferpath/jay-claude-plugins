@@ -42,7 +42,7 @@ Required: a Jira ticket key (e.g., `PROJ-123`). The ticket must have a `repo:` l
 
 ### 1b: Resolve Stack Context
 
-Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={TICKET_KEY}` and `FETCH=true`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
+Run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={TICKET_KEY}` and `FETCH=true`. After it runs, also extract from the input ticket's entry in `STACK_ORDER`:
 - `BRANCH_NAME` = ticket's `branch` (may be null)
 - `BASE_BRANCH` = ticket's `baseBranch`
 - `SUMMARY` = ticket's `summary`

@@ -10,6 +10,13 @@ echo "Installing commands..."
 
 for cmd in "$SCRIPT_DIR"/commands/*.md; do
   name=$(basename "$cmd")
+
+  # `_`-prefixed files are shared reference fragments cited by other commands,
+  # not slash commands of their own. Skip them.
+  case "$name" in
+    _*) continue ;;
+  esac
+
   target="$COMMANDS_DIR/$name"
 
   if [ -L "$target" ]; then

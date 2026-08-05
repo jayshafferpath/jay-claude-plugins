@@ -1,5 +1,15 @@
 #!/usr/bin/env node
 
+// @legacy — no in-repo caller as of the ticket-work diet.
+//
+// `/ticket-work` dropped its queue-discovery mode (bare invocation) and its
+// Story→subtask expansion; `/orchestrate` owns finding eligible work now, and
+// `agents/planner.md` forbids code-touching Subtasks outright. This script and
+// the `queue.js` helpers behind it are retained because the dashboard and README
+// still speak the queue vocabulary — unpicking that is a separate change.
+//
+// Safe to delete once nothing references parent/subtask queue discovery.
+
 import { loadEnv } from "../lib/env.js";
 
 loadEnv();

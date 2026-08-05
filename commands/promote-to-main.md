@@ -47,7 +47,7 @@ Set `RESOLVED_KEY` = `$ARGUMENTS` (uppercased). The arg must match `^[A-Z][A-Z0-
 
 ### 1b: Resolve Stack with resolve-stack
 
-Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={RESOLVED_KEY}` and `FETCH=true`.
+Run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={RESOLVED_KEY}` and `FETCH=true`.
 
 If `FEATURE_BRANCH` is null: display "{RESOLVED_KEY} has no Story/Epic container; nothing to promote via feature branch. Use the standard PR workflow." and **stop**.
 
@@ -63,7 +63,7 @@ Filter out tickets from `STACK_ORDER` where `branch` is null — display "Warnin
 
 ### 1b-final: Ensure Cleanup Prerequisites
 
-Run the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`) with `STACK_ORDER`, `REPO_ROOT`, and `RESOLVED_KEY` from Step 1b. The sub-procedure verifies every ticket merged into the feature branch has its `merged/{KEY}` tag on origin; if any are missing, it inline-runs `/cleanup --yes --no-rebase --no-refresh-feature` to backfill the tag, halting only when `/cleanup` itself cannot produce one.
+Run the **Ensure Cleanup Prerequisites** sub-procedure (`commands/_shared-stack-procedures.md`) with `STACK_ORDER`, `REPO_ROOT`, and `RESOLVED_KEY` from Step 1b. The sub-procedure verifies every ticket merged into the feature branch has its `merged/{KEY}` tag on origin; if any are missing, it inline-runs `/cleanup --yes --no-rebase --no-refresh-feature` to backfill the tag, halting only when `/cleanup` itself cannot produce one.
 
 After the sub-procedure returns, `STACK_ORDER` has been refreshed to reflect any state shifts cleanup may have caused. Continue to Step 1c with the refreshed view.
 
@@ -300,7 +300,7 @@ git push --force-with-lease origin {BRANCH_NAME}
 
 ## Step 3: Open PR to Main (shared sub-procedure)
 
-Run the **Shared sub-procedure: PR Push & Review** (defined in `commands/ticket-work.md`) with these bindings:
+Run the **PR Push & Review** sub-procedure (`commands/_shared-stack-procedures.md`) with these bindings:
 
 - `WORK_DIR` = `REPO_ROOT`
 - `BRANCH` = `BRANCH_NAME`

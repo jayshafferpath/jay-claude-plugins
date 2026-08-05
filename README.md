@@ -147,9 +147,9 @@ State lives in Jira as a comment, not in `.plans/`.
 
 The main engine. Idempotent — reads checklist state from Jira and resumes wherever it left off.
 
-- **Single mode** (`/ticket-work KEY`): runs one ticket through drift-check → plan → execute (TDD Red-Green-Refactor per plan task) → verify AC → refactor (`@refactor`) → review (`/jay-pr-review`) → stack-ready.
-- **Queue mode** (`/ticket-work`): discovers eligible tickets via JQL (`discover-queue`), gates on stack deps, and launches parallel agents.
-- **Parent expansion**: a Story/Task with subtasks expands to its eligible subtasks; labels and assignee are inherited via `buildParentInheritancePatch`.
+- **Leaf key** (`/ticket-work KEY`): runs one ticket through drift-check → plan → execute (TDD Red-Green-Refactor per plan task) → verify AC → refactor (`@refactor`) → review (`/jay-pr-review`) → stack-ready.
+- **Container key** (`/ticket-work EPIC-1` or a Story): resolves the stack and runs the next unblocked member — one per invocation; re-run to advance.
+- **No discovery mode**: `/ticket-work` requires a key. `/orchestrate` is what finds eligible work across stacks.
 
 **Complexity tiers**: two independent gates control which steps run.
 - **Gate 1** (pre-execute, S3.4): sets `complexity:trivial`. Skips `/plan-ticket` and runs execute in no-plan mode (single-batch test authoring).
@@ -285,7 +285,7 @@ Post-PR-push helper. Drives CI to green, then evaluates each Copilot review comm
 | Script | Purpose |
 |---|---|
 | `ticket-status` | View and manage Claude ticket stacks in Jira. Verbose mode powers `/ticket-status`. |
-| `discover-queue` | Run the queue-discovery JQL queries; expand parents into subtasks; optionally apply inheritance. Called by `/ticket-work` in queue mode. |
+| `discover-queue` | **Legacy.** Queue-discovery JQL + parent/subtask expansion. Lost its last caller when `/ticket-work` dropped discovery mode; retained for the dashboard's queue vocabulary. |
 | `resolve-stack` | Resolve stack ordering from Jira issue links. Returns container + ordered members + base branch. |
 | `ensure-work-dir` | Resolve a ticket's working directory (`$DEV_ROOT/<repo>`) and ensure its branch exists (creating it based on `resolve-stack` output if needed). |
 | `ensure-pr` | Create or update a draft PR for the current branch. Idempotent. |
@@ -327,11 +327,11 @@ Starting from a PRD in Jira:
 
 4. Tag first Story ClaudeWork + ClaudeReady.
 
-5. /ticket-work
-     ↳ queue mode. Discovers eligible tickets, expands the Story into
-       its subtasks (label + assignee inheritance), runs each one through
+5. /ticket-work EPIC-1
+     ↳ resolves the stack, picks the next unblocked Story, and runs it through
        drift-check → plan → execute → refactor → review → merge-to-feature-branch.
-       Container's feature branch accumulates each subtask.
+       One Story per invocation; re-run to advance. The container's feature
+       branch accumulates each one.
 
 6. Last subtask done → ClaudeStackComplete on the container → Mode C
    opens a single PR for the whole feature branch.
@@ -456,7 +456,7 @@ Morning:
        - stack-ready tickets (review the open PR, mark ready + approve?)
 
 Address the list, then:
-  /ticket-work         (queue mode picks up freshly-Ready work)
+  /ticket-work KEY     (run a freshly-Ready ticket; /orchestrate lists them)
 ```
 
 Unattended variant — polls instead of waiting for you to run it:

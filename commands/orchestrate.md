@@ -102,7 +102,7 @@ Initialize `STACKS = []` (per-container snapshot).
 
 If `SCOPE_KEY` was resolved to a cold ticket in Step 1b (no `Claude*` labels), skip stack resolution — `COLD_TICKETS` already has what Step 4/6 need. Proceed to Step 3.
 
-Otherwise: for each container key (or just `SCOPE_KEY` if scoped to a lifecycle ticket), in alphabetical order, run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={CONTAINER_KEY}` and `FETCH=true`. The orchestrator additionally captures `stack[*].status`, `stack[*].blockers`, `stack[*].mergedIntoFeature`, and `stack[*].mergedIntoMain` per ticket from the same JSON.
+Otherwise: for each container key (or just `SCOPE_KEY` if scoped to a lifecycle ticket), in alphabetical order, run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={CONTAINER_KEY}` and `FETCH=true`. The orchestrator additionally captures `stack[*].status`, `stack[*].blockers`, `stack[*].mergedIntoFeature`, and `stack[*].mergedIntoMain` per ticket from the same JSON.
 
 If `REPO_ROOT` is null: record the stack with an error marker (`error: "no repo root"`) and continue — we can still show its Jira state, but cannot do git-side work.
 

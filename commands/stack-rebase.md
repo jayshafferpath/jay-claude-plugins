@@ -25,7 +25,7 @@ Given a ticket key, rebase all downstream stacked tickets (connected via "blocks
 
 ## Step 1: Resolve Stack
 
-Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) with `KEY={given_ticket_key}` and `FETCH=true`. Treat its `STACK_ORDER` binding as `STACK_CHAIN`.
+Run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={given_ticket_key}` and `FETCH=true`. Treat its `STACK_ORDER` binding as `STACK_CHAIN`.
 
 Find the given ticket's index in `STACK_CHAIN` (the resolver's JSON output already contains `ticketIndex`).
 
@@ -42,7 +42,7 @@ Starting rebase from: {given_ticket_key}
 
 ## Step 1.5: Ensure Cleanup Prerequisites
 
-Run the **Ensure Cleanup Prerequisites** sub-procedure (defined in `commands/ticket-work.md`) with `STACK_CHAIN` as `STACK_ORDER`, plus `REPO_ROOT` and `RESOLVED_KEY={given_ticket_key}`. Cascade-rebasing a chain whose predecessor merges are untagged is the failure shape behind the NEV-863 data loss — the tag is what lets `feature-refresh.js` replay a squash merge whose branch is already gone.
+Run the **Ensure Cleanup Prerequisites** sub-procedure (`commands/_shared-stack-procedures.md`) with `STACK_CHAIN` as `STACK_ORDER`, plus `REPO_ROOT` and `RESOLVED_KEY={given_ticket_key}`. Cascade-rebasing a chain whose predecessor merges are untagged is the failure shape behind the NEV-863 data loss — the tag is what lets `feature-refresh.js` replay a squash merge whose branch is already gone.
 
 If the sub-procedure refreshes `STACK_CHAIN`, re-derive `ticketIndex` from the refreshed stack before Step 2 reads `mergedIntoMain` — a backfill can flip that flag, which selects the rebase scenario.
 

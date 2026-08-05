@@ -1,5 +1,5 @@
 ---
-description: "Quick mode of /ticket-work: forces complexity:trivial on the ticket and delegates to /ticket-work. Skips /plan-ticket, the refactor pass, and the /jay-pr-review plan. Single-ticket only — no queue mode, no Story expansion. Use for mechanical edits, doc tweaks, dep bumps, and small changes where the auto-classifier would otherwise choose 'standard'."
+description: "Quick mode of /ticket-work: forces complexity:trivial on the ticket and delegates to /ticket-work. Skips /plan-ticket, the refactor pass, and the /jay-pr-review plan. Single-ticket only. Use for mechanical edits, doc tweaks, dep bumps, and small changes where the auto-classifier would otherwise choose 'standard'."
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
@@ -30,7 +30,7 @@ $ARGUMENTS
 
 Required: a single Jira ticket key (e.g., `PROJ-123`). Optionally followed by `--serial` to compose with serial mode.
 
-Quick mode is deliberately single-ticket. Story expansion, Epic walking, and queue mode all live in `/ticket-work`; if the user wants those, they should invoke `/ticket-work` directly (parents that inherit `complexity:trivial` from a durable label are the intended path for bulk trivial work — this command is for one-off overrides).
+Quick mode is deliberately single-ticket. Container walking lives in `/ticket-work`; invoke that directly for a Story or Epic key. Tickets inheriting `complexity:trivial` from a durable label are the intended path for bulk trivial work — this command is for one-off overrides.
 
 ## Steps
 

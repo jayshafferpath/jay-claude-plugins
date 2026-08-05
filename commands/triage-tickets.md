@@ -75,7 +75,7 @@ When `STATUS_ONLY` is set, instead run skill `orchestrate` with args `{SCOPE_KEY
 
 `detect-stagnation` consumes the same JSON shape as `classify-actions`, so this is the snapshot `/orchestrate` Step 2 already knows how to build.
 
-Run the **Stack Context Resolution** sub-procedure (defined in `commands/ticket-work.md`) for each active container — or just `SCOPE_KEY` when scoped — exactly as `/orchestrate` Step 2 does. Enumerate containers with the same lifecycle JQL:
+Run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) for each active container — or just `SCOPE_KEY` when scoped — exactly as `/orchestrate` Step 2 does. Enumerate containers with the same lifecycle JQL:
 
 ```
 labels = "ClaudeWork" AND assignee = currentUser() AND statusCategory != Done
