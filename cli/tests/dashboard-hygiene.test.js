@@ -16,12 +16,16 @@ describe("extractTicketKey", () => {
     expect(extractTicketKey(input)).toBe(expected);
   });
 
-  it.each([["main"], ["develop"], ["no-key-here"], [""], [null], [undefined]])(
-    "returns null for %s",
-    (input) => {
-      expect(extractTicketKey(input)).toBeNull();
-    },
-  );
+  it.each([
+    ["main"],
+    ["develop"],
+    ["no-key-here"],
+    [""],
+    [null],
+    [undefined],
+  ])("returns null for %s", (input) => {
+    expect(extractTicketKey(input)).toBeNull();
+  });
 
   it("ignores a lowercase pseudo-key", () => {
     // Jira keys are uppercase; matching lowercase would claim branches like
@@ -33,9 +37,9 @@ describe("extractTicketKey", () => {
 describe("ticketKeyFor", () => {
   it("prefers the branch name over the directory name", () => {
     // The branch is what the lifecycle keys off; a directory can be moved.
-    expect(
-      ticketKeyFor({ path: "/dev/PROJ-1", branch: "PROJ-2" }),
-    ).toBe("PROJ-2");
+    expect(ticketKeyFor({ path: "/dev/PROJ-1", branch: "PROJ-2" })).toBe(
+      "PROJ-2",
+    );
   });
 
   it("falls back to the directory leaf when there is no branch", () => {

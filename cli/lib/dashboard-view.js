@@ -13,22 +13,18 @@
 //   2. fold their findings back onto the per-ticket objects the UI renders
 
 import { classifyActions } from "./classify-actions.js";
-import { detectStagnation } from "./stagnation.js";
-
 // The presentation tables live in dashboard-queues.js so the browser bundle can
-// import them without pulling in this module's server-only dependencies. They
-// are re-exported here because server-side callers already import them from
-// this path.
-export {
+// import them without pulling in this module's server-only dependencies
+// (classify-actions and stagnation). Imported here for use below, and
+// re-exported because server-side callers already import them from this path.
+import {
   ACTION_PRESENTATION,
   QUEUE_ORDER,
   QUEUE_TITLES,
 } from "./dashboard-queues.js";
+import { detectStagnation } from "./stagnation.js";
 
-import {
-  ACTION_PRESENTATION,
-  QUEUE_ORDER,
-} from "./dashboard-queues.js";
+export { ACTION_PRESENTATION, QUEUE_ORDER, QUEUE_TITLES };
 
 // Adapt the dashboard's flat stack shape to the snapshot shape the classifier
 // and stagnation detector were written against.

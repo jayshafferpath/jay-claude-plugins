@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  diffBacklog,
-  pendingInheritance,
-} from "../lib/dashboard-backlog.js";
+import { diffBacklog, pendingInheritance } from "../lib/dashboard-backlog.js";
 
 function queueTicket(key, opts = {}) {
   return {
@@ -53,7 +50,11 @@ describe("diffBacklog", () => {
       queue: {
         tickets: [
           queueTicket("A-1", { statusName: "To Do" }),
-          queueTicket("A-2", { statusName: "In Review", via: "parent", parentSeed: "P-1" }),
+          queueTicket("A-2", {
+            statusName: "In Review",
+            via: "parent",
+            parentSeed: "P-1",
+          }),
           queueTicket("A-3", { statusName: "Code Review" }),
         ],
       },
@@ -96,7 +97,10 @@ describe("diffBacklog", () => {
     const result = diffBacklog({
       queue: {
         tickets: [
-          queueTicket("A-1", { statusCategory: "indeterminate", statusName: "In Progress" }),
+          queueTicket("A-1", {
+            statusCategory: "indeterminate",
+            statusName: "In Progress",
+          }),
           queueTicket("A-2", { statusCategory: "done", statusName: "Done" }),
         ],
       },
@@ -190,7 +194,11 @@ describe("diffBacklog", () => {
     const result = diffBacklog({
       queue: {
         tickets: [
-          queueTicket("A-1", { via: "parent", parentSeed: "P-1", issueType: "Sub-task" }),
+          queueTicket("A-1", {
+            via: "parent",
+            parentSeed: "P-1",
+            issueType: "Sub-task",
+          }),
         ],
       },
       knownKeys: [],

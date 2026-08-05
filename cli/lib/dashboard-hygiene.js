@@ -18,7 +18,8 @@
 // it isn't a per-ticket worktree, and suggesting its removal would be actively
 // dangerous.
 export function classifyWorktrees({ worktrees, activeKeys, repoRoot } = {}) {
-  const active = activeKeys instanceof Set ? activeKeys : new Set(activeKeys || []);
+  const active =
+    activeKeys instanceof Set ? activeKeys : new Set(activeKeys || []);
   const entries = [];
 
   for (const wt of worktrees || []) {

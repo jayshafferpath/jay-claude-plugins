@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  __test__,
   formatSlashCommand,
   isExecutionEnabled,
   resolveAction,
   validateActionRequest,
-  __test__,
 } from "../lib/dashboard-actions.js";
 import { ACTION_PRESENTATION } from "../lib/dashboard-queues.js";
 
@@ -58,15 +58,22 @@ describe("resolveAction", () => {
   it("always exposes the flag-free command for copy-paste", () => {
     // The run path passes --yes because nobody is watching a headless run; a
     // human copying the command should get the reviewable form.
-    const action = resolveAction({ key: "PROJ-1", nextAction: "cleanup-terminal" });
+    const action = resolveAction({
+      key: "PROJ-1",
+      nextAction: "cleanup-terminal",
+    });
     expect(action.slashCommand).toBe("/cleanup-main PROJ-1");
     expect(action.slashCommand).not.toContain("--yes");
   });
 
   it("returns null when there is nothing to offer", () => {
     expect(resolveAction({ key: "PROJ-1", nextAction: "idle" })).toBeNull();
-    expect(resolveAction({ key: "PROJ-1", nextAction: "awaiting-review" })).toBeNull();
-    expect(resolveAction({ key: "PROJ-1", nextAction: "in-flight" })).toBeNull();
+    expect(
+      resolveAction({ key: "PROJ-1", nextAction: "awaiting-review" }),
+    ).toBeNull();
+    expect(
+      resolveAction({ key: "PROJ-1", nextAction: "in-flight" }),
+    ).toBeNull();
     expect(resolveAction({ key: "PROJ-1", nextAction: "unknown" })).toBeNull();
   });
 

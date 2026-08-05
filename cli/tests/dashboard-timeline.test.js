@@ -20,13 +20,16 @@ describe("parseTimestamp", () => {
     );
   });
 
-  it.each([["not a date"], [""], [null], [undefined], [12345]])(
-    "returns null for %s rather than NaN",
-    (input) => {
-      // NaN would poison the sort comparator; null is handled explicitly.
-      expect(parseTimestamp(input)).toBeNull();
-    },
-  );
+  it.each([
+    ["not a date"],
+    [""],
+    [null],
+    [undefined],
+    [12345],
+  ])("returns null for %s rather than NaN", (input) => {
+    // NaN would poison the sort comparator; null is handled explicitly.
+    expect(parseTimestamp(input)).toBeNull();
+  });
 });
 
 describe("mergeTimeline", () => {
