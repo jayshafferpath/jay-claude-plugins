@@ -195,6 +195,33 @@ describe("classifyActions", () => {
       );
     });
 
+    // Regression: rule 1c re-emitted cleanup-phase-1 on every pass, because the
+    // branch survives phase-1 and nothing else in the rule changed. The leaf
+    // never advanced to the promotion that actually ships it — NEV-1446 sat on
+    // the Epic branch with a merged/{KEY} tag and no PR to main.
+    it("a leaf whose phase-1 already ran advances to promote-to-main, not another cleanup", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "NEV-1352", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1446", {
+                branch: "NEV-1446",
+                mergedIntoFeature: true,
+                mergedIntoMain: false,
+                phaseOneDone: true,
+              }),
+            ],
+          }),
+        ],
+      });
+      expect(out.queues.autoSafe).toHaveLength(1);
+      expect(out.queues.autoSafe[0].nextAction).toBe("promote-to-main");
+      expect(out.queues.autoSafe[0].reason).toBe(
+        "phase-1 cleanup done, awaiting main promotion",
+      );
+    });
+
     it("the same leaf becomes terminal once it reaches main", () => {
       const out = classifyActions({
         stacks: [
@@ -296,19 +323,48 @@ describe("classifyActions", () => {
       expect(out.queues.idle[0].nextAction).toBe("cleaned");
     });
 
-    it("merged into the feature branch with no branch → cleaned", () => {
+    // Regression: NEV-1442/NEV-1616 merged into Epic branch NEV-1352, had their
+    // branches deleted by phase-1 cleanup, and classified as `cleaned` with
+    // autoSafe:false. Nothing revisited them, so three commits sat on the Epic
+    // branch with no PR to main and no rule that would ever open one. `cleaned`
+    // now means "merged to main", and a feature-only merge with a replayable tag
+    // is owed a promotion.
+    it("merged into the feature branch with no branch but a merge tag → promote-to-main", () => {
       const out = classifyActions({
         stacks: [
           stack({
             container: { key: "EPIC-1", featureBranch: "NEV-1352" },
             tickets: [
-              ticket("NEV-1616", { branch: null, mergedIntoFeature: true }),
+              ticket("NEV-1616", {
+                branch: null,
+                mergedIntoFeature: true,
+                phaseOneDone: true,
+              }),
             ],
           }),
         ],
       });
+      expect(out.queues.idle).toHaveLength(0);
+      expect(out.queues.autoSafe).toHaveLength(1);
+      expect(out.queues.autoSafe[0].nextAction).toBe("promote-to-main");
+    });
+
+    it("merged into the feature branch with neither branch nor tag → stranded, surfaced to a human", () => {
+      const out = classifyActions({
+        stacks: [
+          stack({
+            container: { key: "EPIC-1", featureBranch: "NEV-1352" },
+            tickets: [
+              ticket("NEV-1442", { branch: null, mergedIntoFeature: true }),
+            ],
+          }),
+        ],
+      });
+      // Nothing left to replay from, so this must not be dispatched as auto-safe
+      // work — but it must not read as idle either.
       expect(out.queues.autoSafe).toHaveLength(0);
-      expect(out.queues.idle[0].nextAction).toBe("cleaned");
+      expect(out.queues.idle).toHaveLength(0);
+      expect(out.queues.manual[0].nextAction).toBe("stranded");
     });
 
     it("an unmerged ticket with no branch is not treated as cleaned", () => {

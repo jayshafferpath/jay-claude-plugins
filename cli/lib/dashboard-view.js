@@ -83,7 +83,9 @@ export function queueForClassification(classification) {
   if (autoSafe) return "autoSafe";
   if (nextAction === "unknown") return "unknown";
   if (nextAction === "failed" || nextAction === "ticket-work") return "asks";
-  if (nextAction === "awaiting-review") return "manual";
+  if (nextAction === "awaiting-review" || nextAction === "stranded") {
+    return "manual";
+  }
   if (
     nextAction === "blocked-on-container" ||
     nextAction === "blocked-on-stack"

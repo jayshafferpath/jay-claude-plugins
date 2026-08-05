@@ -22,7 +22,12 @@ function classifyTicket(ticket, ctx) {
   const { container, mergedToParentFeatureBranch } = ctx;
   const branch = ticket.branch || null;
 
-  // A merged ticket with no branch on record has already been cleaned.
+  // `phaseOneDone` is the `merged/{KEY}` tag probe: the durable record that
+  // phase-1 cleanup has run. Read up here because both the branchless rules
+  // below and rules 1a/1b/1c all discriminate on it.
+  const phaseOneDone = ticket.phaseOneDone === true;
+
+  // A ticket merged to MAIN with no branch on record has already been cleaned.
   //
   // Branch deletion is what terminal cleanup does, and /cleanup Step 1b refuses
   // outright ("No branch on record") when the branch is gone — so dispatching
@@ -34,15 +39,48 @@ function classifyTicket(ticket, ctx) {
   // A null branch alongside a positive merge signal cannot mean "repo root
   // unresolved" — both mergedIntoMain and mergedIntoFeature are themselves
   // derived from git, so they are false when there is no repo to read.
-  const isCleaned =
-    !branch &&
-    (ticket.mergedIntoMain === true || ticket.mergedIntoFeature === true);
-  if (isCleaned) {
+  //
+  // Scoped to mergedIntoMain deliberately. This rule used to fire on
+  // `mergedIntoMain || mergedIntoFeature`, which conflated two opposite states:
+  // work that has shipped, and work that merged only into a feature branch and
+  // still owes a main promotion. The latter classified as `cleaned` with
+  // `autoSafe: false`, so nothing in the state machine ever revisited it — the
+  // self-defeating outcome rule 1c's comment warns about, reached by a different
+  // route. Three commits sat unshippable on an Epic branch with no open PR to
+  // main and no rule that would ever produce one.
+  if (!branch && ticket.mergedIntoMain === true) {
     return {
       key: ticket.key,
       nextAction: "cleaned",
       autoSafe: false,
-      reason: "merged with no branch on record — cleanup already ran",
+      reason: "merged to main with no branch on record — cleanup already ran",
+    };
+  }
+
+  // Merged into a feature branch only, with no branch left on record. Phase-1
+  // cleanup ran (that is what removed the branch); the main promotion has not.
+  //
+  // The `merged/{KEY}` tag is what makes this recoverable: /promote-to-main's
+  // preferred tag-based replay cherry-picks the tagged squash commit onto fresh
+  // main, which needs the tag and not the original branch. Without a tag there
+  // is nothing left to replay from, so that case is surfaced for a human
+  // instead of dispatched into a refusal.
+  if (!branch && ticket.mergedIntoFeature === true) {
+    if (phaseOneDone) {
+      return {
+        key: ticket.key,
+        nextAction: "promote-to-main",
+        autoSafe: true,
+        reason:
+          "merged into feature branch, branch cleaned up, merged/{KEY} tag available for replay",
+      };
+    }
+    return {
+      key: ticket.key,
+      nextAction: "stranded",
+      autoSafe: false,
+      reason:
+        "merged into feature branch but no branch and no merged/{KEY} tag — nothing left to replay onto main",
     };
   }
 
@@ -66,7 +104,6 @@ function classifyTicket(ticket, ctx) {
   const isFeatureContainer =
     branch && container?.featureBranch && branch === container.featureBranch;
   const hasParent = container?.parentFeatureBranch != null;
-  const phaseOneDone = ticket.phaseOneDone === true;
   const pendingProbe =
     isFeatureContainer &&
     hasParent &&
@@ -149,11 +186,27 @@ function classifyTicket(ticket, ctx) {
   // rebase siblings, refresh the Epic branch, and leave the merged/{KEY} tag in
   // place. Rule 1 then fires on the same ticket once mergedIntoMain flips,
   // running terminal cleanup when it is actually true.
+  //
+  // Gated on `phaseOneDone` for the same reason rule 1a is: phase-1 cleanup is
+  // not idempotent as a *classification*. Once its merged/{KEY} tag exists there
+  // is nothing left for it to do, and re-emitting it every pass starved the leaf
+  // of the promote-to-main step that actually ships it — the branch survives
+  // phase-1, so the ticket never reached the branchless rules above either. The
+  // tag is exactly what /promote-to-main Step 2a needs, so a tagged leaf is
+  // promotable now.
   if (
     ticket.mergedIntoFeature === true &&
     ticket.mergedIntoMain !== true &&
     !isFeatureContainer
   ) {
+    if (phaseOneDone) {
+      return {
+        key: ticket.key,
+        nextAction: "promote-to-main",
+        autoSafe: true,
+        reason: "phase-1 cleanup done, awaiting main promotion",
+      };
+    }
     return {
       key: ticket.key,
       nextAction: "cleanup-phase-1",
@@ -329,10 +382,15 @@ export function classifyActions({ stacks, mergedToParentFeatureBranch = {} }) {
         queues.asks.push(c);
       } else if (
         c.nextAction === "awaiting-review" ||
+        c.nextAction === "stranded" ||
         c.nextAction === "blocked-on-container" ||
         c.nextAction === "blocked-on-stack"
       ) {
-        if (c.nextAction === "awaiting-review") {
+        // `stranded` joins the manual queue rather than blocked/idle: the work
+        // has merged somewhere and cannot be recovered mechanically, so a human
+        // has to decide how to get it onto main. Bucketing it as idle is what let
+        // the original strand go unnoticed.
+        if (c.nextAction === "awaiting-review" || c.nextAction === "stranded") {
           queues.manual.push(c);
         } else {
           queues.blocked.push(c);
