@@ -76,9 +76,9 @@ different points and fire independently:
   (single-batch tests instead of per-task Red-Green-Refactor). Expressed as the
   `complexity:trivial` label; `seed-checklist` pre-marks S4.1/S4.4/S4.5 done with
   a ` (skipped: trivial)` suffix so the S4 loop walks past them.
-- **Gate 2 — skip refactor + review pass.** Decided **post-execute** at S4.3.5
-  from the actual diff. Skips S4.4 and S4.5 with a ` (skipped: output trivial)`
-  suffix. In-memory only — no Jira label.
+- **Gate 2 — skip the review pass.** Decided **post-execute** at S4.3.5
+  from the actual diff. Skips S4.4 (which subsumes the retired S4.5) with a
+  ` (skipped: output trivial)` suffix. In-memory only — no Jira label.
 
 Gate 1 must commit before any code is written; Gate 2 can only be judged honestly
 once the code exists (a small-looking AC may produce a 500-line diff). Tier
@@ -106,6 +106,33 @@ from this command call `append-activity` once at the end of their work.
 ## Code Style
 
 The **Code Style** section in `~/.claude/CLAUDE.md` is the source of truth. S4.2 (execute) and S4.4 (refactor) apply it verbatim. Project-local conventions (existing patterns in the touched files, CLAUDE.md, linter config) always win when they conflict.
+
+## Test Tiers
+
+Resolve **two** commands once, during S4.2 setup, and reuse them for the rest of
+the lifecycle. Most projects wrap their test entry point in lint, dependency
+refresh, container setup, and security scanning — appropriate for a merge gate,
+wasteful on every inner-loop iteration.
+
+- `FAST_TEST` — the narrowest command that runs a chosen test file or pattern
+  directly through the runner, skipping wrappers. Prefer invoking the runner via
+  the package manager (e.g. `pnpm --filter <pkg> exec vitest run <path>`,
+  `pytest <path>`, `go test ./<pkg>`). Used for the inner loop.
+- `FULL_TEST` — the project's real suite command, the one CI runs. Used only at
+  the S4.2 exit gate and after the S4.4 refactor.
+
+When the project's wrapper script exposes env toggles for its expensive phases
+(lint/pre-commit, dependency update, security scan, schema validation), set them
+off for `FAST_TEST` and leave them on for `FULL_TEST`. Check the script for
+`${VAR:-true}` defaults before assuming none exist.
+
+Record both in the S4.2 activity-log entry so a resume does not re-derive them.
+If `FAST_TEST` cannot be isolated, set `FAST_TEST = FULL_TEST` and say so in the
+log — correctness never yields to speed here.
+
+**Redirect test output to a file and read back only the summary and failures.**
+Full suite output is large and the interesting part is the tail. Never pipe raw
+suite output into context wholesale.
 
 ## Arguments
 
@@ -141,7 +168,7 @@ For each key in `$ARGUMENTS`, use `mcp__atlassian__getJiraIssue` to fetch it.
 
 ### Completed stack — Mode C
 
-If the issue is a **stack container** (Epic, or a Story/Task with members) AND has the `ClaudeStackComplete` label: this is a completed feature branch ready for PR to main. Proceed to **Mode C: Feature Branch PR** below.
+If the issue is a **stack container** (Epic, or a Story/Task with members) AND has the `ClaudeStackComplete` label: this is a completed feature branch ready for PR to main. Read `commands/_container-flows.md` and run **Mode C: Feature Branch PR** from it, then stop.
 
 ### Container key — pick the next unblocked ticket
 
@@ -180,234 +207,9 @@ handling in S2a/S2b — so do not strip `--serial` when handing off.
 
 ### Multiple keys
 
-When `$ARGUMENTS` names several leaf tickets, run them through the **Multi-ticket
-runner** (Q3 onward) instead of JQL discovery.
-
----
-
-# Mode C: Feature Branch PR (completed stack)
-
-Triggered when a stack container key is passed that has `ClaudeStackComplete`. This opens a PR from the feature branch (named after the container key) to its parent's feature branch (when the container is a Story nested under an Epic-with-feature-branch) or to `main` (top-level Epics, standalone Stories). Generates a PR review plan and posts the review summary, then marks the PR ready for human review. CI green and Copilot comment resolution are NOT automatic — run `/cop-fight` on demand after the PR is open.
-
-## C1: Initialize
-
-1. `CONTAINER_KEY` = the provided issue key. Run `resolve-stack {CONTAINER_KEY} --fetch`
-   and pick the container perspective from the JSON:
-
-   - **`container.key === CONTAINER_KEY`** (we resolved this container's own stack) —
-     take `FEATURE_BRANCH`, `REPO_ROOT`, `PARENT_FEATURE_BRANCH`, and
-     `PARENT_CONTAINER_KEY` straight from the `container` block.
-   - **`container.key` differs** (the input is a Story member of a larger Epic stack) —
-     find `entry = stack.find(s => s.key === CONTAINER_KEY)`, then
-     `FEATURE_BRANCH` = `entry.branch`, `REPO_ROOT` = `container.repoRoot`,
-     `PARENT_FEATURE_BRANCH` = `container.featureBranch` (the enclosing Epic's branch,
-     which this Story PRs into), `PARENT_CONTAINER_KEY` = `container.key`.
-
-2. `PR_BASE` = `PARENT_FEATURE_BRANCH` if non-null, else `main`. When it is the parent's
-   branch, this PR merges into the Epic's branch and the Epic's own Mode C run later PRs
-   the accumulated work to `main`.
-
-3. `git -C {REPO_ROOT} fetch origin`, then check out the feature branch — two separate
-   calls, never chained:
-   ```bash
-   git -C {REPO_ROOT} checkout {FEATURE_BRANCH}
-   ```
-   ```bash
-   git -C {REPO_ROOT} pull origin {FEATURE_BRANCH}
-   ```
-
-4. If `PR_BASE` is not `main`, make sure it exists locally. Try
-   `git -C {REPO_ROOT} fetch origin {PR_BASE}:{PR_BASE}`; if that errors (not a
-   fast-forwardable ref), retry `git -C {REPO_ROOT} fetch origin {PR_BASE}`. If that also
-   fails, display "Parent container {PARENT_CONTAINER_KEY} has no branch on origin. Run
-   /ticket-work against {PARENT_CONTAINER_KEY}'s first ticket to bootstrap it." and **stop**.
-
-## C2: Load or Create Feature Branch Checklist
-
-The checklist file lives at `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md`.
-
-Check if the file already exists:
-- **If it exists**: read it and parse the checklist state. Resume from the first unchecked step.
-- **If it does not exist**: create it (see below).
-
-### C2a: Create the plans directory
-
-```bash
-mkdir -p {REPO_ROOT}/.claude/plans
-```
-
-### C2b: Write the checklist file
-
-```markdown
----
-ticket: {CONTAINER_KEY}
-branch: {FEATURE_BRANCH}
-summary: {CONTAINER_SUMMARY}
-pr_target: {PR_BASE}
-work_dir: {REPO_ROOT}
-created: {ISO_TIMESTAMP}
----
-
-# {CONTAINER_KEY} - Feature Branch PR Checklist
-
-- [ ] 1. PR description generated
-- [ ] 2. PR created as draft
-- [ ] 3. PR review plan generated
-- [ ] 4. PR review plan executed
-- [ ] 5. PR review summary posted
-- [ ] 6. PR marked ready for review
-```
-
-## C3: Execute Checklist
-
-Run the **PR Push & Review** sub-procedure (`commands/_shared-stack-procedures.md`) with these bindings:
-
-- `WORK_DIR` = `REPO_ROOT`
-- `BRANCH` = `FEATURE_BRANCH`
-- `BASE` = `PR_BASE`
-- `JIRA_KEY` = `CONTAINER_KEY`
-- `STORAGE` = the local checklist file at `{REPO_ROOT}/.claude/plans/ticket-work-{CONTAINER_KEY}-pr.md` (read/update with checkbox edits)
-- `MARK_READY` = true
-- `REVIEW_TRANSITION` = false
-
-Sub-procedure steps map onto the C-flow's local checklist file (it lives outside the per-ticket checklist, so slot numbers don't apply). All five steps P1 ↔ "PR description generated" through P5 ↔ "PR marked ready for review" run. Before starting P1, ensure we are on `{FEATURE_BRANCH}`: `git -C {REPO_ROOT} checkout {FEATURE_BRANCH}`. The sub-procedure handles the rest.
-
----
-
-## C4: Final Summary
-
-Display:
-
-```
-Feature Branch PR - Complete
-
-Container: {CONTAINER_KEY} - {CONTAINER_SUMMARY}
-Branch: {FEATURE_BRANCH} → {PR_BASE}
-PR: {PR_URL}
-
-All review steps completed. PR is ready for human review.
-```
-
----
-
-# Multi-ticket runner
-
-Entered with an explicit ticket set — either several leaf keys in `$ARGUMENTS`, or
-S6b promoting more than one unblocked downstream. There is no JQL discovery mode;
-`/orchestrate` owns finding work.
-
-Every path here is serial. `DEV_ROOT` (from `.env` or `~/.claude/.env`) is the
-parent directory holding all repo clones, so a `repo:` label maps to
-`{DEV_ROOT}/{repo_name}`. Reuse `CLOUD_ID` if Mode A already resolved it.
-
-## Q3: Resolve Repo per Ticket
-
-For each ticket, find the label starting with `repo:` (e.g., `repo:my-backend`). Strip the `repo:` prefix to get the repo name. Set `REPO_ROOT` = `{DEV_ROOT}/{repo_name}`.
-
-- If no `repo:` label: **skip it** and display "Skipping {KEY}: no repo: label found"
-- If `REPO_ROOT` directory does not exist: **skip it** and display "Skipping {KEY}: repo directory '{REPO_ROOT}' not found"
-
-## Q4: Gate on Stack Dependencies
-
-For each ticket, run:
-```bash
-resolve-stack {KEY} --repo-root {REPO_ROOT} --fetch
-```
-
-`--fetch` is required for the same reason as S1c: Q4.5's cleanup gate reads `mergedIntoFeature` / `mergedIntoMain` from this output, and stale local origin refs would make it skip a predecessor whose merge has already landed.
-
-Parse the JSON output. Find the ticket's entry in the `stack` array. Use:
-- `FEATURE_BRANCH` = `container.featureBranch`
-- `CONTAINER_BASE` = `container.baseBranch`
-- `UNMERGED_BLOCKERS` = `container.unmergedBlockers`
-- `BASE_BRANCH` = ticket's `baseBranch`
-- `BRANCH_NAME` = ticket's `branch` (or `{KEY}` if null)
-
-If the ticket's `eligible` is `false`:
-- **skip this ticket**
-- Display: "Skipping {KEY}: waiting on {unblockedBlockers[0]}"
-
-## Q4.5: Ensure Cleanup Prerequisites
-
-Before preparing any working directory, verify the surviving tickets' stacks have no un-cleaned feature-branch merges. A stale stack view here would be inherited by every agent launched in Q6, so failing once at the queue level beats N parallel failures.
-
-Group the surviving tickets by `(REPO_ROOT, CONTAINER_KEY)` and run the **Ensure Cleanup Prerequisites** sub-procedure **once per group** — tickets in the same stack share one `STACK_ORDER` and one tag set, so per-ticket invocation would repeat the same `git ls-remote` and the same backfills. For each group, pass the group's `STACK_ORDER` and `REPO_ROOT` with `RESOLVED_KEY` set to the first ticket key in the group.
-
-If the sub-procedure halts for a group (a `/cleanup` that could not produce its tag), **skip every ticket in that group**, display its refusal, and continue with the remaining groups — deliberately unlike S1d, which stops outright (see `docs/design-notes.md`).
-
-When a group's stack was refreshed by a backfill, re-bind that group's Q4 fields (`BASE_BRANCH`, `BRANCH_NAME`, `FEATURE_BRANCH`, `CONTAINER_BASE`, `UNMERGED_BLOCKERS`) from the refreshed stack before Q5 consumes them.
-
-## Q5: Prepare Working Directories (Sequential)
-
-Prepare branches/worktrees sequentially (shared git state requires this).
-
-1. For each unique `(REPO_ROOT, FEATURE_BRANCH)` pair where `FEATURE_BRANCH` is set, run S2.0's `ensure-work-dir --feature-branch …` for one ticket in that stack. The CLI fetches origin, no-ops when the branch already exists, and rejects multi-blocker containers with a clear error.
-
-2. For each eligible ticket:
-   a. Display: "Preparing {MODE} for {KEY}: {SUMMARY} (base: {BASE_BRANCH})" where `{MODE}` is "branch" if `SERIAL_MODE`, otherwise "worktree"
-
-   b. Run:
-   ```bash
-   ensure-work-dir {KEY} --repo-root {REPO_ROOT} --base {BASE_BRANCH} [--serial]
-   ```
-   The CLI handles serial-vs-worktree branching internally and is idempotent (existing branches are checked out / existing worktrees are reused).
-
-## Q6: Launch Ticket Work
-
-Process tickets **one at a time**, ordered by stack dependency (upstream first),
-then by ticket key. For each eligible ticket, in order:
-
-1. `git -C {REPO_ROOT} checkout {BRANCH_NAME}` (serial mode only — in worktree mode
-   the ticket already has its own directory from Q5).
-2. Display: "Working ticket {KEY}: {SUMMARY} (branch: {BRANCH_NAME}, base: {BASE_BRANCH})"
-3. Use the Skill tool to run skill `ticket-work` with args `{KEY}` (append
-   ` --serial` when `SERIAL_MODE`).
-4. When the ticket completes or stops at a gate, commit any stray work and continue
-   to the next. A stopped ticket resumes on the next run.
-
-## Q7: Promote Downstream Tickets
-
-Run:
-
-```bash
-promote-downstream [--repo-root {REPO_ROOT}]
-```
-
-The CLI consults `cli/lib/stack-resolver.js` (`resolveStack` + `isFinished`) — the same engine `resolve-stack` uses — to find done tickets, locate their unblocked downstream dependents, and add `ClaudeReady` to each. It outputs JSON: `{ promoted, skipped, stackComplete }`.
-
-If `promoted` is empty and `stackComplete` is empty, skip to Q8.
-
-For each entry in `stackComplete` (containers whose every member is now finished per `isFinished()` and that don't yet carry `ClaudeStackComplete`):
-
-1. Apply the label and append to the activity log:
-   ```bash
-   set-ticket-state {CONTAINER_KEY} --add ClaudeStackComplete
-   append-activity {CONTAINER_KEY} --heading "Stack complete" --body "All tickets in this stack have been completed by Claude."
-   ```
-2. If the container is a Story/Epic (i.e. not Standalone): display "Feature branch stack complete — running Mode C (Feature Branch PR) for {CONTAINER_KEY}" and run **Mode C: Feature Branch PR** for this container.
-
-## Q8: Summary
-
-Display combined results:
-
-```
-Queue Processing Complete
-
-Worked ({N}):
-  - {KEY}: {SUMMARY} (base: {BASE}, dir: {WORK_DIR})
-
-Promoted ({N}):
-  - {BLOCKED_KEY}: unblocked by {KEY}
-
-Stacks Completed:
-  - {CONTAINER_TYPE} {CONTAINER_KEY}: all {N} tickets finished
-
-Skipped (dependency not ready):
-  - {KEY}: waiting on {BLOCKER_KEY}
-
-Awaiting Human Review:
-  - {KEY}: stack ready, PR open and waiting on review
-```
+When `$ARGUMENTS` names several leaf tickets, read `commands/_container-flows.md`
+and run the **Multi-ticket runner** (Q3 onward) from it. There is no JQL discovery
+mode; `/orchestrate` owns finding work.
 
 ---
 
@@ -492,7 +294,7 @@ ensure-work-dir {TICKET_KEY} --repo-root {REPO_ROOT} --base {BASE_BRANCH} \
   [--serial]                                 # add when SERIAL_MODE
 ```
 
-Parse the JSON: `{ workDir, branch, mode, created, fetched }`. Set `WORK_DIR = workDir` and `PLANS_DIR = {WORK_DIR}/.claude/plans` (used only for the PR review plan at S4.5).
+Parse the JSON: `{ workDir, branch, mode, created, fetched }`. Set `WORK_DIR = workDir` and `PLANS_DIR = {WORK_DIR}/.claude/plans` (used only for the PR review plan at S4.4).
 
 In serial mode the branch is checked out in `{REPO_ROOT}`; in worktree mode the worktree is created at `{REPO_ROOT}/../{TICKET_KEY}`.
 
@@ -538,11 +340,24 @@ Store the `steps` array in memory for step tracking throughout S4.
 
 ## S3.4: Classify Complexity
 
-Tickets carry an optional `complexity:trivial` or `complexity:standard` label that drives which steps in S4 actually run (see "Complexity Tiers" in the Label Reference section). This step ensures every ticket has a tier label before S4 begins. **Skip entirely if** the ticket already has either label.
+Tickets carry an optional `complexity:trivial` or `complexity:standard` label that drives which steps in S4 actually run (see "Complexity Tiers" in the Label Reference section). This step ensures every ticket has a tier label before S4 begins.
 
-1. Re-read the ticket's current labels (the labels read at S1c are stale if the human just added one). Use `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`.
-2. If `labels` contains `complexity:trivial` or `complexity:standard`, skip the rest of S3.4 and continue to S3.5.
-3. Otherwise classify. Read the ticket's description (specifically the `Acceptance Criteria` / Gherkin scenarios and the `Implementation Notes` block, when present). Decide tier using this rubric:
+1. **The single ticket fetch.** Call `mcp__atlassian__getJiraIssue` once with
+   `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`. This is the *only* description
+   fetch in the lifecycle — `resolve-stack` does not return the description, and the
+   labels from S1c are stale if a human just edited one. Bind and keep for the whole run:
+
+   - `DESCRIPTION` — the raw description body.
+   - `GHERKIN_SCENARIOS` — every `Given`/`When`/`Then` block and fenced
+     `gherkin`/`feature` block parsed out of it. **S4.2 setup and S4.3 both consume
+     this binding; neither re-fetches.**
+   - `IMPL_NOTES` — the `h2. Implementation Notes` block, when present.
+   - `labels` — current labels, superseding the S1c copy.
+
+2. If `labels` contains `complexity:trivial` or `complexity:standard`, skip the rest of
+   S3.4 and continue to S3.5 — but keep the bindings above; the later steps need them
+   regardless of tier.
+3. Otherwise classify from `GHERKIN_SCENARIOS` and `IMPL_NOTES` (already in hand from step 1). Decide tier using this rubric:
    - **trivial** — Gate 1 fires. Skip plan, run execute in no-plan mode. Eligible when **any** of:
      - Implementation Notes is **complete** — has a non-empty `*Existing patterns to extend:*` AND a non-empty `*Files likely to change:*` AND (when AC has Gherkin scenarios) a non-empty `*Tests likely to extend:*`. The planner already did the design work; a separate `/plan-ticket` pass would only restate it. File count is **not** capped — what matters is whether the design surface is enumerated, not its width.
      - AC has zero Gherkin scenarios (nothing branchy to plan against).
@@ -560,7 +375,7 @@ Tickets carry an optional `complexity:trivial` or `complexity:standard` label th
 
 ## Stage Squash Protocol
 
-Each lifecycle stage (S4.1 through S4.5) produces exactly one squash commit on the ticket branch when it completes. Implementation lives in `cli/lib/stage-squash.js` (exposed as the `stage-squash` CLI).
+Each lifecycle stage (S4.1 through S4.4) produces exactly one squash commit on the ticket branch when it completes. Implementation lives in `cli/lib/stage-squash.js` (exposed as the `stage-squash` CLI).
 
 **After a stage completes successfully**, run:
 
@@ -578,8 +393,11 @@ The CLI:
 - S4.1: `plan: generated`
 - S4.2: `execute: TDD implementation`
 - S4.3: `verify: acceptance criteria`
-- S4.4: `refactor: code cleanup`
-- S4.5: `review: PR review plan generated`
+- S4.4: `review: combined review pass`
+
+(S4.5 is retired into S4.4 and no longer produces its own stage commit. Its old label
+`review: PR review plan generated` may appear in branches from before the merge; treat
+it as equivalent when detecting prior progress.)
 
 ## S3.5: Drift Check (Implementation Notes refresh)
 
@@ -624,20 +442,22 @@ Either way, proceed to S4.
 
 ## S4: Execute Checklist
 
-Work through each unchecked step in order. After completing each step:
+Work through each unchecked step in order. At each **stage boundary** — not after every
+internal action — do exactly two things:
 
-1. Mark it as done in the in-memory steps array and sync to Jira:
+1. Apply the Stage Squash Protocol. `stage-squash` force-with-lease pushes the squashed
+   commit itself (`cli/lib/stage-squash.js`), so the remote lands the clean state.
+2. Mark the step(s) done and sync once:
    ```bash
    sync-checklist {TICKET_KEY} --steps '{JSON_STEPS_ARRAY}'
    ```
-2. Push the branch to origin:
-   ```bash
-   git push origin {BRANCH_NAME}
-   ```
 
-This ensures the remote always has the latest committed state, supporting idempotent resume from any machine.
+Do **not** add a separate `git push origin {BRANCH_NAME}` — the squash already pushed,
+and pushing first would send the pre-squash commits only to overwrite them a moment
+later. Batch adjacent checklist updates into one `sync-checklist` call: every call
+re-fetches the ticket's whole comment list, so N calls cost N full comment fetches.
 
-Additionally, apply the Stage Squash Protocol at each stage boundary (record HEAD before, squash after). The push happens **after** the squash, so the remote receives the clean squashed commit.
+The squashed remote state is what supports idempotent resume from any machine.
 
 ---
 
@@ -655,8 +475,8 @@ Additionally, apply the Stage Squash Protocol at each stage boundary (record HEA
    append-activity {TICKET_KEY} --heading "Plan generated" --body-file <tmp-summary.md>
    ```
    The body should contain: approach overview (1-2 sentences), key implementation steps as bullets, and if stacked: "Stacked on {BASE_BRANCH}". Derive these from the synced plan via `sync-plan {TICKET_KEY} --read`.
-4. Mark step 1 as done in the steps array and sync checklist to Jira.
-5. Apply Stage Squash Protocol: `stage-squash {TICKET_KEY} --label "plan: generated" --base {BASE_BRANCH} --branch {BRANCH_NAME}`.
+4. Apply Stage Squash Protocol: `stage-squash {TICKET_KEY} --label "plan: generated" --base {BASE_BRANCH} --branch {BRANCH_NAME}`.
+5. Mark step 1 as done in the steps array and sync the checklist to Jira.
 
 ---
 
@@ -677,14 +497,16 @@ Setup, before either mode:
 
 1. `set-ticket-state {TICKET_KEY} --to ClaudeExecuting`
 2. `append-activity {TICKET_KEY} --heading "TDD execution started" --body "Beginning Red-Green-Refactor cycle for plan tasks."`
-3. **Extract Gherkin scenarios** from the ticket description via
-   `mcp__atlassian__getJiraIssue` — `Given`/`When`/`Then` blocks or fenced
-   `gherkin`/`feature` blocks. These drive the tests.
+3. **Use `GHERKIN_SCENARIOS`** from S3.4 step 1 — already parsed. Do not call
+   `mcp__atlassian__getJiraIssue` again. These drive the tests.
 4. **Detect the test framework** from the project: existing test files,
    `package.json` (jest/vitest/mocha), `pytest.ini`, `go.test`. Note the file-naming
    convention (`*.test.ts`, `*_test.go`, `test_*.py`) and directory layout
    (`__tests__/`, `tests/`, colocated). Tests are always written in the project's
    native framework.
+
+   Resolve `FAST_TEST` and `FULL_TEST` now, per the **Test Tiers** section above.
+   Every "run the tests" instruction below names which tier it means.
 5. **Read the plan**: `sync-plan {TICKET_KEY} --read` → `sections[*].tasks[*]`, each
    with `label` and `done`.
 
@@ -696,9 +518,10 @@ Setup, before either mode:
    project's framework and naming conventions. Name it after the scenario and step
    (`{Scenario Name} - {step}`) unless the project has its own pattern.
 
-   Run it and confirm it **fails for the right reason**. A test that passes
-   immediately means the behavior already exists — note it and move to the next
-   task. A syntax or import error means fix the test, not the code.
+   Run it with `FAST_TEST` scoped to the new test file and confirm it **fails for
+   the right reason**. A test that passes immediately means the behavior already
+   exists — note it and move to the next task. A syntax or import error means fix
+   the test, not the code.
 
    `git add {TEST_FILE} && git commit -m "Red: {task title} - failing test for {scenario step}"`
 
@@ -707,15 +530,21 @@ Setup, before either mode:
    Implement the minimum to pass. Apply the **Code Style** section in
    `~/.claude/CLAUDE.md`; surrounding-file conventions win on conflict.
 
-   Run the target test, then the **full suite** to catch regressions. Do not move on
-   red — fix regressions before proceeding.
+   Run `FAST_TEST` scoped to this task's test file(s) **plus** any test file the
+   task's code changes could plausibly break — nearby suites for the modules you
+   touched. Do not move on red.
+
+   Do **not** run `FULL_TEST` here. The regression sweep happens once, at step 7.
+   Running it per task multiplies the wrapper cost by the task count and gates on
+   nothing the step-7 run won't catch.
 
    `git add -A && git commit -m "Green: {task title} - implementation passes"`
 
    #### 6c: Refactor (optional)
 
    If the code can be improved without behavior change (duplication, naming,
-   extraction), do it, re-run the full suite, and commit `Refactor: {task title}`.
+   extraction), do it, re-run the same `FAST_TEST` scope, and commit
+   `Refactor: {task title}`.
 
    #### 6d: Mark task complete in Jira
 
@@ -735,18 +564,23 @@ Setup, before either mode:
 
    Test contract: every Gherkin scenario in the AC must have a corresponding test. This is preserved across both modes — Gate 1 cuts the R-G-R ceremony, not the coverage requirement.
 
-   #### 6'c: Run suite and commit once
+   #### 6'c: Run tests and commit once
 
-   Run the full test suite:
-   ```bash
-   {TEST_COMMAND}
-   ```
-   - If anything fails (new tests or regressions): fix until green. Do not commit red.
-   - Once green: `git add -A && git commit -m "{TICKET_KEY}: {summary}"`.
+   Run `FAST_TEST` over the tests you just wrote plus the suites nearest the code
+   you changed. Fix until green — do not commit red. Then
+   `git add -A && git commit -m "{TICKET_KEY}: {summary}"`.
+
+   Step 7's `FULL_TEST` run is the regression gate; no need to pay it twice.
 
    No `sync-plan --mark-done` calls — there's no plan to update.
 
-7. Run the full suite one final time, then `git status` — commit anything uncommitted.
+7. **Exit gate — the one `FULL_TEST` run.** Run `FULL_TEST`, redirecting output to a
+   file and reading back the summary plus any failures. Fix and re-run until green.
+   Then `git status` — commit anything uncommitted.
+
+   This is the only full-suite run in S4.2 regardless of task count, and it is not
+   optional: everything before it ran a narrowed scope, so this is the first point
+   at which cross-module regressions surface.
 8. Re-read the plan (`sync-plan {TICKET_KEY} --read`) to confirm task state.
 9. Append a compacted recap (per-task one-liners + totals) via a temp file:
 
@@ -759,9 +593,9 @@ Setup, before either mode:
 
    `append-activity {TICKET_KEY} --heading "TDD execution finished" --body-file <tmp-summary.md>`
 
-10. **All tasks complete**: mark step 2 done, sync the checklist, and apply the Stage
-    Squash Protocol with label `execute: TDD implementation`. Keep `ClaudeExecuting` —
-    S4.6a replaces it with `ClaudeStackReady`.
+10. **All tasks complete**: apply the Stage Squash Protocol with label
+    `execute: TDD implementation`, then mark step 2 done and sync the checklist.
+    Keep `ClaudeExecuting` — S4.6a replaces it with `ClaudeStackReady`.
 11. **Tasks incomplete**: `set-ticket-state {TICKET_KEY} --to ClaudeFailed` and **stop**
     for the user to investigate.
 
@@ -774,14 +608,16 @@ Setup, before either mode:
 S4.2 should have produced a test per Gherkin scenario. This step confirms coverage
 and a green suite.
 
-1. Fetch the description (`mcp__atlassian__getJiraIssue`) and extract every Gherkin
-   scenario. **No scenarios** → mark step 3 done and continue; nothing to verify.
-2. Run the full suite. If it fails, fix, commit, and re-run until green.
+1. Use `GHERKIN_SCENARIOS` (bound at S3.4 step 1) — do not re-fetch the description.
+   **No scenarios** → mark step 3 done and continue; nothing to verify.
+2. **Do not re-run `FULL_TEST`.** S4.2 step 7 ended on a green full suite and no code
+   has changed since, so a second run cannot fail differently. Only run tests here if
+   this step writes a missing test below, and then use `FAST_TEST` on the new file.
 
-**Lightweight path** — `complexity == trivial` AND green AND ≤1 scenario: the S4.2
+**Lightweight path** — `complexity == trivial` AND ≤1 scenario: the S4.2
 batch already mirrors the scenarios, so skip the coverage map. Mark step 3 done,
 apply Stage Squash Protocol with label `verify: acceptance criteria`, and append
-`--heading "TDD verification passed (lightweight)" --body "Full suite green. AC covered by S4.2 batch tests."`.
+`--heading "TDD verification passed (lightweight)" --body "Full suite green at S4.2 exit gate. AC covered by S4.2 batch tests."`.
 
 Otherwise build a coverage map, matching each scenario against tests modified on this
 branch (`git diff {BASE_BRANCH}...HEAD --name-only` filtered to test/spec paths):
@@ -793,11 +629,13 @@ branch (`git diff {BASE_BRANCH}...HEAD --name-only` filtered to test/spec paths)
 {N}/{M} scenarios fully covered by tests.
 ```
 
-- **Fully covered**: mark step 3 done, sync the checklist, apply Stage Squash Protocol
-  (`verify: acceptance criteria`), and append `--heading "TDD verification passed"`.
+- **Fully covered**: apply Stage Squash Protocol (`verify: acceptance criteria`), then
+  mark step 3 done, sync the checklist, and append `--heading "TDD verification passed"`.
 - **Gaps**: write the missing test (Red), implement if needed (Green), commit, and
-  re-verify. If gaps survive the fix attempt, `set-ticket-state {TICKET_KEY} --to
-  ClaudeFailed`, append the coverage map via `--body-file`, and **stop**.
+  re-verify with `FAST_TEST`. Because this path changes code after S4.2's gate, close
+  it with one `FULL_TEST` run before marking step 3 done. If gaps survive the fix
+  attempt, `set-ticket-state {TICKET_KEY} --to ClaudeFailed`, append the coverage map
+  via `--body-file`, and **stop**.
 
 ---
 
@@ -805,7 +643,7 @@ branch (`git diff {BASE_BRANCH}...HEAD --name-only` filtered to test/spec paths)
 
 **Skip if**: `complexity == trivial` (S4.4–S4.5 are already pre-marked skipped at seed time), OR step 4 is already checked `[x]` (which implies S4.3.5 ran on a prior invocation or refactor already happened).
 
-This step inspects the actual diff produced by S4.2 and decides whether to skip the refactor + code-review pass (S4.4–S4.5). It runs only for `complexity:standard` tickets. The decision is set in-memory via the `OUTPUT_TRIVIAL` flag — no Jira label.
+This step inspects the actual diff produced by S4.2 and decides whether to skip the combined review pass (S4.4; S4.5 is retired into it). It runs only for `complexity:standard` tickets. The decision is set in-memory via the `OUTPUT_TRIVIAL` flag — no Jira label.
 
 1. `cd {WORK_DIR}`
 2. Collect diff signals:
@@ -814,63 +652,95 @@ This step inspects the actual diff produced by S4.2 and decides whether to skip 
    git diff {BASE_BRANCH}...HEAD --name-only
    ```
 3. Compute `OUTPUT_TRIVIAL = true` when **all** of:
-   - Total changed LOC (insertions + deletions) ≤ 50, excluding test files and lockfiles (`*.test.*`, `*_test.*`, `*.spec.*`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock`, `go.sum`).
-   - ≤2 non-test files changed.
+   - Total changed LOC (insertions + deletions) ≤ 200, excluding test files and lockfiles (`*.test.*`, `*_test.*`, `*.spec.*`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `Cargo.lock`, `Gemfile.lock`, `poetry.lock`, `go.sum`).
+   - ≤5 non-test files changed.
    - No changed file matches a risk pattern: `migrations/`, `auth/`, `security/`, `iam/`, `infrastructure/`, `terraform/`, `*.sql`, `*.tf`, files in directories named `permissions/` or `compliance/`.
+   - No public API surface changed: no exported signature added, removed, or altered in a package entry point (`index.*`, `mod.rs`, `__init__.py`) and no route/schema/OpenAPI definition touched.
 4. Otherwise `OUTPUT_TRIVIAL = false`.
 5. If `OUTPUT_TRIVIAL` is true:
    - Mark steps 4, 5 done with `(skipped: output trivial)` suffix via `sync-checklist`.
    - Append to the activity log:
      ```bash
-     append-activity {TICKET_KEY} --heading "Gate 2: output trivial — review pass skipped" --body "Diff is {LOC} LOC across {N} non-test file(s). Skipping S4.4 (@refactor) and S4.5 (/jay-pr-review). Run /cop-fight after the PR opens to drive CI green and judge Copilot comments."
+     append-activity {TICKET_KEY} --heading "Gate 2: output trivial — review pass skipped" --body "Diff is {LOC} LOC across {N} non-test file(s), no risk paths, no public API change. Skipping S4.4 (combined review pass). Run /cop-fight after the PR opens to drive CI green and judge Copilot comments."
      ```
 6. If `OUTPUT_TRIVIAL` is false, do nothing — the loop continues into S4.4 normally.
 
-### Step S4.4: Refactoring pass with @refactor agent
+The thresholds are deliberately wider than a "tiny diff" heuristic: the risk-path and
+public-API vetoes carry the safety load, and everything skipped here is still reviewed
+by CI and by `/cop-fight` against the live PR. The four conditions are ANDed, so a
+150-LOC change touching `migrations/` still gets the full pass.
 
-**Skip if**: `complexity == trivial` (pre-marked done — small surface, low ROI), OR step 4 is already checked `[x]`.
+### Step S4.4: Combined review pass (subsumes the old S4.5)
 
-After TDD execution and acceptance verification, run a targeted refactoring pass on the code changed by this ticket. The refactor agent identifies CRAP score hotspots, DRY violations, and structural smells — then implements approved fixes.
+**Skip if**: `complexity == trivial` (pre-marked done — small surface, low ROI), OR
+`OUTPUT_TRIVIAL` (Gate 2 fired), OR step 4 is already checked `[x]`.
 
-0. (`stage-squash` derives `STAGE_START_SHA` automatically when run at the end of the stage; nothing to record up front.)
+One pass over this branch's diff that both **finds** problems and **fixes** the
+clear ones, then writes the review plan. Previously this was two passes — an
+`@refactor` agent and a separate `/jay-pr-review` fan-out — over the identical
+diff, plus `/cop-fight` post-PR as a third. The agents largely overlapped; the
+diff is read once now.
 
-1. Make sure we are in the working directory: `cd {WORK_DIR}`
-2. Get the list of files changed on this branch:
+0. (`stage-squash` derives `STAGE_START_SHA` automatically when run at the end of the
+   stage; nothing to record up front.)
+
+1. `cd {WORK_DIR}`, and `mkdir -p {PLANS_DIR}`
+2. Get the changed files:
    ```bash
    git diff {BASE_BRANCH}...HEAD --name-only --diff-filter=ACMR
    ```
-3. Launch the refactor agent targeting only the changed files:
-   - Use the Agent tool with `subagent_type: "refactor"`
-   - Prompt: "Analyze the following files for CRAP score, DRY violations, and refactoring opportunities. These were changed as part of ticket {TICKET_KEY}. Only flag issues introduced or worsened by this branch's changes — don't report pre-existing issues in unchanged code. Implement any refactorings that are clearly beneficial (reduce complexity, eliminate duplication) without changing behavior. Skip anything marginal or subjective. Files: {FILE_LIST}\n\nAdditionally, evaluate the diff against the **Code Style** principles in `~/.claude/CLAUDE.md` (Functions & Control Flow, Error Handling, Logging & Instrumentation, Types & Data Modeling, Configuration & Environment, Testing, Infrastructure as Code, Naming & Style, Refactoring & PR Hygiene). Apply style fixes when they're clear improvements and don't change behavior. Project-local conventions in the surrounding files win when they conflict with the guide. Do not enlarge the diff opportunistically — fix what's broken or stylistically off in *this branch's* changes."
-4. After the refactor agent completes:
-   - Run the full test suite to confirm nothing broke:
-     ```bash
-     {TEST_COMMAND}
-     ```
-   - If tests fail: revert the refactoring commits (`git revert --no-commit HEAD~N..HEAD` where N = number of refactor commits), commit, and note in Jira that refactoring was skipped due to test failures.
-   - If tests pass: proceed.
-5. Mark step 4 as done and sync checklist to Jira.
-6. Apply Stage Squash Protocol: `stage-squash {TICKET_KEY} --label "refactor: code cleanup" --base {BASE_BRANCH} --branch {BRANCH_NAME}`.
-
----
-
-### Step S4.5: PR review plan generated with /jay-pr-review
-
-**Skip if**: `complexity == trivial` (pre-marked done — trivial tickets do not run a pre-PR review plan), OR step 5 is already checked `[x]`.
-
-0. Record `STAGE_START_SHA` (Stage Squash Protocol).
-
-1. Make sure we are in the working directory: `cd {WORK_DIR}`
-2. Ensure plans directory exists: `mkdir -p {PLANS_DIR}`
-3. Pin the review base so `/jay-pr-review` diffs against the ticket's actual stacked base, not `main`. At this point in the lifecycle no PR exists yet (it's created later at S4.9), so the resolver would otherwise fall through to `origin/HEAD` and pick `main`. `/jay-pr-review` reads `git config branch.<BRANCH>.base` as its highest-priority hook. Use the `origin/{BASE_BRANCH}` form so the value resolves even when the local branch ref doesn't exist (worktree mode, branches that have only been fetched):
+3. Pin the review base so the review diffs against the ticket's actual stacked base,
+   not `main`. No PR exists yet at this point (it opens at S4.9), so the resolver would
+   otherwise fall through to `origin/HEAD`. Use the `origin/` form so it resolves even
+   when the local branch ref doesn't exist (worktree mode, fetch-only branches):
    ```bash
    git config branch.{BRANCH_NAME}.base origin/{BASE_BRANCH}
    ```
-4. Run the `/jay-pr-review` command
-5. Mark step 5 as done and sync checklist to Jira.
-6. Apply Stage Squash Protocol: `stage-squash {TICKET_KEY} --label "review: PR review plan generated" --base {BASE_BRANCH} --branch {BRANCH_NAME}`.
+4. **Fan out review agents in a single message** — parallel is the point. Pass each the
+   file list and the diff range `{BASE_BRANCH}...HEAD`; let them read what they need.
+   Do not pass file contents.
 
-The plan written to `{PLANS_DIR}/pr-review-{TICKET_KEY}*.md` is a sanity check before opening the PR. Its findings are NOT auto-applied here. After the PR opens, the user runs `/cop-fight` on demand to drive CI to green and judge Copilot review comments against the live PR.
+   Always:
+   - `quality:code-reviewer` — correctness bugs, error handling, dropped promises,
+     null cases. No style nits.
+   - `refactor` — CRAP hotspots, DRY violations, structural smells, **plus** the
+     **Code Style** principles in `~/.claude/CLAUDE.md`. This agent has write
+     authority: it implements refactorings and style fixes that are clearly
+     beneficial and behavior-preserving, and skips anything marginal or subjective.
+
+   Conditionally:
+   - `quality:security-auditor` — when the diff touches auth, input handling,
+     persistence, logging, secrets, or shells out.
+   - `testing:test-automator` — when a source file changed without a matching test
+     change.
+
+   Every agent gets: "These files changed as part of ticket {TICKET_KEY}. Only flag
+   issues introduced or worsened by this branch — do not report pre-existing issues in
+   unchanged code, and do not enlarge the diff opportunistically. Return findings as
+   `{severity, file, line, summary, fix}` with severity ∈ critical|high|medium|low.
+   Say 'clean' rather than inventing findings. Project-local conventions in the
+   surrounding files win over any general guide."
+
+5. After the agents return, if any of them changed code, run `FULL_TEST` (this is the
+   second and last full-suite run of the lifecycle — code changed since S4.2's gate).
+   Redirect output to a file; read back the summary and failures.
+   - Tests fail: revert the review pass's commits
+     (`git revert --no-commit HEAD~N..HEAD`), commit, and note in the activity log that
+     the review fixes were reverted due to test failures.
+   - Tests pass, or no code changed: proceed.
+
+6. Write the aggregated findings to `{PLANS_DIR}/pr-review-{BRANCH_NAME}.md`, grouped by
+   severity, every actionable item a `- [ ]` checkbox so `post-review-summary` and
+   `pr-execute-plan` can parse it. Mark items the `refactor` agent already fixed as
+   `- [x]` with `(fixed in review pass)`. Follow the plan format in
+   `commands/jay-pr-review.md` Step 5.
+
+7. Apply Stage Squash Protocol: `stage-squash {TICKET_KEY} --label "review: combined review pass" --base {BASE_BRANCH} --branch {BRANCH_NAME}`.
+8. Mark steps 4 **and** 5 done in one `sync-checklist` call — step 5 is now satisfied by
+   this pass. Suffix step 5 with ` (merged into S4.4)`.
+
+Unresolved findings remain a gate for S4.6b. After the PR opens, `/cop-fight` drives CI
+to green and judges Copilot comments against the live PR.
 
 ---
 
@@ -913,7 +783,7 @@ the integration PR opens (that work belongs to Mode C); slot 7 is pre-marked at 
 
 2. **Open the PR into `{FEATURE_BRANCH}`** via the **PR Push & Review** sub-procedure
    (`commands/_shared-stack-procedures.md`), running steps **P1, P2, P4, P5** — skip P3,
-   since S4.5 already reviewed this same diff. Bindings:
+   since S4.4 already reviewed this same diff. Bindings:
 
    `WORK_DIR`=`WORK_DIR`, `BRANCH`=`BRANCH_NAME`, `BASE`=`FEATURE_BRANCH`,
    `JIRA_KEY`=`TICKET_KEY`, `STORAGE`=the Jira checklist (via `sync-checklist`),
@@ -966,7 +836,7 @@ An instance of the **PR Push & Review** sub-procedure
 `REVIEW_TRANSITION`=true (P2 moves Jira to In Review; `ClaudeStackReady` stays put).
 
 Slot mapping: S4.8 ↔ P1 (description), S4.9 ↔ P2 (push as draft), S4.10 ↔ P4 (review
-summary). P3 and P5 are Mode-C-only — S4.5 already handled review for this diff. After
+summary). P3 and P5 are Mode-C-only — S4.4 already handled review for this diff. After
 P4, mark steps 8–10 done (one `sync-checklist` call covers them).
 
 ---
@@ -1017,11 +887,13 @@ If exactly **one** eligible downstream ticket is found:
 If **multiple** eligible downstream tickets are found:
 
 1. Promote all of them (add `ClaudeReady`)
-2. Run the **Multi-ticket runner** (Q3 onward) with these tickets
+2. Read `commands/_container-flows.md` and run the **Multi-ticket runner** (Q3
+   onward) from it with these tickets
 
 If **no** eligible downstream tickets are found:
 
-1. Check for stack completion (same logic as Q7)
+1. Check for stack completion (the `promote-downstream` + `ClaudeStackComplete`
+   rollup described in `commands/_container-flows.md` Q7)
 2. Display: "No more eligible tickets in this stack."
 
 ## Error Handling

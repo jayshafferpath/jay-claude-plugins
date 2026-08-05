@@ -88,6 +88,24 @@ already landed, silently skipping the backfill the gate exists to perform.
 The gate's own tag probe uses `git ls-remote`, which reads the remote directly
 and needs no fetch. It is the stack resolution — not the probe — that goes stale.
 
+## Why Mode C and the multi-ticket runner live in their own file
+
+Both were ~225 lines inside `commands/ticket-work.md`, loading into every single
+invocation while being unreachable from the common path: Mode C fires only when a
+container key carries `ClaudeStackComplete`, and the Q3–Q8 runner only from S6b when
+one completed ticket unblocks two or more downstreams. Neither is dead code — both
+are cited from `Mode A` and `S6b` respectively — but paying their token cost on every
+routine single-ticket run bought nothing.
+
+They now live in `commands/_container-flows.md`, read on demand when their entry
+condition actually fires. The `_` prefix keeps `install.sh` from symlinking the file
+as a slash command (`install.sh` skips `_*`), matching how
+`_shared-stack-procedures.md` already works.
+
+The earlier `.plans/ticket-work-diet.md` round declined to move Mode C on the grounds
+of "no runtime gain." That reasoning measured branches taken rather than tokens
+loaded; the gain is per-invocation context, not fewer steps executed.
+
 ## Why Mode C stores its checklist in a file, not Jira
 
 The per-ticket flow's resume state lives in Jira (the checklist on the ticket
@@ -112,6 +130,54 @@ Standalone tickets flow straight from S4.6a into S4.8 and open their draft PR
 against `main` without waiting for a human label. **The draft state is the
 checkpoint** — nothing merges until a human marks the PR ready and approves it
 on GitHub.
+
+## Why S4.5 was merged into S4.4, and why its slot is retained
+
+The same diff used to be read three times: S4.4 launched the `refactor` agent over
+the changed files, S4.5 ran `/jay-pr-review`, which fanned out `code-reviewer` and
+`security-auditor` (plus `architect-review` / `test-automator` conditionally) over
+that identical diff, and `/cop-fight` reviewed it a third time after the PR opened.
+The agent sets overlapped heavily — a correctness bug found by `code-reviewer` and a
+structural smell found by `refactor` are usually the same finding phrased twice —
+and each pass paid its own diff read plus, in S4.4's case, its own full-suite run.
+
+S4.4 now does both jobs in one fan-out: the review agents report, the `refactor`
+agent has write authority to fix the clear ones, and the aggregated findings are
+written to the same `pr-review-*.md` path the old S4.5 produced. Downstream
+consumers (`post-review-summary`, `pr-execute-plan`, the S4.6b unresolved-issues
+gate) are unchanged because the artifact is unchanged.
+
+Slot 5 is retained and stamped done alongside slot 4, for the same reason slot 7 is
+retained: renumbering would corrupt resume for every in-flight ticket whose Jira
+checklist already has 10 items. Branches created before this change carry the old
+`review: PR review plan generated` stage-commit label; treat it as equivalent to
+`review: combined review pass` when detecting prior progress.
+
+Gate 2's thresholds were widened at the same time (50 → 200 LOC, 2 → 5 non-test
+files) and given a public-API veto. The narrow original window meant most real
+tickets missed the skip and paid all three passes; the risk-path and API vetoes
+carry the safety load, and anything skipped is still covered by CI and `/cop-fight`.
+
+## Why the inner loop runs a narrowed test scope
+
+S4.2's per-task cycle used to run the **full suite** after every task, then again at
+step 7, again at S4.3, and again after S4.4's refactor — eight full-suite runs on a
+five-task ticket. Most projects wrap their test entry point in lint, dependency
+refresh, container setup, and security scanning: appropriate once as a merge gate,
+pure waste repeated eight times. In `employer-backend`, `scripts/test.sh` runs
+pre-commit, a localstack docker cycle, avro validation, and a security scan around
+every invocation, all toggleable via `RUN_*` env vars it already reads.
+
+The lifecycle now resolves two commands (`FAST_TEST`, `FULL_TEST`) once and names
+the tier at each call site. The inner loop uses `FAST_TEST`; `FULL_TEST` runs at
+S4.2's exit gate, and again after S4.4 only when the review pass changed code. S4.3
+no longer re-runs it at all — it sits immediately after a green full suite with no
+intervening code change, so a second run cannot fail differently. Where a path does
+change code after a gate (S4.3's coverage-gap branch), it closes with its own
+`FULL_TEST` before marking done.
+
+This trades a narrower regression net *during* the loop for the same net at the
+gate. Nothing merges without a green `FULL_TEST`, and CI remains the final word.
 
 ## Migration note: legacy local merges
 

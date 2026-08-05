@@ -19,8 +19,9 @@ All skips come from `complexity:trivial` behavior already documented in `command
 
 - **S4.1** `/plan-ticket` — pre-marked done at seed time with `(skipped: trivial)`.
 - **S4.2** collapses to **no-plan mode** — single-batch implementation, one commit, Gherkin coverage still required.
-- **S4.4** `@refactor` agent — pre-marked done with `(skipped: trivial)`.
-- **S4.5** `/jay-pr-review` plan — pre-marked done with `(skipped: trivial)`.
+- **S4.4** the combined review pass (review agents + refactor + review plan) —
+  pre-marked done with `(skipped: trivial)`. Slot 5 is pre-marked with it, since
+  the old S4.5 is retired into S4.4.
 
 Everything else runs: drift check (S3.5), AC verification (S4.3), stage-squash protocol, activity log, and the standalone-ticket PR flow (S4.7 gate + S4.8–S4.10) or the feature-branch flow (S4.6b) as applicable.
 
@@ -57,7 +58,7 @@ Inspect the ticket's labels:
 Then append to the activity log:
 
 ```bash
-append-activity {TICKET_KEY} --heading "Quick mode: forced complexity:trivial" --body "Human override via /ticket-work-quick. Skipping /plan-ticket, @refactor, and /jay-pr-review. See ticket-work.md 'Complexity Tiers' for the exact skip set."
+append-activity {TICKET_KEY} --heading "Quick mode: forced complexity:trivial" --body "Human override via /ticket-work-quick. Skipping /plan-ticket and the S4.4 combined review pass. See ticket-work.md 'Complexity Tiers' for the exact skip set."
 ```
 
 ### 4. Refresh the checklist if needed
