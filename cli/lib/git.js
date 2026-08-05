@@ -14,8 +14,32 @@ function run(cmd, cwd) {
   }
 }
 
+// Refresh origin refs and drop remote-tracking refs whose upstream branch is
+// gone. Returns whether the fetch succeeded.
+//
+// The prune is the point, not an optimization. `git branch -r --list` — which
+// findBranch below falls back to — reads *local* remote-tracking refs, and those
+// are a cache. GitHub deletes the head branch on squash-merge and terminal
+// cleanup deletes it explicitly, but the local `origin/{KEY}` ref survives both
+// until something prunes it. Plain `git fetch origin` does not prune, so
+// refreshing alone left findBranch reporting branches that exist nowhere.
+//
+// A phantom branch is not merely cosmetic: it defeats the classify-actions gate
+// that reads branch-absence as "terminal cleanup already ran", so rule 0 cannot
+// fire and control falls through to rule 1, which re-queues the finished ticket
+// as an auto-safe cleanup. Nothing a cleanup run does clears the stale ref, so
+// the ticket re-emits on every pass — non-convergent, and it buries genuinely
+// actionable tickets under permanent false positives.
+export function fetchPrune(repoRoot) {
+  if (!repoRoot || !existsSync(repoRoot)) return false;
+  return run("git fetch --prune origin", repoRoot) !== null;
+}
+
 // Locate a ticket's branch by key prefix. Checks local branches first, then
 // falls back to remote-tracking branches.
+//
+// The remote fallback is only as fresh as the last prune — callers that act on
+// the result should resolve the stack with `fetch: true` (see fetchPrune).
 //
 // The remote fallback matters because terminal cleanup deletes the local
 // branch: without it, a ticket whose work is merged and pushed looks like it

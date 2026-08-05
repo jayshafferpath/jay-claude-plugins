@@ -88,6 +88,47 @@ already landed, silently skipping the backfill the gate exists to perform.
 The gate's own tag probe uses `git ls-remote`, which reads the remote directly
 and needs no fetch. It is the stack resolution — not the probe — that goes stale.
 
+### Why `--fetch` prunes, and why it happens in the resolver
+
+`stack[*].branch` goes stale the same way, and worse: staleness there is
+**non-convergent** rather than merely wrong once.
+
+`findBranch` checks local branches, then falls back to `git branch -r --list`.
+That fallback reads remote-tracking refs, which are a *local cache*. GitHub
+deletes the head branch on squash-merge and terminal cleanup deletes it
+explicitly, but `origin/{KEY}` survives both until something prunes it — plain
+`git fetch origin` does not. So `findBranch` keeps reporting a branch that exists
+nowhere.
+
+That phantom branch defeats `classify-actions` rule 0, which reads branch-absence
+as "terminal cleanup already ran" (`cleaned`, not auto-safe). With a branch on
+record rule 0 cannot fire, control falls to rule 1 (`mergedIntoMain` →
+`cleanup-terminal`, auto-safe), and **nothing a cleanup run does clears the stale
+ref** — so every subsequent `/orchestrate` re-queues the same finished cleanup.
+Observed on NEV-1442/NEV-1616/NEV-1446: `git ls-remote --heads origin` returned
+empty while `git branch -r --list` still listed them. The cost is not just wasted
+round-trips; a genuinely actionable ticket gets buried in a queue of permanent
+false positives. Same family as the NEV-863 note below, where a bad branch/tag
+assumption silently starved a gate.
+
+Two decisions follow:
+
+- **`--fetch` runs `git fetch --prune origin`.** `--fetch` exists precisely to
+  refresh remote state, and pruning is what "refresh" should have meant. The
+  alternative — verifying each remote hit against `git ls-remote --heads` — adds a
+  network call per ticket to fix a cache that one prune per repo fixes wholesale.
+- **The prune lives in `resolveStack`, not `bin/resolve-stack.js`.** The repo root
+  is resolved *inside* `resolveStack` from the ticket's labels plus the dev root.
+  A CLI-level fetch could only run when the caller happened to pass
+  `--repo-root`, so every label-resolving caller silently skipped the refresh and
+  read stale refs anyway — the flag looked honored while doing nothing. Doing it
+  in the resolver means one prune per resolve, against the same root the branch
+  lookups below will use, and it fires before the first git read.
+
+**A locked worktree is out of reach of this fix.** Its branch is a *local* ref, so
+it takes the `git branch --list` path and no prune can clear it; it resolves only
+once the worktree is released. NEV-1616 was exactly that case.
+
 ## Why Mode C and the multi-ticket runner live in their own file
 
 Both were ~225 lines inside `commands/ticket-work.md`, loading into every single

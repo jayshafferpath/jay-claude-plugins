@@ -1,5 +1,6 @@
 import { loadDevRoot } from "./config.js";
 import {
+  fetchPrune,
   findBranch,
   getMergedPrMap,
   getOpenPrMap,
@@ -181,8 +182,15 @@ function computePrTarget(featureBranch, baseBranch) {
   return baseBranch;
 }
 
+// `fetch` refreshes and prunes origin refs before any branch or merge state is
+// read. It lives here rather than in bin/resolve-stack.js because the repo root
+// is resolved *inside* this function (from the ticket's labels + dev root): the
+// CLI could only fetch when the caller happened to pass --repo-root, so every
+// caller that relied on label-based resolution silently skipped the refresh and
+// read stale refs anyway. Doing it here means one prune per resolve, on the same
+// root the branch lookups below will use.
 export async function resolveStack(ticketKey, opts = {}) {
-  const { repoRoot: explicitRoot } = opts;
+  const { repoRoot: explicitRoot, fetch = false } = opts;
 
   const issue = await getIssue(ticketKey);
   const fields = issue.fields;
@@ -193,6 +201,7 @@ export async function resolveStack(ticketKey, opts = {}) {
   if (!container) {
     const devRoot = loadDevRoot();
     const standaloneRepoRoot = explicitRoot || resolveRepoRoot(labels, devRoot);
+    if (fetch && standaloneRepoRoot) fetchPrune(standaloneRepoRoot);
     const standaloneBranch = standaloneRepoRoot
       ? findBranch(ticketKey, standaloneRepoRoot)
       : null;
@@ -271,6 +280,9 @@ export async function resolveStack(ticketKey, opts = {}) {
     explicitRoot ||
     resolveRepoRoot(containerLabels, devRoot) ||
     resolveRepoRoot(labels, devRoot);
+
+  // Before resolveContainerBase, which is the first git read below.
+  if (fetch && repoRoot) fetchPrune(repoRoot);
 
   const containerBase = resolveContainerBase(
     containerIssue.fields.issuelinks || [],

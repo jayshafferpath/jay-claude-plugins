@@ -11,6 +11,7 @@ vi.mock("child_process", () => ({
 }));
 
 const {
+  fetchPrune,
   findBranch,
   findWorktree,
   getPrInfo,
@@ -109,6 +110,46 @@ describe("findBranch", () => {
       throw new Error("fail");
     });
     expect(findBranch("TICK-1", "/repo")).toBeNull();
+  });
+});
+
+// The remote fallback above reads local remote-tracking refs, which are a cache.
+// Without a prune they outlive the branch they mirror, so findBranch reports a
+// phantom branch and terminal-cleaned tickets re-emit as auto-safe forever.
+describe("fetchPrune", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns false when repoRoot is falsy", () => {
+    expect(fetchPrune(null)).toBe(false);
+    expect(execSync).not.toHaveBeenCalled();
+  });
+
+  it("returns false when repoRoot does not exist", () => {
+    existsSync.mockReturnValue(false);
+    expect(fetchPrune("/nope")).toBe(false);
+    expect(execSync).not.toHaveBeenCalled();
+  });
+
+  // --prune is the whole point: plain `git fetch origin` refreshes refs but
+  // leaves deleted remote branches cached locally.
+  it("fetches with --prune", () => {
+    existsSync.mockReturnValue(true);
+    execSync.mockReturnValue("");
+    expect(fetchPrune("/repo")).toBe(true);
+    expect(execSync).toHaveBeenCalledWith(
+      "git fetch --prune origin",
+      expect.objectContaining({ cwd: "/repo" }),
+    );
+  });
+
+  it("returns false when the fetch fails", () => {
+    existsSync.mockReturnValue(true);
+    execSync.mockImplementation(() => {
+      throw new Error("offline");
+    });
+    expect(fetchPrune("/repo")).toBe(false);
   });
 });
 

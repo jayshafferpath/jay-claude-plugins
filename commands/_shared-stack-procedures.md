@@ -22,7 +22,7 @@ bindings inline.
 
 - `KEY` — the ticket or container key to resolve.
 - `REPO_ROOT` — optional; passed to `resolve-stack --repo-root {REPO_ROOT}` when set.
-- `FETCH` — when truthy, append `--fetch` so origin refs are refreshed.
+- `FETCH` — when truthy, append `--fetch` so origin refs are refreshed *and pruned*.
 
 ## Procedure
 
@@ -59,6 +59,19 @@ to the key you passed (see `commands/_container-flows.md`).
 Pass `FETCH=true` whenever the caller will act on `mergedIntoFeature` /
 `mergedIntoMain` — those flags are computed against local origin refs and go
 stale (see design notes).
+
+The prune matters as much as the fetch, and `stack[*].branch` needs it too.
+`findBranch` falls back to remote-tracking refs, which are a local cache: GitHub
+deletes the head branch on squash-merge and terminal cleanup deletes it
+explicitly, but `origin/{KEY}` lingers until something prunes. A phantom branch
+suppresses the branch-absence signal that `classify-actions` rule 0 reads as
+"cleanup already ran", so a finished ticket re-emits as an auto-safe cleanup on
+every pass and never converges. `--fetch` therefore runs `git fetch --prune`
+inside the resolver, which is also the only layer that knows the repo root when
+the caller did not pass `--repo-root`.
+
+A branch held by a **locked worktree** is a local ref, not a remote-tracking one,
+so no prune clears it — it resolves only once the worktree is released.
 
 > **Field semantics live in `cli/lib/stack-resolver.js`** — `resolveStack()` and
 > `isFinished()` are the source of truth. If the field set changes, update the
