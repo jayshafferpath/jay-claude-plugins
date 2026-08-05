@@ -229,18 +229,51 @@ checkout the ticket branch, merge into the feature branch locally, then
 no `merged/*` tag, so legacy local merges are not promotable through the current
 gate without a backfill.
 
-## Why the `merged/{KEY}` tag outlives a leaf ticket's branch
+## Why the `merged/{KEY}` tag keys on the merge target, not the cleanup phase
 
-The tag's lifecycle keys on **whether the ticket reached main**, not on which
-cleanup phase ran. `/cleanup` Step 2d writes it whenever
-`MERGE_TARGET ≠ "main"`; only Step 4d's `MERGE_TARGET == "main"` pass retires it.
-
-A leaf ticket that merged into its container's feature branch runs terminal
-cleanup but keeps its tag — it has not reached main, and once Step 4b/4c delete
-its branch the tag is the only durable record that it shipped. Retiring it there
-would both starve the cleanup gate (re-triggering `/cleanup` indefinitely) and
-destroy `featureMergeSha`, the Step 8 squash-replay source implicated in
+The tag's lifecycle keys on **whether the ticket reached main**. `/cleanup`
+Step 2d writes it whenever `MERGE_TARGET ≠ "main"`; only Step 4d's
+`MERGE_TARGET == "main"` pass retires it. Retiring it before the ticket reaches
+main would both starve the cleanup gate (re-triggering `/cleanup` indefinitely)
+and destroy `featureMergeSha`, the Step 8 squash-replay source implicated in
 NEV-863.
+
+Keeping the two conditions distinct is what let the tag stay correct while the
+*phase* rule around it was wrong. Until the fix below, a leaf that merged into
+its container's feature branch ran **terminal** cleanup, and only Step 4d's
+independent `MERGE_TARGET` check kept its tag alive after Step 4b/4c deleted its
+branch.
+
+## A feature-branch merge is never terminal — for leaves either
+
+`DEFER_DESTRUCTIVE` keys purely on `MERGE_TARGET ≠ "main"`. It used to *also*
+require `BRANCH_NAME === FEATURE_BRANCH`, so only stack-containers deferred, and
+a leaf merged into its container's feature branch ran full terminal cleanup:
+Jira → Done, branch deleted.
+
+That rested on the premise that a leaf is never promoted separately and reaches
+main implicitly when the Epic branch does. The premise is false.
+`/promote-to-main` Step 1c takes a **leaf ticket key** as its argument ("If
+`{RESOLVED_KEY}` matches a ticket key in `STACK_ORDER` (i.e. a leaf, not the
+container)"), and its container-key path promotes leaves one at a time off
+`GIT_MERGE_ORDER`. Leaves are the ordinary unit of promotion.
+
+Three consequences, all observed on NEV-1446 (merged into Epic branch
+NEV-1352):
+
+1. **Premature Done.** The Story was transitioned to Done while its code sat on
+   an unmerged feature branch.
+2. **A branch `/promote-to-main` still needed was deleted.** Step 2a's rebase
+   fallback uses a predecessor's branch as `UPSTREAM_BRANCH`.
+3. **No self-correction.** With the branch gone, `classifyTicket` rule 0 reports
+   `cleaned` (`autoSafe: false`), so nothing ever revisited the ticket to mark it
+   Done once the work genuinely landed on main.
+
+Now every feature-branch merge — container or leaf — takes phase-1: retain the
+branch and Jira state, cascade-rebase siblings, refresh the feature branch, keep
+the tag. Classifier rule 1c emits `cleanup-phase-1`, and rule 1 fires on the same
+ticket later, once `mergedIntoMain` flips, to run terminal cleanup when it is
+actually true.
 
 ## Retired: subtask expansion and queue discovery
 
@@ -253,11 +286,15 @@ Both paths were removed.
 > **Subtasks must not touch code.** Code-changing work is always a Story, never
 > a Subtask — full stop.
 
-The lifecycle treats Stories as the unit of independent promotion to main. A
-Story-container's branch survives `DEFER_DESTRUCTIVE` cleanup so it can be
-promoted; a Subtask's branch is deleted on cleanup and is unreachable to
-`/promote-to-main`. A fan-out across code-touching subtasks therefore built
-work that could not ship.
+The lifecycle treats Stories as the unit of independent promotion to main, and
+`/promote-to-main` selects its target from `STACK_ORDER` — Story-level entries,
+not subtasks. A fan-out across code-touching subtasks therefore built work with
+no promotion path of its own.
+
+(Since the `DEFER_DESTRUCTIVE` fix above, *any* ticket that merged into a feature
+branch keeps its branch and Jira state, so a subtask's branch is no longer
+deleted early either. That removes one symptom, not the reason: the promotion
+unit is still the Story.)
 
 Story keys now behave like Epic keys: resolve the stack, pick the next unblocked
 member, run it, stop. One rule for every invocation shape.

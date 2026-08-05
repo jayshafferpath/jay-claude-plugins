@@ -1,5 +1,5 @@
 ---
-description: "Auto-dispatching cleanup. Detects merge target and runs the right phase: terminal (PR merged to main) → delete branch, Jira→Done, cascade-rebase, refresh feature branch; phase-1 (Story-container PR merged into parent Epic's feature branch) → retain branch + Jira state for /promote-to-main, cascade-rebase siblings, refresh Epic branch. If you know the phase, prefer the explicit entry points: /cleanup-main (post main-merge) or /cleanup-feature (post Story→Epic merge)."
+description: "Auto-dispatching cleanup. Detects merge target and runs the right phase: terminal (PR merged to main) → delete branch, Jira→Done, cascade-rebase, refresh feature branch; phase-1 (PR merged into a feature branch instead of main — a Story-container into its parent Epic's branch, or a leaf into its container's) → retain branch + Jira state for /promote-to-main, cascade-rebase siblings, refresh the feature branch. If you know the phase, prefer the explicit entry points: /cleanup-main (post main-merge) or /cleanup-feature (post feature-branch merge)."
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
@@ -39,7 +39,7 @@ Optional flags:
 - `--no-rebase` — skip the post-cleanup cascade rebase of downstream stacked tickets (Step 7). Useful when downstream branches are intentionally being abandoned, or when you'd rather rebase manually later.
 - `--no-refresh-feature` — skip the feature-branch refresh (Step 8). Useful if the feature branch carries hand-authored integration commits you don't want clobbered, or if you'd rather refresh manually.
 - `--yes` (alias: `--no-confirm`) — skip the interactive confirmation prompt at the end of Step 3. Print the plan, then proceed straight into Step 4. Used by `/orchestrate` so its auto-safe cleanup pass doesn't deadlock on a prompt; humans should generally omit the flag and review the plan first.
-- `--require-phase={feature|main}` — assert the detected cleanup phase before proceeding. `feature` accepts only Phase-1 cleanup (Story-container merged into parent Epic feature branch); `main` accepts only terminal cleanup (PR merged to `main`). If the detected phase doesn't match, refuse with a pointer to the other entry point. Set by `/cleanup-feature` and `/cleanup-main`; humans calling `/cleanup` directly should omit it.
+- `--require-phase={feature|main}` — assert the detected cleanup phase before proceeding. `feature` accepts only Phase-1 cleanup (merged into a feature branch rather than `main`, container or leaf); `main` accepts only terminal cleanup (PR merged to `main`). If the detected phase doesn't match, refuse with a pointer to the other entry point. Set by `/cleanup-feature` and `/cleanup-main`; humans calling `/cleanup` directly should omit it.
 
 Parse `$ARGUMENTS` into:
 - `TICKET_KEY` — the first non-flag token.
@@ -84,11 +84,13 @@ When `MERGE_TARGET` is not `main`, several downstream steps shift target:
 - Step 2 verifies merge into `MERGE_TARGET`, not `main`.
 - Step 4a's "switch off the branch" checkout target becomes `MERGE_TARGET` instead of `main`.
 - Step 7's cascade rebase rebases onto `MERGE_TARGET` (the Epic feature branch); PR retargets go to `MERGE_TARGET`.
-- Step 8's feature-branch refresh resets to `origin/{MERGE_TARGET}` instead of `origin/main`. (The Story's own feature branch — if cleaning a sub-ticket inside the Story stack — doesn't apply here; this only affects when the cleaned ticket *is* the Story-container, which has no sibling feature branch to refresh. Step 8 is a no-op in that case and skips with `feature-refresh-not-applicable`.)
+- Step 8's feature-branch refresh resets to `origin/{MERGE_TARGET}` instead of `origin/main`. When the cleaned ticket *is* the stack-container (`BRANCH_NAME === FEATURE_BRANCH`) there is no sibling feature branch to refresh, so Step 8 is a no-op and skips with `feature-refresh-not-applicable`. When the cleaned ticket is a **leaf** whose PR merged into its container's `FEATURE_BRANCH`, Step 8 does apply: that container branch is the one to refresh, and it now happens with the leaf's own branch still on disk (see `DEFER_DESTRUCTIVE` below), which is the state Step 8a's replay path prefers.
 
 Also derive `DEFER_DESTRUCTIVE`:
-- `DEFER_DESTRUCTIVE = true` only when **both** (a) `BRANCH_NAME === FEATURE_BRANCH` (the cleaned ticket is itself a stack-container, e.g. a Story whose feature branch was PR'd into a parent Epic), AND (b) `MERGE_TARGET ≠ "main"`. The Story-container has shipped to its parent Epic's feature branch but not yet to main; deleting its branch now would break `/promote-to-main`, which still needs to rebase the branch onto main. Defer branch deletion and the Jira Done-transition until the same ticket is re-cleaned after its main-targeting PR merges.
-- `DEFER_DESTRUCTIVE = false` otherwise. This includes leaf tickets (subtasks under a Story, standalone tickets) whose `MERGE_TARGET` happens to be a Story feature branch — they're not stack-containers themselves and aren't subject to `/promote-to-main`, so terminal cleanup runs immediately when their PR merges into the Story.
+- `DEFER_DESTRUCTIVE = true` whenever `MERGE_TARGET ≠ "main"` — regardless of whether the cleaned ticket is a stack-container or a leaf. The ticket has shipped to a feature branch but not to main, so deleting its branch now would break `/promote-to-main`, which still needs it (as the branch to rebase, or as a successor's `UPSTREAM_BRANCH` in the Step 2a rebase fallback), and transitioning it to Done would claim shipped-to-main for code that is still only on a feature branch. Defer branch deletion, the progress-label clear, and the Jira Done-transition until the same ticket is re-cleaned after its main-targeting PR merges.
+- `DEFER_DESTRUCTIVE = false` only when `MERGE_TARGET == "main"`.
+
+> **Leaves defer too — they are the ordinary unit of promotion.** An earlier version of this rule also required `BRANCH_NAME === FEATURE_BRANCH`, so a leaf whose PR merged into its container's feature branch ran *terminal* cleanup immediately, on the premise that a leaf is never promoted separately and reaches main implicitly when the Epic branch does. That premise is false: `/promote-to-main` Step 1c accepts a **leaf ticket key** directly ("If `{RESOLVED_KEY}` matches a ticket key in `STACK_ORDER` (i.e. a leaf, not the container)"), and its container-key path promotes leaves one at a time off `GIT_MERGE_ORDER`. Terminal cleanup on a feature-branch merge therefore marked Stories Done before their code reached main and deleted branches that `/promote-to-main` still needed. It was also self-defeating: with the branch gone, the classifier's rule 0 reports `cleaned` (not auto-safe), so nothing ever revisited the ticket to mark it Done once the work genuinely landed.
 
 When `DEFER_DESTRUCTIVE` is `true`:
 - Step 4 is skipped entirely (branch stays alive for `/promote-to-main` to rebase).
@@ -106,22 +108,23 @@ If `REQUIRE_PHASE` is non-null, validate against the detected phase before doing
 - If `REQUIRE_PHASE == "feature"` AND `DEFER_DESTRUCTIVE` is `false`:
   ```
   Refuse to run /cleanup-feature on {TICKET_KEY} — detected phase is terminal
-  (MERGE_TARGET={MERGE_TARGET}). The PR landed on main, not on an Epic feature
+  (MERGE_TARGET={MERGE_TARGET}). The PR landed on main, not on a feature
   branch. Use /cleanup-main {TICKET_KEY} instead.
   ```
   and **stop**.
 - If `REQUIRE_PHASE == "main"` AND `DEFER_DESTRUCTIVE` is `true`:
   ```
   Refuse to run /cleanup-main on {TICKET_KEY} — detected phase is phase-1
-  (MERGE_TARGET={MERGE_TARGET}, parent Epic feature branch). The Story-container
-  has shipped to its Epic but not yet to main. Use /cleanup-feature {TICKET_KEY}
-  now; re-run /cleanup-main {TICKET_KEY} after /promote-to-main lands it on main.
+  (MERGE_TARGET={MERGE_TARGET}, a feature branch). The ticket has shipped to
+  that branch but not yet to main, so it is not Done and its branch is still
+  needed. Use /cleanup-feature {TICKET_KEY} now; re-run /cleanup-main
+  {TICKET_KEY} after /promote-to-main lands it on main.
   ```
   and **stop**.
 
 Otherwise (phase matches, or `REQUIRE_PHASE` is null) continue.
 
-> **`main` here means "terminal", not "merged into `main`".** The detected phase is derived from `DEFER_DESTRUCTIVE`, which is false for every non-container ticket — so `--require-phase=main` also accepts a leaf ticket whose `MERGE_TARGET` is its container's feature branch. That is intended: terminal cleanup *is* the right phase for a leaf, since it never goes through `/promote-to-main`. Don't read the guard as having verified a main merge; only Step 2's `verify-merge` against `MERGE_TARGET` establishes what the PR actually landed on, and Step 4d keys its tag retirement on `MERGE_TARGET` for exactly that reason.
+> **The detected phase now tracks `MERGE_TARGET` exactly.** `DEFER_DESTRUCTIVE` is true for *every* ticket whose PR landed on a feature branch, container or leaf, so `--require-phase=feature` and `--require-phase=main` partition cleanly on where the PR actually merged. `--require-phase=main` no longer accepts a leaf that merged into a feature branch; that case is `feature` and routes to `/cleanup-feature`. Step 2's `verify-merge` against `MERGE_TARGET` remains the only thing that establishes what the PR landed on, and Step 4d still keys tag retirement on `MERGE_TARGET == "main"`.
 
 ### 1c: Identify Downstream Stack
 
@@ -131,7 +134,7 @@ These are the descendant tickets whose branches currently base on `BRANCH_NAME` 
 
 If `CONTAINER_KEY` is null (standalone ticket) or `DOWNSTREAM_KEYS` is empty, mark `REBASE_DOWNSTREAM = false` regardless of the flag — there's nothing to rebase.
 
-When `MERGE_TARGET ≠ main`, the cleaned ticket is itself a stack-container (its `BRANCH_NAME === FEATURE_BRANCH`). Its sibling Stories under the same Epic may also block on it. Those siblings live as separate stacks, not in `STACK_ORDER`, so they aren't listed here — the orchestrator picks them up next round when their `unblockedBlockers` clears.
+When `MERGE_TARGET ≠ main` *and* the cleaned ticket is itself a stack-container (`BRANCH_NAME === FEATURE_BRANCH`), its sibling Stories under the same Epic may also block on it. Those siblings live as separate stacks, not in `STACK_ORDER`, so they aren't listed here — the orchestrator picks them up next round when their `unblockedBlockers` clears. A **leaf** with `MERGE_TARGET ≠ main` is an ordinary in-stack entry, so its downstream tickets *are* in `STACK_ORDER` and cascade-rebase normally.
 
 ---
 
@@ -199,8 +202,10 @@ Branch:         {BRANCH_NAME}
 PR:             {PR_URL} (merged into {MERGE_TARGET}, {MERGE_SHA})
 Container:      {CONTAINER_KEY or "(standalone)"}
 Feature branch: {FEATURE_BRANCH or "(none)"}
-{if MERGE_TARGET ≠ "main":
+{if MERGE_TARGET ≠ "main" AND PARENT_CONTAINER_KEY is non-null:
   "Parent epic:    " + PARENT_CONTAINER_KEY + " (feature branch: " + PARENT_FEATURE_BRANCH + ")"}
+{if MERGE_TARGET ≠ "main":
+  "Merged into:    " + MERGE_TARGET + " — not main, so this is a phase-1 cleanup"}
 
 Actions:
 {if DEFER_DESTRUCTIVE is false:
@@ -289,7 +294,7 @@ Display: "Deleted branch {BRANCH_NAME} (local + remote)."
 
 **Skip this step unless `MERGE_TARGET == "main"`.** The tag is retired only once the ticket has actually reached main — that is the condition under which it stops being load-bearing, and it is not the same condition as "terminal cleanup is running".
 
-Retiring the tag on any run that reached this step would be wrong for a **leaf ticket that merged into its container's feature branch**: it has `DEFER_DESTRUCTIVE = false` (Step 1b — it is not a stack-container, so it is not subject to `/promote-to-main`) and so runs terminal cleanup immediately, but its `MERGE_TARGET` is the feature branch and it has *not* reached main. Deleting the tag there breaks two things:
+Keying on `MERGE_TARGET` rather than on "we reached Step 4" is what keeps the tag alive for a ticket that has merged into a feature branch but not into main. Since Step 1b now sets `DEFER_DESTRUCTIVE = true` for every such ticket, Step 4 is skipped wholesale in that case and this guard is a second line of defence rather than the only one — keep it, so a future caller that reaches Step 4d by another path still cannot retire a tag early. Deleting the tag while the ticket is only on a feature branch breaks two things:
 
 1. **The prerequisite gate never converges.** The **Ensure Cleanup Prerequisites** sub-procedure (`commands/_shared-stack-procedures.md`) wants a tag for exactly `mergedIntoFeature === true AND mergedIntoMain === false` — which is this ticket. Step 2d creates the tag, Step 4d deletes it, and the gate's backfill re-runs `/cleanup` forever without ever satisfying itself.
 2. **It destroys the Step 8 replay source.** `resolveMergedTag` (`cli/lib/git.js`) makes this tag the fallback that populates `featureMergeSha` (`cli/lib/stack-resolver.js`), which Step 8a calls the load-bearing input for replaying a squash merge whose branch is gone — the NEV-863 failure shape. Step 4b/4c just deleted the branch, so tag plus branch going together in one run leaves only the GitHub PR record; and because Step 8 rewrites the feature branch, that record's `mergeCommit` can become unreachable and prove nothing (see the comment at `cli/lib/stack-resolver.js` on the tag fallback). The ticket's ship record is then unrecoverable.
@@ -586,7 +591,7 @@ else if FEATURE_BRANCH is non-null AND refresh was skipped:
 {if DEFER_DESTRUCTIVE is true:
 "
 Next steps:
-  - /promote-to-main " + CONTAINER_KEY + " when ready to promote " + TICKET_KEY + " (and the rest of the Epic stack) to main.
+  - /promote-to-main " + TICKET_KEY + " to promote just this ticket, or /promote-to-main " + CONTAINER_KEY + " to take the stack's next unpromoted ticket in merge order.
   - After " + TICKET_KEY + "'s main-targeting PR merges, re-run /cleanup " + TICKET_KEY + " for the destructive phase: branch delete + Jira Done."}
 ```
 
@@ -610,7 +615,7 @@ Field rules:
 ## Error Handling
 
 - If repo root cannot be resolved: refuse to run.
-- The `merged/{TICKET_KEY}` tag's lifecycle keys on **whether the ticket has reached main**, not on which phase is running: Step 2d writes it whenever `MERGE_TARGET ≠ "main"`, and only Step 4d's `MERGE_TARGET == "main"` pass retires it. A leaf ticket that merged into its container's feature branch runs terminal cleanup but keeps its tag — it has not reached main, and once Step 4b/4c delete its branch the tag is the only durable record that it shipped. Retiring the tag in that case both starves the **Ensure Cleanup Prerequisites** gate (which would re-trigger `/cleanup` indefinitely) and destroys `featureMergeSha`, the Step 8 squash-replay source implicated in NEV-863.
+- The `merged/{TICKET_KEY}` tag's lifecycle keys on **whether the ticket has reached main**, not on which phase is running: Step 2d writes it whenever `MERGE_TARGET ≠ "main"`, and only Step 4d's `MERGE_TARGET == "main"` pass retires it. Any ticket that merged into a feature branch keeps its tag — it has not reached main, so the tag remains its durable ship record and the `featureMergeSha` source. Retiring it early both starves the **Ensure Cleanup Prerequisites** gate (which would re-trigger `/cleanup` indefinitely) and destroys the Step 8 squash-replay source implicated in NEV-863.
 - When `DEFER_DESTRUCTIVE` is true: Steps 4 (branch delete), 5b (label clear), and 5c (Jira transition) are skipped; the ticket keeps its current status and progress labels, and the `merged/{TICKET_KEY}` tag from Step 2d records that phase 1 ran. The branch must remain on disk and on the remote because `/promote-to-main` rebases it onto main next. After the main-targeting PR merges, re-run `/cleanup {TICKET_KEY}` — the second invocation will detect the merged main PR via Step 1b's probe and run terminal cleanup.
 - If no merged PR to `MERGE_TARGET` is found: refuse to run — direct the user to `/prune` (abandon) or wait for merge.
 - If the merge SHA is not reachable from `origin/{MERGE_TARGET}`: refuse — `MERGE_TARGET` may have been rewritten, or the merge isn't local yet.
