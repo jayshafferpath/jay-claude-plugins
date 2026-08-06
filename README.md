@@ -4,7 +4,7 @@ Claude Code tooling for Jira ticket automation, stacked PR management, and end-t
 
 Three surfaces, one lifecycle:
 
-1. **Agents** (`@planner`, `@tdd-builder`, `@refactor`) — long-lived, domain-specific subagents Claude Code dispatches when you `@` them.
+1. **Agents** (`@planner`, `@feature-planner`, `@tdd-builder`, `@refactor`) — long-lived, domain-specific subagents Claude Code dispatches when you `@` them.
 2. **Slash commands** (`/ticket-work`, `/prework`, `/orchestrate`, …) — deterministic pipelines executed inside a Claude Code session.
 3. **CLI tools** (`ticket-status`, `resolve-stack`, `sync-plan`, …) — Node scripts in `~/.local/bin/` that agents/commands call to touch Jira and git without going through an MCP round-trip.
 
@@ -41,7 +41,7 @@ Tickets are routed to a repo via a `repo:<name>` label, resolved to `$DEV_ROOT/<
 ## Module layout
 
 ```
-agents/         @planner, @tdd-builder, @refactor
+agents/         @planner, @feature-planner, @tdd-builder, @refactor
 commands/       slash commands (/ticket-work, /prework, /orchestrate, ...)
 cli/
   bin/          Node CLI entry points (symlinked into ~/.local/bin/)
@@ -118,6 +118,22 @@ Decomposes a repo-based TDD into Gherkin-based Jira Epics/Stories/Subtasks with 
 - `@planner init {path-or-slug}` — owner init (in owning repo). Relocates TDD to `docs/tdds/`, validates shape, runs research, writes sidecars, stamps frontmatter.
 - `@planner init {owner-slug}:{tdd-slug}` — consumer init. Fetches owner TDD at pinned SHA, validates repo is in scope, runs research for this repo, writes a pointer file.
 - `@planner {slug-or-key}` — decompose. Refuses if the local TDD isn't initialized. Given a Jira key, fleshes that skeleton.
+
+### `@feature-planner`
+
+Alternative decomposition for the same TDDs, sliced by **feature** rather than by PR size. Shares `@planner`'s init flow unchanged — a TDD initialized by `@planner init` needs no re-init.
+
+Where `@planner` splits a capability when it grows large (3+ steps, several behaviors), this agent treats effort as irrelevant to slicing. A feature that lands as a 900-line PR is one ticket. Only two things split it: a **hard PR boundary** (one PR cannot span two repos) and a **genuinely distinct user-observable outcome** (a separate "so that").
+
+**Hierarchy**: one Epic per `(feature, repo)` pair — the repo seam lands on the Epic because that is where the feature branch and repo root resolve. Stories under it are distinct outcomes within that one repo. Sibling Epics of a feature are linked by a `feature:{slug}` label plus `relates to` links, since Jira has no feature object. Subtasks stay non-code.
+
+It is also the only thing in this repo that **writes the `repo:` label** — `/cleanup`, `/prune`, and `resolveRepoRoot` all consume it, but nothing else sets it.
+
+**Entry points**:
+- `@feature-planner init {path-or-slug}` / `init {owner-slug}:{tdd-slug}` — delegates to `@planner`'s init verbatim.
+- `@feature-planner {slug-or-key}` — decompose, or flesh a skeleton Epic/Story.
+
+**Pick one agent per TDD.** The two slice incompatibly, so each one's stale-ticket detection would flag the other's output wholesale; this agent detects that collision and stops rather than recommending a bulk prune.
 
 ### `@refactor`
 
