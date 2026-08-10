@@ -45,6 +45,8 @@ const {
   resolveContainerBase,
   isFinished,
   resolveStack,
+  isAboveEpicType,
+  expandInitiative,
 } = await import("../lib/stack-resolver.js");
 
 function issueFields(opts = {}) {
@@ -201,6 +203,84 @@ describe("resolveContainer", () => {
   it("still returns null for a Task key with no container", () => {
     const fields = issueFields({ issuetype: "Task" });
     expect(resolveContainer(fields, "T-1")).toBeNull();
+  });
+
+  // Regression: an Initiative key used to fall through to the Epic-link scan and
+  // return its FIRST linked Epic, silently orchestrating one arbitrary slice of
+  // a multi-Epic program. With no links it fell through to the standalone shape
+  // instead, inventing a single-ticket stack on a branch named after itself.
+  it("flags an Initiative as above-Epic instead of returning a linked Epic", () => {
+    const fields = issueFields({
+      issuetype: "Initiative",
+      summary: "Q3 Messaging",
+      issuelinks: [
+        {
+          type: { name: "Relates", inward: "relates to" },
+          outwardIssue: {
+            key: "EPIC-7",
+            fields: { summary: "Epic A", issuetype: { name: "Epic" } },
+          },
+        },
+      ],
+    });
+    expect(resolveContainer(fields, "INIT-1")).toEqual({
+      key: "INIT-1",
+      type: "Initiative",
+      summary: "Q3 Messaging",
+      isSelf: true,
+      isAboveEpic: true,
+    });
+  });
+
+  it("flags a link-less Initiative as above-Epic rather than standalone", () => {
+    const fields = issueFields({ issuetype: "Initiative", summary: "Bare" });
+    expect(resolveContainer(fields, "INIT-2")).toEqual({
+      key: "INIT-2",
+      type: "Initiative",
+      summary: "Bare",
+      isSelf: true,
+      isAboveEpic: true,
+    });
+  });
+
+  // The guard must not depend on the caller passing a key — gating it on
+  // ticketKey would let a keyless call fall through to the Epic-link scan and
+  // get back the linked Epic this branch exists to suppress.
+  it("flags an Initiative as above-Epic even when called without a ticketKey", () => {
+    const fields = issueFields({
+      issuetype: "Initiative",
+      summary: "Keyless",
+      issuelinks: [
+        {
+          type: { name: "Relates", inward: "relates to" },
+          outwardIssue: {
+            key: "EPIC-7",
+            fields: { summary: "Epic A", issuetype: { name: "Epic" } },
+          },
+        },
+      ],
+    });
+    expect(resolveContainer(fields)).toEqual({
+      key: null,
+      type: "Initiative",
+      summary: "Keyless",
+      isSelf: true,
+      isAboveEpic: true,
+    });
+  });
+});
+
+describe("isAboveEpicType", () => {
+  it("recognizes Initiative", () => {
+    expect(isAboveEpicType("Initiative")).toBe(true);
+  });
+
+  it("rejects container and leaf types", () => {
+    expect(isAboveEpicType("Epic")).toBe(false);
+    expect(isAboveEpicType("Story")).toBe(false);
+    expect(isAboveEpicType("Sub-task")).toBe(false);
+    expect(isAboveEpicType("")).toBe(false);
+    expect(isAboveEpicType(undefined)).toBe(false);
   });
 });
 
@@ -2132,5 +2212,163 @@ describe("resolveStack fetch", () => {
     expect(fetchPrune.mock.invocationCallOrder[0]).toBeLessThan(
       findBranch.mock.invocationCallOrder[0],
     );
+  });
+});
+
+describe("resolveStack on an above-Epic issue", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    loadDevRoot.mockReturnValue("/dev");
+    getMergedPrMap.mockReturnValue(new Map());
+    getOpenPrMap.mockReturnValue(new Map());
+    findBranch.mockReturnValue(null);
+  });
+
+  it("refuses an Initiative and names the expansion path", async () => {
+    getIssue.mockResolvedValue({
+      key: "INIT-1",
+      fields: issueFields({ issuetype: "Initiative", summary: "Q3" }),
+    });
+
+    await expect(resolveStack("INIT-1")).rejects.toThrow(
+      /INIT-1 is an Initiative.*owns no feature branch.*--expand INIT-1/s,
+    );
+  });
+
+  it("reads no git state before refusing", async () => {
+    getIssue.mockResolvedValue({
+      key: "INIT-1",
+      fields: issueFields({ issuetype: "Initiative", labels: ["repo:tmp"] }),
+    });
+
+    await expect(
+      resolveStack("INIT-1", { repoRoot: "/dev/backend", fetch: true }),
+    ).rejects.toThrow();
+    expect(fetchPrune).not.toHaveBeenCalled();
+    expect(findBranch).not.toHaveBeenCalled();
+  });
+});
+
+describe("expandInitiative", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns child Epics found via parent", async () => {
+    getIssue.mockResolvedValue({
+      key: "INIT-1",
+      fields: issueFields({ issuetype: "Initiative", summary: "Q3 Messaging" }),
+    });
+    searchIssues.mockResolvedValue([
+      {
+        key: "EPIC-2",
+        fields: issueFields({ issuetype: "Epic", summary: "Backend" }),
+      },
+      {
+        key: "EPIC-1",
+        fields: issueFields({ issuetype: "Epic", summary: "Frontend" }),
+      },
+    ]);
+
+    const result = await expandInitiative("INIT-1");
+    expect(searchIssues).toHaveBeenCalledWith(
+      "parent = INIT-1",
+      expect.arrayContaining(["issuetype"]),
+    );
+    expect(result.initiative).toMatchObject({
+      key: "INIT-1",
+      type: "Initiative",
+      summary: "Q3 Messaging",
+    });
+    expect(result.epics.map((e) => e.key)).toEqual(["EPIC-1", "EPIC-2"]);
+    expect(result.epics.every((e) => e.via === "parent")).toBe(true);
+  });
+
+  it("excludes non-Epic children", async () => {
+    getIssue.mockResolvedValue({
+      key: "INIT-1",
+      fields: issueFields({ issuetype: "Initiative" }),
+    });
+    searchIssues.mockResolvedValue([
+      { key: "EPIC-1", fields: issueFields({ issuetype: "Epic" }) },
+      { key: "TASK-9", fields: issueFields({ issuetype: "Task" }) },
+      { key: "STORY-4", fields: issueFields({ issuetype: "Story" }) },
+    ]);
+
+    const result = await expandInitiative("INIT-1");
+    expect(result.epics.map((e) => e.key)).toEqual(["EPIC-1"]);
+  });
+
+  // The planner links sibling Epics of one feature with `relates to` rather than
+  // a parent edge (Jira has no feature object), so link-reachable Epics count.
+  it("includes link-reachable Epics and dedupes against parent children", async () => {
+    getIssue.mockResolvedValue({
+      key: "INIT-1",
+      fields: issueFields({
+        issuetype: "Initiative",
+        issuelinks: [
+          {
+            type: { name: "Relates", inward: "relates to" },
+            outwardIssue: {
+              key: "EPIC-5",
+              fields: {
+                summary: "Linked sibling",
+                issuetype: { name: "Epic" },
+                status: { name: "In Progress" },
+              },
+            },
+          },
+          {
+            type: { name: "Relates", inward: "relates to" },
+            inwardIssue: {
+              key: "EPIC-1",
+              fields: { summary: "Dup", issuetype: { name: "Epic" } },
+            },
+          },
+          {
+            type: { name: "Relates", inward: "relates to" },
+            outwardIssue: {
+              key: "TASK-3",
+              fields: { summary: "Not an epic", issuetype: { name: "Task" } },
+            },
+          },
+        ],
+      }),
+    });
+    searchIssues.mockResolvedValue([
+      {
+        key: "EPIC-1",
+        fields: issueFields({ issuetype: "Epic", summary: "Child" }),
+      },
+    ]);
+
+    const result = await expandInitiative("INIT-1");
+    expect(result.epics.map((e) => e.key)).toEqual(["EPIC-1", "EPIC-5"]);
+    // The parent edge wins the dedupe, so EPIC-1 keeps its child summary.
+    expect(result.epics[0]).toMatchObject({ summary: "Child", via: "parent" });
+    expect(result.epics[1]).toMatchObject({ via: "link" });
+  });
+
+  it("returns an empty Epic list for a childless Initiative", async () => {
+    getIssue.mockResolvedValue({
+      key: "INIT-1",
+      fields: issueFields({ issuetype: "Initiative" }),
+    });
+    searchIssues.mockResolvedValue([]);
+
+    const result = await expandInitiative("INIT-1");
+    expect(result.epics).toEqual([]);
+  });
+
+  it("refuses a non-Initiative key", async () => {
+    getIssue.mockResolvedValue({
+      key: "EPIC-1",
+      fields: issueFields({ issuetype: "Epic" }),
+    });
+
+    await expect(expandInitiative("EPIC-1")).rejects.toThrow(
+      /EPIC-1 is a Epic, not an above-Epic issue/,
+    );
+    expect(searchIssues).not.toHaveBeenCalled();
   });
 });

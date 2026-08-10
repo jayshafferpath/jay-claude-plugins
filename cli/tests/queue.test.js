@@ -320,4 +320,37 @@ describe("promoteDownstream", () => {
     expect(result.stackComplete).toEqual([]);
     expect(getIssue).not.toHaveBeenCalled();
   });
+
+  // The driving JQL filters on labels + assignee only, so a hand-labelled
+  // Initiative reaches this loop and resolveStack throws on it. An unguarded
+  // throw aborted the whole run after earlier promotions had already been
+  // written to Jira, and the caller never saw the report that said so.
+  it("records a resolveStack throw as skipped and keeps processing later tickets", async () => {
+    searchIssues.mockResolvedValueOnce([
+      { key: "INIT-1", fields: { summary: "An initiative" } },
+      { key: "DONE-9", fields: { summary: "" } },
+    ]);
+    resolveStack
+      .mockRejectedValueOnce(new Error("INIT-1 is an Initiative"))
+      .mockResolvedValueOnce({
+        container: { key: "EPIC-9", type: "Epic" },
+        stack: [
+          { key: "DONE-9", labels: ["ClaudeWork"], eligible: false },
+          { key: "DOWN-9", labels: ["ClaudeWork"], eligible: true },
+        ],
+      });
+    getIssue.mockResolvedValue({ fields: { labels: [] } });
+    isFinished.mockReturnValue(false);
+    editIssue.mockResolvedValue();
+
+    const result = await promoteDownstream();
+
+    expect(result.skipped).toEqual([
+      { key: "INIT-1", reason: "INIT-1 is an Initiative" },
+    ]);
+    // The ticket after the throw still got processed.
+    expect(result.promoted).toEqual([
+      { key: "DOWN-9", unblockedBy: "DONE-9", container: "EPIC-9" },
+    ]);
+  });
 });

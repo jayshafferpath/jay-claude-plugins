@@ -22,10 +22,11 @@ Survey every active stack the user is working on, decide the next safe action pe
 
 The orchestrator is **status-first, action-second**. It always prints a full status view before it runs anything, so the user can redirect if the auto-decisions look wrong.
 
-It handles two entry paths:
+It handles three entry paths:
 
 - **Lifecycle tickets** — tickets already carrying a `Claude*` label. Orchestrate advances them along the state machine (plan → execute → PR → promote → cleanup).
 - **Cold tickets** — tickets assigned to the user that don't yet carry any `Claude*` label. Orchestrate surfaces them as kickoff candidates and, on approval, chains `/prework KEY` → `/ticket-work KEY` to enter the lifecycle.
+- **Initiatives** — an above-Epic key passed as scope. Orchestrate expands it into its child Epics and surveys those as one group. The Initiative is never a container: the feature branch and repo root both resolve at the Epic, so there is nothing an Initiative could own a branch for. Every dispatched action targets an Epic or one of its members.
 
 ## Arguments
 
@@ -35,7 +36,7 @@ Optional:
 - `KEY` (positional) — narrow to a single ticket. Equivalent to `--scope KEY`. If the ticket carries no `Claude*` labels, it is treated as a cold-kickoff candidate.
 - `--status` — read-only. Print the survey, do not run any actions. Useful for `/loop`-style polling.
 - `--auto-all` — also auto-run the actions that normally prompt (`/rework`, `/fix-drift`, `/ticket-work`, cold `/prework` + `/ticket-work`). Use after a `--status` pass looks right.
-- `--scope KEY` — narrow to one container or ticket key instead of project-wide. Resolves via `resolve-stack`.
+- `--scope KEY` — narrow to one container or ticket key instead of project-wide. Resolves via `resolve-stack`. An **Initiative** key is expanded into its child Epics and surveyed as a group (see Step 1b); the Initiative itself is never a container.
 - `--no-loop` — run a single survey-and-dispatch round instead of repeating until idle.
 
 Parse `$ARGUMENTS` into:
@@ -62,7 +63,18 @@ Initialize `CONTAINER_KEYS = []` and `COLD_TICKETS = []`. `COLD_TICKETS` holds `
 **Scoped mode** — if `SCOPE_KEY` is set:
 
 - Fetch the scoped ticket once via `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={SCOPE_KEY}`, fields `key, summary, status, labels, issuetype, parent, issuelinks, assignee`.
-- If any label starts with `Claude`, treat as lifecycle: skip cold-ticket handling here — Step 2 will `resolve-stack` from `SCOPE_KEY`.
+- **If `issuetype` is `Initiative`** — this is an above-Epic key that owns no feature branch. Do not pass it to `resolve-stack` (which refuses it) and do not treat it as cold. Expand it into its child Epics:
+
+  ```bash
+  resolve-stack {SCOPE_KEY} --expand
+  ```
+
+  Parse stdout as JSON: `{ initiative: { key, type, summary, status }, epics: [{ key, summary, status, statusCategoryKey, labels, via }] }`. Set `INITIATIVE = result.initiative` and append every `epics[*].key` whose `statusCategoryKey !== "done"` to `CONTAINER_KEYS`. Record the count of Epics dropped as already-done and report it in Step 4 — a silent drop reads as "this Initiative has fewer Epics than it does".
+
+  If `epics` is empty, display "{SCOPE_KEY} ({summary}) has no child Epics. Initiatives are orchestrated through their Epics — link Epics to it via `parent` or `relates to` first." and **stop**.
+
+  Then proceed to Step 2, which resolves each Epic container independently. There is no Initiative-level branch, PR, or cleanup: the Initiative is a grouping for the status view only.
+- Otherwise, if any label starts with `Claude`, treat as lifecycle: skip cold-ticket handling here — Step 2 will `resolve-stack` from `SCOPE_KEY`.
 - Otherwise, treat as cold: append `{ key, summary, status, issuetype }` to `COLD_TICKETS`. Skip Step 2 entirely (there is no stack to resolve yet — `/prework` will resolve it).
 
 **Project-wide mode** — if `SCOPE_KEY` is null, run two JQL searches:
@@ -76,6 +88,7 @@ Initialize `CONTAINER_KEYS = []` and `COLD_TICKETS = []`. `COLD_TICKETS` holds `
    Fields: `key, summary, status, labels, issuelinks, parent, issuetype`.
 
    For each issue, derive its container key:
+   - **`issuetype` is `Initiative`** → expand it, don't containerize it. Run `resolve-stack {KEY} --expand` and append its not-done child Epic keys, exactly as scoped mode does. An Initiative reaching this query means someone hand-labelled it `ClaudeWork`; without this branch its own key lands in `CONTAINER_KEYS` and Step 2 renders the whole stack as a `resolve-stack` error.
    - Sub-task → `parent.key`.
    - Otherwise → first `issuelinks` entry pointing at an Epic, or `parent.key` if parent is an Epic.
    - Standalone (no container) → use the ticket's own key.
@@ -85,12 +98,16 @@ Initialize `CONTAINER_KEYS = []` and `COLD_TICKETS = []`. `COLD_TICKETS` holds `
 2. **Cold tickets** — `mcp__atlassian__searchJiraIssuesUsingJql` with:
 
    ```
-   assignee = currentUser() AND statusCategory != Done AND (labels is EMPTY OR NOT (labels in ("ClaudeWork", "ClaudeReady", "ClaudePlanning", "ClaudeExecuting", "ClaudeStackReady", "ClaudeFailed")))
+   assignee = currentUser() AND statusCategory != Done AND issuetype != Initiative AND (labels is EMPTY OR NOT (labels in ("ClaudeWork", "ClaudeReady", "ClaudePlanning", "ClaudeExecuting", "ClaudeStackReady", "ClaudeFailed")))
    ```
 
    Fields: `key, summary, status, labels, issuetype`.
 
+   The `issuetype != Initiative` clause matters: without it, an assigned Initiative with no `Claude*` labels surfaced as a cold-kickoff candidate and `/orchestrate` offered to run `/prework` + `/ticket-work` on a key that owns no feature branch. Also drop any `issuetype` of `Initiative` client-side, in case a project uses a differently-named above-Epic type that the JQL clause misses.
+
    Filter out anything whose `status` is in `{"In Review", "Code Review", "Done", "Cancelled"}` (defensive — statusCategory should already have excluded Done, but reviews aren't kickoff candidates). Append `{ key, summary, status, issuetype }` to `COLD_TICKETS`.
+
+Project-wide mode does not expand Initiatives. Its container derivation already climbs to the Epic and stops there, so every Epic under an Initiative is surveyed on its own — expanding would only add a grouping header. Pass `--scope INIT-KEY` when you want the Initiative-grouped view.
 
 If both `CONTAINER_KEYS` and `COLD_TICKETS` are empty, display "No active stacks or cold tickets found." and **stop**.
 
@@ -101,6 +118,8 @@ If both `CONTAINER_KEYS` and `COLD_TICKETS` are empty, display "No active stacks
 Initialize `STACKS = []` (per-container snapshot).
 
 If `SCOPE_KEY` was resolved to a cold ticket in Step 1b (no `Claude*` labels), skip stack resolution — `COLD_TICKETS` already has what Step 4/6 need. Proceed to Step 3.
+
+If `SCOPE_KEY` was an Initiative, `CONTAINER_KEYS` already holds its child Epics — resolve those, not `SCOPE_KEY`.
 
 Otherwise: for each container key (or just `SCOPE_KEY` if scoped to a lifecycle ticket), in alphabetical order, run the **Stack Context Resolution** sub-procedure (`commands/_shared-stack-procedures.md`) with `KEY={CONTAINER_KEY}` and `FETCH=true`. The orchestrator additionally captures `stack[*].status`, `stack[*].blockers`, `stack[*].mergedIntoFeature`, and `stack[*].mergedIntoMain` per ticket from the same JSON.
 
@@ -177,6 +196,15 @@ classify-actions --extract-failed-step --activity-log-file <tmp-log.md>
 
 ## Step 4: Render Status View
 
+If `INITIATIVE` is set (scoped to an Initiative in Step 1b), print a grouping header **once**, before the stacks, then indent every stack section under it:
+
+```
+◆ {INITIATIVE.key}: {INITIATIVE.summary}    [{INITIATIVE.status}]
+  {E} Epic(s) in scope{if dropped: ", " + dropped + " already Done (skipped)"}
+```
+
+The header is presentation only. The Initiative has no branch, no PR, and no cleanup action — every action in Steps 5 and 6 is dispatched against an Epic key or one of its members. Do not print a `⎇` line or a `→ {next_action}` for the Initiative itself.
+
 Print one section per stack, in order. Use a tree layout that mirrors `ticket-status`:
 
 ```
@@ -215,6 +243,7 @@ After all stacks and cold tickets, print a project summary:
 
 ```
 ─────────────────────────────────────
+{if INITIATIVE: "Initiative " + INITIATIVE.key + ": " + E + " Epic(s)"}
 Project survey: {N} stacks, {M} lifecycle tickets, {C} cold tickets
 
 Auto-safe queue ({count}):
