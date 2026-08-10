@@ -155,7 +155,19 @@ export async function promoteDownstream({ repoRoot } = {}) {
   const stackComplete = [];
 
   for (const ticket of done) {
-    const stack = await resolveStack(ticket.key, { repoRoot });
+    // The driving JQL filters on labels + assignee only, so anything the user
+    // has tagged ClaudeWork lands here — including issue types resolveStack
+    // refuses outright (Initiatives own no feature branch). Per-ticket catch
+    // keeps the documented no-throw contract: one bad ticket is recorded and
+    // skipped rather than aborting the run partway through, which would leave
+    // earlier promotions already written to Jira and unreported.
+    let stack;
+    try {
+      stack = await resolveStack(ticket.key, { repoRoot });
+    } catch (err) {
+      skipped.push({ key: ticket.key, reason: err.message });
+      continue;
+    }
     if (!stack.container) continue;
 
     const containerIssue = await getIssue(stack.container.key);

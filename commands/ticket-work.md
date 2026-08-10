@@ -166,6 +166,14 @@ Use `mcp__atlassian__getAccessibleAtlassianResources` to get `CLOUD_ID`.
 
 For each key in `$ARGUMENTS`, use `mcp__atlassian__getJiraIssue` to fetch it.
 
+### Above-Epic key — refuse
+
+If the issue's `issuetype` is `Initiative`, it sits above the Epic in the hierarchy
+and owns no feature branch, so there is nothing to work. Display "{KEY} is an
+Initiative — it owns no feature branch. Run `/orchestrate --scope {KEY}` to survey
+its child Epics, then `/ticket-work` a specific Epic or Story." and **stop** for
+that key.
+
 ### Completed stack — Mode C
 
 If the issue is a **stack container** (Epic, or a Story/Task with members) AND has the `ClaudeStackComplete` label: this is a completed feature branch ready for PR to main. Read `commands/_container-flows.md` and run **Mode C: Feature Branch PR** from it, then stop.

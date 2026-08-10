@@ -258,11 +258,14 @@ Shows the full lifecycle state of a ticket: stack, branch, PR, Jira labels, chec
 
 Project-level coordinator across all active stacks. Surveys state, auto-runs safe lifecycle steps (cleanup merged tickets, promote PR-approved tickets), and surfaces decisions that need a human (failed tickets, drift, plan/PR approvals, cold-ticket kickoffs).
 
-Two entry paths:
+Three entry paths:
 - **Lifecycle tickets** (`Claude*` labels) → advance along the state machine.
 - **Cold tickets** (assigned, no `Claude*` labels) → offer to chain `/prework KEY` + `/ticket-work KEY` to enter the lifecycle. Pass `KEY` as a positional argument to scope to one ticket (equivalent to `--scope KEY`).
+- **Initiatives** (`--scope INIT-KEY`) → expanded into child Epics (via `parent` and `relates to`) and surveyed as one group under an Initiative header.
 
 Uses `classify-actions` to bucket tickets into safe-to-auto-run vs needs-human.
+
+**The Epic is the orchestration ceiling.** The feature branch and repo root both resolve at the Epic, so an Initiative owns no branch and is never a container — it is a grouping for the status view, and every dispatched action targets an Epic or one of its members. `resolve-stack` refuses an Initiative key outright and points at `resolve-stack {KEY} --expand`; `/ticket-work` and `/prework` refuse it too. Project-wide mode does not expand Initiatives, since its container derivation already climbs to the Epic and stops — every Epic under an Initiative is surveyed on its own.
 
 #### `/triage-tickets`
 
@@ -309,7 +312,7 @@ Post-PR-push helper. Drives CI to green, then evaluates each Copilot review comm
 |---|---|
 | `ticket-status` | View and manage Claude ticket stacks in Jira. Verbose mode powers `/ticket-status`. |
 | `discover-queue` | **Legacy.** Queue-discovery JQL + parent/subtask expansion. Lost its last caller when `/ticket-work` dropped discovery mode; retained for the dashboard's queue vocabulary. |
-| `resolve-stack` | Resolve stack ordering from Jira issue links. Returns container + ordered members + base branch. |
+| `resolve-stack` | Resolve stack ordering from Jira issue links. Returns container + ordered members + base branch. Refuses above-Epic keys (Initiatives); `--expand` lists an Initiative's child Epics instead. |
 | `ensure-work-dir` | Resolve a ticket's working directory (`$DEV_ROOT/<repo>`) and ensure its branch exists (creating it based on `resolve-stack` output if needed). |
 | `ensure-pr` | Create or update a draft PR for the current branch. Idempotent. |
 | `pr-state` | Normalized `gh pr list` probe. Used by `/orchestrate` and cleanup. |

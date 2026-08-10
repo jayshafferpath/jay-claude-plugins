@@ -65,6 +65,16 @@ Parse `$ARGUMENTS` to extract flags. Any token starting with `--` is a flag; the
 
 ---
 
+## Step 0: Reject Above-Epic Keys
+
+Fetch the ticket via `mcp__atlassian__getJiraIssue`. If its `issuetype` is
+`Initiative`, display "{KEY} is an Initiative — it owns no feature branch, so there
+is nothing to prepare. Run `/orchestrate --scope {KEY}` to survey its child Epics."
+and **stop**. Without this, Step 1's `resolve-stack` refuses with a CLI-level error
+after the claim prompt has already run.
+
+---
+
 ## Step 1: Detect Environment
 
 Run **S1: Detect Environment** from `commands/ticket-work.md` (sub-steps S1a, S1b, S1c) verbatim. After it runs the following are bound:

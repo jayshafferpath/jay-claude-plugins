@@ -19,9 +19,40 @@ import { resolveRepoRoot, topologicalSort } from "./util.js";
 
 export { featureBranchFromContainer };
 
+// Issue types that sit ABOVE the Epic in the hierarchy. They are not containers:
+// the feature branch and repo root both resolve at the Epic, so there is no
+// branch an Initiative could own. Callers expand them into child Epics instead
+// (see expandInitiative).
+const ABOVE_EPIC_ISSUE_TYPES = new Set(["Initiative"]);
+
+export function isAboveEpicType(issuetypeName) {
+  return ABOVE_EPIC_ISSUE_TYPES.has(issuetypeName || "");
+}
+
 export function resolveContainer(fields, ticketKey = null) {
   const issuetype = fields.issuetype?.name || "";
   const parent = fields.parent;
+
+  // Above-Epic types are surfaced as their own typed container so callers get an
+  // explicit signal rather than a wrong answer. Checked before the Epic-link
+  // scan below, which would otherwise return an Initiative's FIRST linked or
+  // child Epic and silently orchestrate one arbitrary slice of the program while
+  // ignoring every sibling. Falling through to the standalone shape is no better
+  // — it invents a single-ticket stack on a branch named after the Initiative.
+  //
+  // Deliberately NOT gated on `ticketKey`: gating it there would let a keyless
+  // caller slip past the guard and get a linked Epic back, which is the exact
+  // bug this branch exists to remove. `key` is null in that case, and
+  // `isAboveEpic` is what callers must check.
+  if (isAboveEpicType(issuetype)) {
+    return {
+      key: ticketKey || null,
+      type: issuetype,
+      summary: fields.summary || "",
+      isSelf: true,
+      isAboveEpic: true,
+    };
+  }
 
   // A container key passed directly is its own container. Checked first: an
   // Epic's `parent` is an Initiative and its issuelinks routinely point at
@@ -197,6 +228,17 @@ export async function resolveStack(ticketKey, opts = {}) {
   const labels = fields.labels || [];
 
   const container = resolveContainer(fields, ticketKey);
+
+  // An Initiative has no feature branch of its own, so every downstream
+  // consumer of this shape (base branch, merge probes, cleanup) would be
+  // operating on a fiction. Refuse loudly and point at the expansion path.
+  if (container?.isAboveEpic) {
+    throw new Error(
+      `${ticketKey} is an ${container.type}, which is above the Epic in the hierarchy and owns no feature branch. ` +
+        `Expand it into its child Epics first — run \`resolve-stack --expand ${ticketKey}\` to list them, ` +
+        "then resolve or orchestrate each Epic.",
+    );
+  }
 
   if (!container) {
     const devRoot = loadDevRoot();
@@ -608,5 +650,72 @@ export async function resolveStack(ticketKey, opts = {}) {
     stack,
     inputTicket: ticketKey,
     ticketIndex: ticketIndex >= 0 ? ticketIndex : 0,
+  };
+}
+
+// Expand an above-Epic issue (Initiative) into the child Epics that ARE
+// orchestratable containers. Both hierarchy edges are queried: `parent` is the
+// modern team-managed link, while `relates to` is the seam the planner uses for
+// sibling Epics of one feature (README: Jira has no feature object). Dedupes on
+// key, since an Epic can be reachable both ways.
+//
+// Returns Epic descriptors only — no branch or git state. Callers resolve each
+// Epic through resolveStack() as usual, which keeps the feature-branch layer at
+// the Epic where it belongs.
+export async function expandInitiative(initiativeKey) {
+  const issue = await getIssue(initiativeKey);
+  const fields = issue.fields;
+  const issuetype = fields.issuetype?.name || "";
+
+  if (!isAboveEpicType(issuetype)) {
+    throw new Error(
+      `${initiativeKey} is a ${issuetype || "(unknown type)"}, not an above-Epic issue. ` +
+        "Expansion applies only to Initiatives; resolve Epics and Stories directly.",
+    );
+  }
+
+  const children = await searchIssues(`parent = ${initiativeKey}`, [
+    "summary",
+    "status",
+    "labels",
+    "issuetype",
+  ]);
+
+  const epics = new Map();
+  for (const child of children) {
+    if (child.fields?.issuetype?.name !== "Epic") continue;
+    epics.set(child.key, {
+      key: child.key,
+      summary: child.fields.summary || "",
+      status: child.fields.status?.name || null,
+      statusCategoryKey: child.fields.status?.statusCategory?.key || null,
+      labels: child.fields.labels || [],
+      via: "parent",
+    });
+  }
+
+  for (const link of fields.issuelinks || []) {
+    const linked = link.outwardIssue || link.inwardIssue;
+    if (!linked) continue;
+    if (linked.fields?.issuetype?.name !== "Epic") continue;
+    if (epics.has(linked.key)) continue;
+    epics.set(linked.key, {
+      key: linked.key,
+      summary: linked.fields.summary || "",
+      status: linked.fields.status?.name || null,
+      statusCategoryKey: linked.fields.status?.statusCategory?.key || null,
+      labels: linked.fields.labels || [],
+      via: "link",
+    });
+  }
+
+  return {
+    initiative: {
+      key: initiativeKey,
+      type: issuetype,
+      summary: fields.summary || "",
+      status: fields.status?.name || null,
+    },
+    epics: [...epics.values()].sort((a, b) => a.key.localeCompare(b.key)),
   };
 }
