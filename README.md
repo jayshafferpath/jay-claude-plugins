@@ -4,7 +4,7 @@ Claude Code tooling for Jira ticket automation, stacked PR management, and end-t
 
 Three surfaces, one lifecycle:
 
-1. **Agents** (`@planner`, `@feature-planner`, `@tdd-builder`, `@refactor`) — long-lived, domain-specific subagents Claude Code dispatches when you `@` them.
+1. **Agents** (`@planner`, `@feature-planner`, `@tdd-builder`, `@refactor`, `@condensor`, `@condense-verified`) — long-lived, domain-specific subagents Claude Code dispatches when you `@` them.
 2. **Slash commands** (`/ticket-work`, `/prework`, `/orchestrate`, …) — deterministic pipelines executed inside a Claude Code session.
 3. **CLI tools** (`ticket-status`, `resolve-stack`, `sync-plan`, …) — Node scripts in `~/.local/bin/` that agents/commands call to touch Jira and git without going through an MCP round-trip.
 
@@ -41,8 +41,11 @@ Tickets are routed to a repo via a `repo:<name>` label, resolved to `$DEV_ROOT/<
 ## Module layout
 
 ```
-agents/         @planner, @feature-planner, @tdd-builder, @refactor
+agents/         @planner, @feature-planner, @tdd-builder, @refactor,
+                @condensor, @condense-verified, @diff-critic, @diff-security
 commands/       slash commands (/ticket-work, /prework, /orchestrate, ...)
+                _-prefixed files are shared fragments, not commands:
+                _condense-docs.md, _shared-stack-procedures.md, ...
 cli/
   bin/          Node CLI entry points (symlinked into ~/.local/bin/)
   lib/          shared libraries: jira, git, labels, stack-resolver, ...
@@ -140,6 +143,25 @@ It is also the only thing in this repo that **writes the `repo:` label** — `/c
 Analyzes code for CRAP score, DRY violations, and refactoring opportunities. Scans repos or targeted files, presents prioritized findings, and — with approval — implements the accepted refactorings. Read-and-edit only; no Jira/git side effects.
 
 **Typical trigger**: mid-`/ticket-work` at S4.4 (called by the pipeline), or manually against a file you're unhappy with.
+
+### `@condensor` / `@condense-verified`
+
+Rewrite a verbose document as a shorter version of *itself* — same voice, same claims, fewer words. Not summarizers: they never describe the document from the outside, and condensing is treated as closer to deletion than to rewriting.
+
+- `@condensor` — the cheap pass, on Sonnet. Read-only. Use for chat output nobody stores.
+- `@condense-verified` — dispatches `@condensor`, then verifies the result against the source on Opus and patches defects in place (dropped identifiers, softened prohibitions, reversed ordering, invented claims). One condense pass, one verify pass, no retry loop. Use for anything read downstream as authoritative.
+
+**Every agent that writes a prose document to disk runs it through `@condense-verified`** — the rule and its dispatch shape live in `commands/_condense-docs.md`. A doc-writing agent writes at the length its research happened to reach, not the length the reader needs, so the condense pass is a separate cheap read whose only job is to cut. Current call sites:
+
+| Writer | Artifact | Step |
+|---|---|---|
+| `@tdd-builder` | `docs/tdds/{slug}.md` | Phase 7d |
+| `@planner init` | `docs/tdds/{slug}/{repo}.research.md` (one per repo, condensed in parallel) | Init Phase 4b.i |
+| `@feature-planner init` | same sidecars — inherits `@planner`'s init verbatim | — |
+
+Both call sites re-run their pre-write structural validation on the condensed output, and keep the full-length draft if it fails. These files are parsed, not only read: a sidecar H2 that no longer matches its TDD capability heading reads to `@planner` Phase 2c as a research gap, and a dropped `**Repos**:` line is a hard refusal in init.
+
+Deliberately **not** condensed: the `/jay-pr-review` and `/plan-ticket` plan files (machine-parsed checkbox lists, already length-capped), Gherkin AC (a contract, kept verbatim), and ticket bodies and chat output (governed by the **Output Style** section of `agents/planner.md`, applied while writing).
 
 ## Slash commands
 

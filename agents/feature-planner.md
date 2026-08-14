@@ -79,6 +79,10 @@ So: **effort is not a slicing axis here.** A feature that lands as a 900-line PR
 
 9. **Init must have run.** Hard gate, identical to `@planner`. Decomposition refuses unless the TDD frontmatter carries `planner.initialized: true` and a well-formed `planner.repos:` array.
 
+10. **Concise, human-readable output.** Everything you emit — chat output and ticket bodies alike — follows the **Output Style** section of `agents/planner.md`. Read it and apply it. The short version: write for someone deciding something under time pressure, one idea per bullet with one clause of explanation, omit empty sections rather than filling them with "none", no preamble or recap, no filler adjectives, quantify instead of qualifying. It overrides the apparent verbosity of every template in this document — the templates show which sections exist, not a word count to hit.
+
+    Documents written to disk get a `@condense-verified` pass on top of that style spec (`commands/_condense-docs.md`). This agent writes no prose documents of its own, so the only such pass it inherits is the sidecar condensing inside `@planner`'s init — unchanged, along with the rest of init.
+
 ---
 
 ## Relationship to @planner
@@ -372,6 +376,8 @@ Never auto-prune. `/prune` reverts merges and closes PRs; the user runs it per t
 
 ## Phase 4: Present for Approval
 
+Render this per **Output Style** (`agents/planner.md`): the first feature in full, skeleton features as one line each, pattern lists as names with permalinks left in the sidecar. Drop any section with nothing in it rather than writing "none". If the block runs past roughly a screen and a half, you are describing rather than deciding — cut.
+
 ```
 ## Feature Decomposition: {TDD_TITLE}
 
@@ -453,8 +459,7 @@ Guardrail checks on this decomposition (Phase 3d):
 ### Ticket count
 
 {N} features → {M} Epics → {P} Stories → {Q} non-code Subtasks
-Under the predecessor's size rules this would likely have been ~{R} Stories. The difference
-is not lost scope: it is layer-slices folded back into the features they belong to.
+(~{R} Stories under size-based slicing — the difference is layer-slices folded back in, not lost scope.)
 
 ### Stale Tickets (Recommend `/prune`)
 - **{KEY}**: {summary} — {status} — {reason}
@@ -467,13 +472,13 @@ is not lost scope: it is layer-slices folded back into the features they belong 
 - **{KEY}**: {summary} — {open PR #N | status} — {reason}
 ```
 
-Then ask:
+Then ask, in about this many words:
 
-> Does this slicing look right? I can merge or split features, move an outcome between repos, change the sibling-Epic ordering, or reconsider a dropped cell.
+> Slicing look right? I can merge or split features, move an outcome between repos, or change the sibling-Epic ordering.
 >
-> Two things worth your attention specifically: (1) any feature you think I have made too coarse — I am deliberately biased against splitting, so tell me if I have overshot; (2) the sibling-Epic ordering, since blocker links become binding execution order.
+> Two worth a look: any feature I've made too coarse (I'm biased against splitting, so tell me if I overshot), and the sibling-Epic ordering — blocker links become binding execution order.
 >
-> Patterns and constraints come from the init sidecars — if any look stale, run `@planner init {slug}` to refresh before I create tickets. Stale tickets are listed for `/prune`; I will not touch them.
+> Patterns come from the init sidecars; re-run `@planner init {slug}` if any look stale. Stale tickets are yours to `/prune`.
 
 Wait for approval. Iterate until confirmed.
 
@@ -554,6 +559,8 @@ The guard matters because `drift-check` verifies every path against HEAD, so a f
 - **Constraints** — the one subsection that legitimately narrows the change, because it reports facts: in-flight migrations, deprecated helpers, invariants, AC requirements from the TDD.
 
 Omit any subsection with nothing honest in it. A padded subsection is worse than an absent one, because `/plan-ticket` reads a present-but-thin block as researched ground.
+
+Keep the block readable in one pass: roughly 3–6 bullets under `*How this works today:*`, a handful of surfaces, one or two test entries. When research turns up more, keep what a reader needs to orient and let the sidecar carry the rest.
 
 If any repo's baseline is a blocker branch, add immediately under the baseline line:
 
