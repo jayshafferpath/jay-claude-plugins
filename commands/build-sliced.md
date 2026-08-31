@@ -1,23 +1,69 @@
 ---
 description: "Build an entire feature as dependency-ordered commit slices on a single branch, foundation-first. Requires a spec artifact (Jira ticket AC, a TDD, or an EARS doc) and refuses work that isn't a greenfield layered feature. Git log is the ledger (Slice-Id trailers); resumable and crash-safe across replays. Consumes .plans/review-<branch>.md to auto-replay from the earliest touched slice. Peer to /ticket-work — no squash."
 argument-hint: <spec ref: TICKET-KEY | docs/tdds/{slug}.md | .plans/ears-{slug}.md> [base-branch]
-allowed-tools: Read, Write, Edit, Grep, Glob, Bash(git:*), Bash(gh:*), Bash(mkdir:*), Bash(rm:*)
+allowed-tools:
+  - mcp__atlassian__getAccessibleAtlassianResources
+  - mcp__atlassian__getJiraIssue
+  - Read
+  - Write
+  - Edit
+  - Grep
+  - Glob
+  - Bash(git:*)
+  - Bash(gh:*)
+  - Bash(mkdir:*)
+  - Bash(rm:*)
+  - Bash(ls:*)
+  - Bash(make:*)
+  - Bash(npm:*)
+  - Bash(npx:*)
+  - Bash(pnpm:*)
+  - Bash(yarn:*)
+  - Bash(python:*)
+  - Bash(pytest:*)
+  - Bash(bundle:*)
+  - Bash(rspec:*)
+  - Bash(go:*)
+  - Bash(cargo:*)
 ---
 
 # Build Sliced
 
 Build a feature as a stack of **commit slices** on one branch. Each slice is one commit
 carrying `Slice-Id` / `Depends-On` trailers — git log is the ledger, there is no
-manifest. Foundation and leaf are **derived** from the recorded dependency edges, not
+manifest. Kind and depth are **derived** from the recorded dependency edges, not
 declared; foundation slices (types, schemas, contracts) come first, leaves last. The loop
 is: build → `/review-slices` → replay from the earliest touched slice → repeat, until you
 are satisfied. **You decide when it ends; this command never auto-exits.**
 
-> Shared formats (trailer, replay cursor, review file): `commands/_sliced-format.md`.
+> Shared formats (trailer, fingerprint, replay cursor, review file):
+> `commands/_sliced-format.md`. Use the exact command forms it gives — each has a silent
+> failure mode.
 > This command owns its branch exclusively and force-pushes on every replay — never
 > point it at a shared branch.
 
-## Step 0: Trigger gate (refuse before building)
+## Step 0: Preflight — base, plans, ledger
+
+Everything downstream needs to know whether this is a first invocation or a resume, so
+read that first. Nothing here mutates the repo.
+
+- `PLANS_DIR` = `.plans` (mkdir if missing).
+- `BASE` = `$2` → else `git config branch.<current>.base` → else `main`.
+- Read the ledger on the **current** branch (`commands/_sliced-format.md` §1, "Reading
+  the ledger"). Parse into `SLICES` = `[{sha, id, dependsOn[], subject}]`, reversed to
+  build order.
+- `RESUMING` = true iff `SLICES` is non-empty, or a replay cursor exists in `PLANS_DIR`
+  for the current branch.
+
+If any commit in range has an **empty** `Slice-Id`, the trailer block was mis-committed —
+almost always by passing each trailer as its own `-m`
+(`commands/_sliced-format.md` §1, "Committing the trailer"). Stop and report it; do not
+treat those commits as unsliced and build on top of them.
+
+## Step 1: Trigger gate (refuse before building)
+
+**If `RESUMING`, skip this step entirely** — the gate already passed on the first
+invocation.
 
 `$1` is a **spec reference**, not a free-text description. This workflow's payoff
 depends on foundations being stable enough to freeze on review cycle 1 — and
@@ -25,11 +71,7 @@ foundations are only stable if they were *specified*, not improvised while slici
 build nothing until all three checks pass. On any failure, **refuse and name the better
 home** — never build on a failed gate, never proceed on an override.
 
-**On resume, skip Step 0 entirely.** If the current branch already carries slice commits
-(Step 2 finds a `Slice-Id`) or a replay cursor exists, the gate already passed on the
-first invocation — go straight to Step 2.
-
-### 0a: A spec artifact exists and names the foundation surface
+### 1a: A spec artifact exists and names the foundation surface
 
 Resolve `$1` to one of the three accepted artifacts and read it. It must name the
 feature's **boundaries** — the types/contracts/schemas the leaves will consume — not
@@ -55,7 +97,7 @@ Provide one of:
   - an EARS requirements doc                     (run /ears-requirements)
 ```
 
-### 0b: The work fits — greenfield layered feature
+### 1b: The work fits — greenfield layered feature
 
 This loop earns its machinery (ledger, replay, cursor) only for a feature with a real
 **foundation→leaf** structure. Judge from the spec and a quick look at the repo. Refuse,
@@ -70,53 +112,47 @@ naming the better home, when the work is:
 Only proceed when the spec describes new, internally-layered behavior: contracts/types
 first, consumers built on them.
 
-### 0c: Manual invocation
+### 1c: Manual invocation
 
 This command is human-fired only; nothing upstream routes into it yet. If you were
 invoked by another command or automation, stop and report that `/build-sliced` is
 manual-only.
 
-When 0a–0c all pass, continue to Step 1.
+When 1a–1c all pass, continue to Step 2.
 
-## Step 1: Resolve branch, base, plans
+## Step 2: Resolve branch and paths
 
-- `PLANS_DIR` = `.plans` (mkdir if missing).
-- `BASE` = `$2` → else `git config branch.<current>.base` → else `main`.
-- `BRANCH`: if the current branch is not `BASE` and has slice commits (Step 2 finds
-  any), stay on it. Otherwise derive a branch name from the **spec** (the ticket key
-  lowercased, or the TDD/EARS slug; kebab-case, ≤6 words) and
-  `git switch -c <BRANCH> <BASE>`.
+- `BRANCH`: if `RESUMING` and the current branch is not `BASE`, stay on it. Otherwise
+  derive a branch name from the **spec** (the ticket key lowercased, or the TDD/EARS
+  slug; kebab-case, ≤6 words) and `git switch -c <BRANCH> <BASE>`. If the branch changed,
+  re-read the ledger from Step 0 against it.
 - `SLUG` = `<BRANCH>` with `/` and `_` → `-`. Cursor = `{PLANS_DIR}/replay-<SLUG>`.
   Review file = `{PLANS_DIR}/review-<SLUG>.md`.
 
-## Step 2: Reconcile state (idempotent resume)
+## Step 3: Reconcile state (idempotent resume)
 
-Read the ledger:
+Derive each slice's kind and depth from the recorded edges per
+`commands/_sliced-format.md` §1a. Kind and depth are never read from a trailer. Then
+determine mode:
 
-```bash
-git log <BASE>..HEAD --format='%H%x00%(trailers:key=Slice-Id,valueonly)%x00%(trailers:key=Depends-On,valueonly)%x00%s'
-```
-
-Parse into `SLICES` (reverse to build order), then derive each slice's kind from the
-recorded edges per `commands/_sliced-format.md` §1a — a slice is a **leaf** iff no other
-slice names it in `Depends-On`, **foundation** otherwise. Kind is never read from a
-trailer. Then determine mode:
-
-- **Crash recovery first.** If the replay cursor file exists, the previous replay died
+- **Crash recovery first.** If the cursor file exists, the previous replay died
   mid-flight. `git reset --hard <head_before>` (from the cursor), then go to
-  **Step 4 (Replay)** starting at the cursor's `replay_from`. Do not build new work
+  **Step 5 (Replay)** starting at the cursor's `replay_from`. Do not build new work
   until the interrupted replay is repaired.
-- **Review pending.** Else if `review-<SLUG>.md` exists with unchecked `- [ ]` findings
-  → **Step 4 (Replay)**.
-- **Fresh or continue.** Else → **Step 3 (Build)**. If `SLICES` is empty this is a cold
-  start; otherwise continue adding slices where the feature is incomplete.
+- **Review pending.** Else if `review-<SLUG>.md` exists with **open** (`- [ ]`) findings
+  → **Step 5 (Replay)**. Declined findings (`- [~]`) are terminal and never trigger a
+  replay (`commands/_sliced-format.md` §3, "Finding states"); a file whose only remaining
+  items are `- [x]` or `- [~]` is settled.
+- **Fresh or continue.** Else → **Step 4 (Build)**. If `SLICES` is empty this is a cold
+  start; otherwise continue adding slices where the feature is incomplete. If the feature
+  is complete and nothing is pending, say so and stop — don't invent slices.
 
 Never trust SHAs across runs — they churn on replay. `Slice-Id` order in the ledger is
 the truth; a slice is "present" iff its id appears exactly once in `SLICES`.
 
-## Step 3: Build slices (foundation-first)
+## Step 4: Build slices (foundation-first)
 
-Decompose the feature **bottom-up** from the spec's foundation surface (Step 0a): build
+Decompose the feature **bottom-up** from the spec's foundation surface (Step 1a): build
 what nothing else depends on first — the contracts/types/schemas the spec named — then
 the consumers on top. This makes foundation-first fall out of dependency order rather
 than a pre-committed plan.
@@ -124,22 +160,28 @@ than a pre-committed plan.
 For each slice, in order:
 
 1. Write the code and its tests. Each slice must **compile and pass its own tests in
-   isolation** — a reviewer reads it as a standalone commit. Cache the result against the
-   slice's content so a later replay that regenerates this slice identically can reuse the
-   verdict instead of re-running (see Step 4).
+   isolation** — a reviewer reads it as a standalone commit. Run the project's own test
+   command; if you can't determine it from the repo, ask rather than guess.
 2. Mint a `Slice-Id` (`s01`, `s02`, … in creation order, never renumbered). Set
    `Depends-On` to **every** slice id this one builds on, comma-separated, or `none`.
    Under-reporting an edge silently narrows review scope, replay scope, and the
-   foundation/leaf derivation — name them all.
-3. Commit with the trailer block from `commands/_sliced-format.md` §1:
+   kind/depth derivations — name them all.
+3. Commit with both trailers in a **single** `-m`
+   (`commands/_sliced-format.md` §1, "Committing the trailer"):
 
+   ```bash
+   git commit -m "<subject>" -m "Slice-Id: <id>
+   Depends-On: <dep>[, <dep>…]|none"
    ```
-   git commit -m "<subject>" -m "Slice-Id: <id>" -m "Depends-On: <dep[, dep…]|none>"
-   ```
+
+   Splitting the trailers across two `-m` flags leaves `Slice-Id` **empty** — the commit
+   succeeds and looks correct, but the ledger becomes unreadable. Verify after committing
+   that the trailer round-trips.
 
    One commit per slice — never fold two slices into one, never split one slice across
-   two commits. Aim for 6–12 slices for a feature; if you're past ~12, the feature is
-   too big for one loop — stop and tell the user to split it.
+   two commits. Aim for 6–12 slices for a feature; if the spec looks like more than ~12
+   before you start, stop and tell the user to split it rather than discovering it at
+   slice 13.
 
 4. Do not squash. This is the deliberate divergence from `/ticket-work`'s stage-squash;
    preserved commits are the whole point.
@@ -151,26 +193,35 @@ never fold the failing work into a neighbouring slice to hide it. A halted build
 named defect is a useful result; a green build that reached green by lowering the bar is
 not.
 
-When the feature is fully built, derive each slice's kind from the now-complete edge set
-(`commands/_sliced-format.md` §1a) — mid-build the derivation is meaningless, because a
+When the feature is fully built, derive kind and depth from the now-complete edge set
+(`commands/_sliced-format.md` §1a) — mid-build the derivations are meaningless, because a
 slice nothing depends on *yet* reads as a leaf. Then push
-(`git push -u origin <BRANCH>`) and go to **Step 5 (Report)**. Tell the user to run
+(`git push -u origin <BRANCH>`) and go to **Step 6 (Report)**. Tell the user to run
 `/review-slices`.
 
-## Step 4: Replay from earliest touched slice
+## Step 5: Replay from earliest touched slice
 
-Triggered by findings in `review-<SLUG>.md`.
+Triggered by open findings in `review-<SLUG>.md`, or by crash recovery.
 
-1. **Pick the start.** Read the review file. The start slice is the **earliest-depth,
-   earliest-order** slice with an unchecked finding — foundation before leaf by the derived
-   kind (`commands/_sliced-format.md` §1a), and among equal depth the earliest by build
-   order. `Unassigned` findings count as touching the earliest changed slice. Call it
-   `START`.
-2. **Write the cursor** (`commands/_sliced-format.md` §2) **before** rewriting anything:
+1. **Guard the worktree.** `git status --porcelain` must be empty. This step
+   hard-resets; uncommitted work would be destroyed silently. If dirty, stop and tell the
+   user to commit or stash.
+2. **Pick the start.** Read the review file. `START` is the slice with an open finding
+   that comes **earliest in commit order** — the ledger's build order, not depth and not
+   kind. The rewind is positional, so any later start leaves earlier findings unreachable
+   and the next run picks the same start again, forever
+   (`commands/_sliced-format.md` §1a). Then:
+   - `Out of scope` findings carry a real `Slice-Id` — include them in this selection. If
+     one sits earlier than every in-scope finding, it becomes `START`.
+   - `Unassigned` findings count as touching the earliest changed slice.
+3. **Record the "before" fingerprints.** Compute the patch-id of every slice from `START`
+   to the tip (`commands/_sliced-format.md` §1b) *before* rewinding. Step 6's
+   classification and the test-bar skip both compare against these.
+4. **Write the cursor** (`commands/_sliced-format.md` §2) **before** rewriting anything:
    `replay_from=<START> started=<now> head_before=<current HEAD sha>`.
-3. **Rewind.** `git reset --hard <parent of START's commit>`. Everything from `START`
+5. **Rewind.** `git reset --hard <parent of START's commit>`. Everything from `START`
    onward will be re-derived.
-4. **Re-derive each slice from `START` to the tip, in order.** For each:
+6. **Re-derive each slice from `START` to the tip, in order.** For each:
    - Apply the findings addressed to that slice.
    - Re-derive downstream slices against the corrected upstream — a foundation change
      may reshape a leaf. **Carry forward the original `Slice-Id`.** Never mint a new id
@@ -178,20 +229,22 @@ Triggered by findings in `review-<SLUG>.md`.
      replay-diff.
    - Re-commit with the same trailer block (same `Slice-Id`, updated code). Update
      `Depends-On` if the re-derivation genuinely changed what this slice builds on.
-   - Keep each slice green in isolation as in Step 3 — but **reuse the cached verdict for
-     any slice that regenerated identically.** Content-identical means the bar cannot come
-     out differently than it did last cycle, so re-running it is waste. Only
-     `changed` and `shape-changed` slices re-run.
-5. **Re-derive kinds** from the post-replay edge set before reporting. A foundation change
-   can add or remove an edge, which can flip a slice's derived kind.
-6. **Finish.** `git push --force-with-lease origin <BRANCH>`, then **delete the cursor
-   file** (`rm`). Mark the addressed findings `- [x]` in the review file.
-7. **Emit the replay-diff** (Step 5), classifying each re-derived slice.
+   - Keep each slice green in isolation as in Step 4 — but **skip the bar for any slice
+     whose patch-id matches its step-3 value.** Identical content was green when it was
+     committed, so re-running cannot yield a different verdict. Slices classified
+     `changed` or `shape-changed` re-run.
+7. **Re-derive kind and depth** from the post-replay edge set before reporting. A
+   foundation change can add or remove an edge, which can flip a slice's derived kind and
+   shift depths downstream.
+8. **Finish.** `git push --force-with-lease origin <BRANCH>`, then **delete the cursor
+   file** (`rm`). Mark the addressed findings `- [x]` in the review file. Leave findings
+   you did not address as `- [ ]` — only a human marks one `- [~]` declined.
+9. **Emit the replay-diff** (Step 6), classifying each re-derived slice.
 
-If interrupted between steps 3 and 5, the cursor survives and Step 2's crash-recovery
+If interrupted between steps 4 and 8, the cursor survives and Step 3's crash-recovery
 repairs it on the next run.
 
-## Step 5: Report
+## Step 6: Report
 
 **After a build:**
 ```
@@ -200,35 +253,43 @@ Run /review-slices to review the stack.
 ```
 
 **After a replay**, emit a **structured replay-diff** — one line per slice from `START`
-to the tip, so the user re-reads only what moved:
+to the tip, so the user re-reads only what moved. Classify each slice by comparing its
+patch-id to the step-3 "before" value (`commands/_sliced-format.md` §1b):
 
 ```
 Replayed from <START>. Force-pushed <BRANCH>.
-  <id> foundation  changed              — <what changed, per findings>
-  <id> leaf         regenerated-identical
-  <id> leaf         shape-changed        — prior review comment on this slice is now stale
-Addressed <M> findings. Re-run /review-slices, or declare done.
+  <id> depth 0  changed                — <what changed, per findings>
+  <id> depth 1  regenerated-identical
+  <id> depth 1  shape-changed          — prior review comment on this slice is now stale
+Addressed <M> of <T> findings. Re-run /review-slices, or declare done.
 ```
 
-- `changed` — re-derived to address a finding. Re-runs its bar.
-- `regenerated-identical` — rebuilt but functionally the same; no re-review needed, and the
-  cached verdict is reused rather than re-run. This classification is the cache key, not
-  just a report line.
-- `shape-changed` — an upstream change reshaped this slice; any prior comment on it may
-  be stale. Flag these explicitly — they are where review feedback silently rots. Re-runs
-  its bar.
+- `changed` — patch-id moved, and a finding was addressed here. Ran its bar.
+- `regenerated-identical` — patch-id unchanged. No re-review needed and the bar was
+  skipped. `/review-slices` reaches the same conclusion independently from the slicemap,
+  so this line is a report of a derived fact, not a claim it has to trust.
+- `shape-changed` — patch-id moved but no finding targeted this slice; an upstream change
+  reshaped it. Any prior comment on it may be stale. Flag these explicitly — they are
+  where review feedback silently rots. Ran its bar.
+
+If `M < T`, name the unaddressed findings. They keep the loop in replay mode until they
+are addressed or a human declines them.
 
 ## Guidelines
 
 - Git is the ledger. Never write a manifest or a plan file; the commits and their
-  trailers carry everything except the crash cursor and the verdict cache.
+  trailers carry everything except the crash cursor. Content identity is derived from
+  patch-id, not cached in a file.
 - `Slice-Id` is immutable across replays. This is the one invariant that cannot bend.
-- `Depends-On` names **every** dependency. It is the only record of the graph, and kind is
-  derived from it — an unrecorded edge silently narrows review scope, replay scope, and the
-  foundation/leaf split.
-- Kind is derived, never declared, and only meaningful against a complete slice set.
+  Both trailers go in one `-m` — split across two, the id silently lands empty.
+- `Depends-On` names **every** dependency. It is the only record of the graph, and kind
+  and depth are derived from it — an unrecorded edge silently narrows review scope,
+  replay scope, and both derivations.
+- Kind and depth are derived, never declared, and only meaningful against a complete
+  slice set. Neither one orders a replay — commit order does.
 - One commit per slice; each green in isolation; no squashing.
-- The command owns its branch and force-pushes on replay — never a shared branch.
+- The command owns its branch and force-pushes on replay — never a shared branch. Never
+  hard-reset a dirty worktree.
 - A slice that cannot reach green halts the build as a named plan defect. Never lower the
-  bar to reach green.
-- Manual exit only. Empty findings means "nothing to replay"; wait for the user.
+  bar to reach green. Skipping the bar for an identical patch-id is not lowering it.
+- Manual exit only. No open findings means "nothing to replay"; wait for the user.
