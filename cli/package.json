@@ -24,7 +24,11 @@
     "verify-merge": "./bin/verify-merge.js",
     "classify-actions": "./bin/classify-actions.js",
     "cleanup-feature-refresh": "./bin/cleanup-feature-refresh.js",
-    "detect-stagnation": "./bin/detect-stagnation.js"
+    "detect-stagnation": "./bin/detect-stagnation.js",
+    "read-ledger": "./bin/read-ledger.js",
+    "slice-scope": "./bin/slice-scope.js",
+    "slice-replay": "./bin/slice-replay.js",
+    "slice-review": "./bin/slice-review.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",

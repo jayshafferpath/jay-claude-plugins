@@ -1,7 +1,7 @@
 ---
 description: "Review a sliced-build stack by fanning out diff-critic and diff-security across every slice whose content or influence set moved, then writing slice-tagged findings to .plans/review-<branch>.md for /build-sliced to consume. Merges into the prior review file rather than regenerating it. Read-only — reports findings, never edits."
 argument-hint: [base-branch]
-allowed-tools: Read, Write, Grep, Glob, Agent, Bash(git:*), Bash(mkdir:*)
+allowed-tools: Read, Write, Grep, Glob, Agent, Bash(git:*), Bash(mkdir:*), Bash(read-ledger:*), Bash(slice-scope:*), Bash(slice-review:*)
 ---
 
 # Review Slices
@@ -11,8 +11,11 @@ Review a stack built by `/build-sliced`. Fans out the same specialist agents as
 **content or influence set moved** and tags every finding with the `Slice-Id` it lands
 in — so `/build-sliced` can replay from the earliest touched slice.
 
-> Shared formats (trailer, fingerprint, review file): `commands/_sliced-format.md`. Use
-> the exact command forms it gives — each has a silent failure mode.
+> Shared formats and the reasoning behind them: `commands/_sliced-format.md`.
+> Scope, finding-to-slice resolution, and the review-file merge all belong to CLIs —
+> `read-ledger`, `slice-scope`, `slice-review`. Your job in this command is the part that
+> needs judgement: deciding whether the diff is security-inert, and reading what the agents
+> return. Do not hand-compute a closure, a patch-id comparison, or the merge table.
 > Findings-only, read-only. This command never edits code and never rewrites history.
 
 ## Step 1: Resolve branch, base, plans
@@ -20,87 +23,67 @@ in — so `/build-sliced` can replay from the earliest touched slice.
 - `BRANCH` = `git branch --show-current`.
 - `BASE` = `$1` → else `git config branch.<BRANCH>.base` → else `main`.
 - `PLANS_DIR` = `.plans` (mkdir if missing). `SLUG` = `<BRANCH>` with `/`,`_` → `-`.
-- `REVIEW_FILE` = `{PLANS_DIR}/review-<SLUG>.md`. If it exists, **read it first and treat
-  this run as a merge into it**, not a regeneration (`commands/_sliced-format.md` §3,
-  "Regenerating the file is a merge"). The prior `slicemap` drives Step 3, and no open
-  finding may be dropped by a pass that didn't look at its slice. Regenerating from only
-  what this pass found discards findings the user has not acted on.
+- `REVIEW_FILE` = `{PLANS_DIR}/review-<SLUG>.md`. If it exists, this run is a **merge into
+  it**, not a regeneration (`commands/_sliced-format.md` §3, "Regenerating the file is a
+  merge"). `slice-review` enforces that; you never rewrite the file by hand.
 
-## Step 2: Read the ledger
+## Step 2: Read the ledger and compute scope
+
+One call does both — the ledger read, its validation, and the `stable` predicate over every
+slice:
 
 ```bash
-git log <BASE>..HEAD \
-  --format='%H%x00%(trailers:key=Slice-Id,valueonly,separator=%x2C)%x00%(trailers:key=Depends-On,valueonly,separator=%x2C)%x00%s'
+slice-scope --base <BASE> --review <REVIEW_FILE>
 ```
 
-`separator=` is required — without it each record straddles three lines and any
-line-oriented parse mis-splits it (`commands/_sliced-format.md` §1).
+Exit 2 → **stop and report** the `violations` verbatim. Do not review a stack whose ledger
+can't be read: an empty or missing `Slice-Id`, a duplicate, a merge commit, a dangling edge, a
+forward edge, or a cycle all make scope, depth, and the influence set confidently wrong. A
+**merge commit** is the common cause on a long-lived stack, and the fix to name is
+`git rebase origin/<BASE>` — it carries every message and therefore every id and edge
+through — never a merge of `<BASE>` into the branch.
 
-Parse into `SLICES` = `[{sha, id, dependsOn[], subject}]`, then derive each slice's `kind`
-and `depth` from the edge set per `commands/_sliced-format.md` §1a — **leaf** iff no other
-slice names it in `Depends-On`, **foundation** otherwise; depth is the graph level. Use
-depth for grouping, kind for counts.
+What comes back:
 
-**Stop and report** — do not review a stack whose ledger can't be read:
+- `changed` — the slices that are **not** `stable`, in **commit order**. This is `SCOPE`.
+- `stable` — the rest.
+- `range` — the diff range for the fan-out, and `contiguous` — whether it over-covers.
+- `files` — the union of the files the in-scope slices touch.
+- `detail` — per slice, `ownMoved` and `movedInfluences`, so you can say *why* something is
+  in scope.
+- `firstReview` — true when there is no prior record, in which case every slice is changed.
+  That is the correct reading of a first review, not a bug.
 
-- A commit in range with **no** `Slice-Id`, **or an empty one**: this branch wasn't built by
-  `/build-sliced`, a commit was added by hand, or the trailers were split across multiple
-  `-m` flags so `Slice-Id` never parsed (`commands/_sliced-format.md` §1, "Committing the
-  trailer"). A **merge commit** trips this too, and it is the common cause on a long-lived
-  stack: say so and name the fix — `git rebase origin/<BASE>`, which carries every message
-  and therefore every id and edge through, never a merge of `<BASE>` into the branch.
-- A `Depends-On` id that resolves to no slice in range, or a cycle in the edge set
-  (`commands/_sliced-format.md` §1a). Scope, depth, and the influence set below are all
-  derived from those edges; an unreadable graph makes every one of them confidently wrong.
-
-## Step 3: Compute review scope
-
-A slice is **changed** iff `stable(s)` is false (`commands/_sliced-format.md` §1b): its own
-patch-id moved, **or** any patch-id in its **influence set** moved — its transitive
-`Depends-On` closure, plus any earlier slice that touches a file it touches — measured
-against the `<!-- slicemap -->` recorded by the previous run. A slice absent from the prior
-map is changed. With **no** prior review file, every slice is changed (first review of the
-stack).
-
-`SCOPE` = the changed slices. The influence set is what earns the seam coverage, in two parts:
+A slice is in scope iff its own patch-id moved **or** a patch-id in its **influence set**
+did — the transitive `Depends-On` closure, plus any earlier slice sharing a touched file. Both
+terms earn their keep:
 
 - The **closure** puts every slice built on a changed foundation — at any depth — in scope even
   when their own patches are byte-identical, because a patch that reads the same against a
   moved foundation behaves differently. A rule keyed on direct dependents only reaches
   depth+1, and silently stops at any intermediate slice whose own patch happens not to move.
 - The **file-overlap** term catches the coupling `Depends-On` cannot express. Replay is
-  positional, so a slice is rebuilt against every earlier slice, not just the ones it declares
-  (`commands/_sliced-format.md` §1b, "The influence set"). Two leaves writing the same barrel
-  file have no edge between them and can still break each other.
+  positional, so a slice is rebuilt against every earlier slice, not just the ones it declares.
+  Two leaves writing the same barrel file have no edge between them and can still break each
+  other. Overlap is measured over the union of each slice's before and after file lists, so a
+  slice that *stops* touching a file counts too.
 
 Neither term makes the predicate a proof — a coupling through a third file with no shared path
 is invisible — so treat `stable` as the best scoping git can justify, not a guarantee that an
 out-of-scope slice is fine.
 
-Key on patch-id, **never on SHA**. A replay rewinds and re-commits, so every slice from the
-replay point to the tip gets a fresh SHA even when its content is untouched — a SHA-keyed
-comparison would mark the entire tail as changed and re-review work that provably didn't
-move.
+If `SCOPE` is empty, **nothing moved since the last review**: leave the file exactly as it
+stands, report that, and stop. Never write a review file from a pass in which no agent ran —
+that is a claim the run didn't earn.
 
-The overlap term needs a touched-file list per slice —
-`git diff-tree --no-commit-id --name-only -r <sha>`. Compute it once here, for every slice in
-the ledger; Step 4 reuses the lists for the slices that end up in `SCOPE`.
+## Step 3: Fan out review agents (single message, parallel)
 
-If `SCOPE` is empty, **nothing moved since the last review**: carry the prior file forward
-unchanged, report that, and stop. Never write a clean review file from a pass in which no
-agent ran — that is a claim the run didn't earn, and it would drop every open finding.
+Pass the `range` and `files` from Step 2 — the union of the in-scope slices' file lists, not
+a whole-range diff. Pass file paths, never contents; the agents read what they need.
 
-## Step 4: Fan out review agents (single message, parallel)
-
-Build the scoped diff range. The slices in `SCOPE` are contiguous from some earliest
-slice `E` to the tip in almost all cases; pass the range `<parent of E's sha>...HEAD` plus
-the changed-file list for the slices in `SCOPE` — the union of the per-slice lists already
-computed in Step 3, not a whole-range diff. Pass file paths, never contents — the agents read
-what they need.
-
-When `SCOPE` is **not** contiguous, this range over-covers — it includes slices between
-`E` and the tip that aren't in scope. That's tolerated, not a bug: Step 5 resolves any
-resulting finding to its real `Slice-Id` and files it under **Out of scope**, so the
+When `contiguous` is false the range over-covers: it includes slices between the earliest
+in-scope slice and the tip that aren't in scope. That's tolerated, not a bug — Step 4 resolves
+any resulting finding to its real `Slice-Id` and files it under **Out of scope**, so the
 finding keeps its true home instead of being misattributed.
 
 Fan out in one message:
@@ -108,7 +91,12 @@ Fan out in one message:
 - `diff-critic` — always. Correctness defects, contract changes, test gaps.
 - `diff-security` — unless the scoped diff is **security-inert**: no changed file
   touches auth, input handling, persistence, logging, secrets, crypto, IaC, or shells
-  out, and no dependency was added. When skipped, note it in the review file's Notes.
+  out, and no dependency was added.
+
+This gate is the one judgement call in the command, and it has a consequence downstream:
+whichever agents you actually run go into `--agents` in Step 4, and a finding from an agent
+you skipped is carried forward `unverified` rather than dropped. Skipping `diff-security`
+therefore costs nothing in fidelity — but *claiming* to have run it does.
 
 Prefix every agent prompt with:
 
@@ -117,74 +105,52 @@ Prefix every agent prompt with:
 > any general guide. Return `[]` rather than inventing findings.
 
 Both agents are read-only and return a JSON array of
-`{severity, file, line, summary, fix}`. Merge the arrays; when both report the same
-`file:line`, keep the higher severity and one summary.
+`{severity, file, line, summary, fix}`. Merge the arrays, tagging each entry with the agent
+that produced it as `source`; when both report the same `file:line`, keep the higher severity
+and one summary. Write the combined array to a temp file.
 
-## Step 5: Resolve each finding to a slice
+## Step 4: Resolve, merge, and write
 
-For each finding, map its `file:line` to the owning `Slice-Id`
-(`commands/_sliced-format.md` §3, "Resolving a finding's `Slice-Id`"):
+One call resolves every finding to its owning slice, applies the merge rules, and writes the
+file:
 
 ```bash
-git log <BASE>..HEAD -1 -s \
-  --format='%(trailers:key=Slice-Id,valueonly,separator=%x2C)' \
-  -L<line>,<line>:<file>
+slice-review --base <BASE> --findings <tmp.json> --agents diff-critic[,diff-security]
 ```
 
-`-s` is required — `-L` implies `-p`, so without it the id comes back with a diff hunk
-stapled to it. Tolerate a `fatal: There is no path …` failure (exit 128) for a path that
-no longer exists at `HEAD`; that finding is **Unassigned**.
+`--agents` is the coverage record, not decoration: it is what makes the per-agent merge rule
+decidable, so it must list exactly what you ran in Step 3.
 
-- Resolves to a slice in `SCOPE` → tag it with that `Slice-Id` and file it under that
-  slice's **derived depth** (Step 2).
-- Resolves to a slice **outside** `SCOPE` → tag it with that `Slice-Id` and file it under
-  **Out of scope**. Keep the id: it resolved cleanly, and discarding it would make
-  `/build-sliced` attribute the finding to the earliest changed slice and replay from the
-  wrong place — possibly never reaching the code the finding is about.
-- Resolves to **no** slice in range → run the pre-`BASE` check
-  (`commands/_sliced-format.md` §3, "Resolving a finding's `Slice-Id`"). Owned by a commit at
-  or before `BASE` → **drop it** and note the drop; the finding is about code this branch
-  never touched, and no replay can reach it. Otherwise → **Unassigned**, which
-  `/build-sliced` treats as touching the earliest id in the `changed:` comment.
+What it does, and why you must not do any of it by hand:
 
-## Step 6: Write the review file
+- **Resolves `file:line` to a `Slice-Id`** via the commit that last touched that line. Three
+  outcomes, and they are not the same finding: a slice in scope → filed under that slice's
+  derived **depth**; a slice outside scope → filed under **Out of scope** *keeping its id*
+  (discarding it would make `/build-sliced` attribute the finding to the earliest changed
+  slice and replay from the wrong place); no slice in range → either **pre-`BASE`**, which is
+  dropped with a note because no replay can reach code this branch never touched, or
+  **Unassigned**.
+- **Merges rather than regenerates.** `- [~]` verbatim always; `- [x]` dropped; an open
+  `- [ ]` removed only by a pass that reviewed its slice **with the agent that produced it**,
+  and then recorded as `- [x] (not re-reported)` rather than deleted. An open finding on a
+  `stable` slice, on a slice this pass didn't look at, from an agent this pass skipped, or in
+  **Unassigned**, all carry forward. Full table in `commands/_sliced-format.md` §3.
+- **Writes the machine state** the next run and the build loop each need: every slice's
+  patch-id *and* touched-file list, this run's `changed` set in commit order, and the agents
+  that ran.
 
-Follow `commands/_sliced-format.md` §3 exactly. Group findings by slice **depth** (the
-derived value from Step 2 — shallowest first, the order the build loop re-derives in),
-`Critical` first within a depth. Every actionable item is a checkbox prefixed with its
-`Slice-Id`.
+It returns `changed`, `stable`, `counts`, `open`, `retracted`, `carried`, and
+`droppedPreBase`. Use `--dry-run` to preview without writing.
 
-Merge against the prior file rather than regenerating it — the table in
-`commands/_sliced-format.md` §3, "Regenerating the file is a merge", is the whole rule. In
-short: `- [~]` verbatim always, `- [x]` dropped, and an open `- [ ]` may only be dropped by
-this pass if this pass reviewed its slice **with the agent that produced it**. An open finding
-on a `stable` slice carries forward untouched; a finding from an agent this pass **skipped** —
-`diff-security` on a security-inert diff — carries forward marked `unverified` even when its
-slice was in scope, because no agent looked for it. Findings this pass found fresh are always
-`- [ ]`.
-
-Embed two comments so the next run and the build loop each get what they need:
-
-```
-<!-- slicemap: s01=<patch-id> s02=<patch-id> ... -->
-<!-- changed: s03,s04 -->
-```
-
-`slicemap` records **patch-ids, not SHAs** — see Step 3 — and is the input to the next
-review's comparison. `changed` is this run's `SCOPE`, and it is the only durable record of
-it: `/build-sliced` reads it to place `Unassigned` findings and cannot recompute it, because
-by replay time no patch-id has moved since this file was written. The prose
-**Reviewed slices** header is for humans and is never parsed.
-
-## Step 7: Report
+## Step 5: Report
 
 ```
 Reviewed <K> of <N> slices on <BRANCH> — every slice whose content or influence set moved.
 Findings: <C critical, H high, M medium, L low>. Written to <REVIEW_FILE>.
 ```
 
-- Name any findings carried forward rather than found this pass, and any dropped as
-  pre-`BASE`.
+- Name any findings `carried` forward rather than found this pass, any `retracted`, and any
+  `droppedPreBase`. A retraction is a real event — say it happened.
 - If nothing moved since the last review (empty `SCOPE`): report "No slice moved since the
   last review — <REVIEW_FILE> left as it stands, <N> findings still open." Do not rewrite
   the file.
@@ -197,19 +163,25 @@ Findings: <C critical, H high, M medium, L low>. Written to <REVIEW_FILE>.
 
 - One message, multiple Agent calls — parallel is the point.
 - Pass file lists, not file contents.
+- Scope, resolution, and the merge come from `slice-scope` and `slice-review`. They have a
+  test suite; a hand-computed closure or merge does not. Your judgement is needed for the
+  security-inert gate and for reading agent output — nothing else here.
 - Scope is every slice that is not `stable` — own patch-id moved, or anything in its
   **influence set** moved: the transitive `Depends-On` closure plus any earlier slice sharing
-  a touched file. The closure is the seam coverage; don't narrow it to direct dependents,
-  which stops at depth+1. The overlap term covers the coupling no edge expresses. Neither
-  makes it a proof.
-- "Changed" is keyed on patch-id, never SHA — SHAs churn on every replay.
-- Kind and depth are derived from `Depends-On`, never read from a trailer. Group by depth.
-- An unreadable ledger — empty `Slice-Id`, a merge commit, a dangling edge, a cycle — stops
-  the review. Never review a stack whose graph you had to guess at.
+  a touched file, before or after. The closure is the seam coverage; don't narrow it to direct
+  dependents, which stops at depth+1. Neither term makes it a proof.
+- "Changed" is keyed on patch-id, never SHA — SHAs churn on every replay, and a SHA-keyed
+  comparison would mark the whole post-replay tail as changed.
+- Kind and depth are derived from `Depends-On`, never read from a trailer. Group by depth,
+  count by kind.
+- An unreadable ledger stops the review. Never review a stack whose graph you had to guess at.
 - Every finding keeps the `Slice-Id` it resolved to, even when that slice is out of scope;
   only a finding that resolves to no slice lands in Unassigned. That tag is what lets the
   build loop replay from the right place — a discarded or invented tag sends it to the
   wrong commit.
 - The file is a merge, not a regeneration. A finding is removed only by a pass that looked
-  at its slice; `- [~]` never resurrects as open.
+  at its slice with the agent that found it, and the removal is recorded, not silent.
+  `- [~]` never resurrects as open.
+- `--agents` must match what you actually ran. It is the coverage record the `unverified`
+  rule depends on.
 - Read-only. Never edit code, never touch history, never open a PR.
