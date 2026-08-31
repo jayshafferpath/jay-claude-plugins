@@ -32,10 +32,10 @@ Depends-On: <slice-id>[, <slice-id>…] | none
   `s01`, `s02` … assigned in creation order and never renumbered.
 - **`Depends-On`** — **every** `Slice-Id` this slice builds on, comma-separated, or
   `none`. A slice that consumes two foundations names both. This field is the only record
-  of the dependency graph: it drives review scope ("changed slices + their dependents"),
-  the depth grouping, and the foundation/leaf derivation below. An unrecorded edge is
-  invisible to all three, so under-reporting here silently narrows every downstream
-  decision.
+  of the dependency graph: it drives review scope (every slice whose content *or dependency
+  closure* moved — §1b), the depth grouping, and the foundation/leaf derivation below. An
+  unrecorded edge is invisible to all three, so under-reporting here silently narrows every
+  downstream decision.
 
 ### Committing the trailer
 
@@ -92,6 +92,16 @@ depth(s) = 0                                      if s.dependsOn == none
            1 + max(depth(d) for d in s.dependsOn) otherwise
 ```
 
+Both derivations assume every recorded edge resolves and the graph is acyclic. Git checks
+neither, and `depth` has no base case when either fails, so both ledger readers **stop and
+report** rather than derive:
+
+- A `Depends-On` id that names no slice in range — a typo, or a dependency below `BASE`.
+- A cycle. A derivation that cannot terminate is not a warning.
+
+Same class as an empty `Slice-Id` (§1): the ledger is unreadable, and every decision keyed
+on it would be plausible-looking and wrong.
+
 Kind collapses a multi-level stack: in `s01 ← s02 ← s03`, both `s01` and `s02` are
 `foundation`, but their depths are 0 and 1. Report counts with kind; order findings with
 depth.
@@ -101,7 +111,7 @@ depth.
 track position (a depth-0 slice can be committed after a depth-1 slice), so a replay
 started at the shallowest slice with a finding can leave an earlier commit untouched and
 its finding permanently unaddressed. The replay start is always the earliest slice in
-**commit order**; see `/build-sliced` Step 4.
+**commit order**; see `/build-sliced` Step 5.
 
 A trailer cannot carry kind. It would have to be set when the slice is committed, on a
 claim about slices that do not exist yet ("is anything going to build on me?"), which the
@@ -135,15 +145,58 @@ slice whose content changed, or whose diff context shifted because an upstream s
 moved, gets a new one. That second case is a genuine `shape-changed` — the slice's diff
 really does read differently now — so the sensitivity is wanted, not a false positive.
 
+### The closure — why patch-id alone is not enough
+
+Patch-id answers *did this slice's patch change?*, which is not the question either command
+finally needs. A verdict ("this slice was green") is a property of the **tree** the slice was
+committed against, not of its patch. An upstream slice that changes a *different file* leaves
+a downstream patch-id byte-identical and the downstream code broken:
+
+```
+s01: a.ts   export type T = { a: string }
+s02: b.ts   const x: T = { a: "1" }            Depends-On: s01
+
+replay s01 → { a: number }, re-commit s02 unchanged
+s02 patch-id: identical before and after. s02 no longer compiles.
+```
+
+So content identity is defined over the slice **and everything beneath it**:
+
+```
+closure(s) = s.dependsOn ∪ ⋃ closure(d) for d in s.dependsOn
+stable(s)  = patchid(s) unchanged  ∧  ∀ d ∈ closure(s): patchid(d) unchanged
+```
+
+`stable` is computed entirely from `Depends-On` edges and patch-ids, both already in git —
+which is why there is no verdict-cache file. It is also why `Depends-On` must name **every**
+dependency: an unrecorded edge drops a slice out of the closure, and the predicate then
+answers confidently about a tree it never looked at.
+
+### The four replay classes
+
+Both commands classify a replayed slice from `stable(s)` plus the slice's own patch-id. The
+distinction between the last two rows is the entire reason the closure exists:
+
+| class | own patch-id | closure | test bar | prior review comments |
+|---|---|---|---|---|
+| `changed` | moved | any | runs | superseded — a finding was addressed here |
+| `shape-changed` | moved | any | runs | may be **stale** — no finding targeted this slice |
+| `context-changed` | unchanged | moved | **runs** | still describe the text; the verdict was never re-earned |
+| `regenerated-identical` | unchanged | unchanged | **skipped** | still apply verbatim |
+
+`regenerated-identical` is the only sound skip: identical content on an identical foundation
+was green when it was committed, and nothing it can see has moved. `context-changed` is the
+case a patch-id-only comparison silently files as `regenerated-identical` — the slice reads
+the same and behaves differently.
+
 Two consumers depend on this:
 
 - `/review-slices` records `Slice-Id → patch-id` in the review file's slicemap and treats
-  a moved patch-id as "changed". Keying on SHA instead would mark every slice downstream
-  of a replay as changed and re-review the whole tail.
-- `/build-sliced` classifies each replayed slice from it, and skips re-running the test
-  bar for any slice whose patch-id is unchanged. Unchanged content was green when it was
-  committed, so re-running the bar cannot produce a different verdict. This is why there
-  is no verdict-cache file: the fingerprint is derivable from git, so git stays the ledger.
+  any slice that is not `stable` as changed. Keying on SHA instead would mark every slice
+  downstream of a replay as changed and re-review the whole tail; keying on patch-id alone
+  would miss every `context-changed` slice.
+- `/build-sliced` classifies each replayed slice and skips the test bar for
+  `regenerated-identical` only.
 
 ## 2. Replay cursor — crash-safety
 
@@ -159,8 +212,9 @@ replay_from=<slice-id> started=<YYYY-MM-DDTHH:MM:SSZ> head_before=<sha>
   hard-resetting to `head_before`, then re-running the replay from `replay_from`. The
   branch is a rebuildable cache; `head_before` + the ledger are the source of truth.
 
-`head_before` is also the baseline for the replay-diff: the pre-replay ledger it names is
-where the "before" patch-ids (§1b) are read from.
+`head_before` is also the baseline for the whole replay: the pre-replay ledger it names is
+where the "before" patch-ids (§1b) and the original per-slice SHAs are read from — the
+patch-ids to classify against, the SHAs to cherry-pick from.
 
 Branch name with `/` and `_` collapsed to `-`, same convention as
 `pr-review-<branch>.md`.
@@ -175,11 +229,26 @@ it to decide the replay start point. Every actionable item is a checkbox keyed t
 # Sliced Review: <BRANCH>
 
 - **Base**: <BASE>
-- **Reviewed slices**: <s03, s04, s07 — changed + dependents>
+- **Reviewed slices**: <s03, s04, s07 — prose, for humans, never parsed>
 - **Generated**: <YYYY-MM-DD>
 
 <!-- slicemap: s01=<patch-id> s02=<patch-id> ... -->
+<!-- changed: s03,s04 -->
+```
 
+Two comments, one job each, and both are parsed:
+
+- **`slicemap`** is the input to the *next* review's comparison — every slice's patch-id at
+  the moment this file was written.
+- **`changed`** is the output of *this* review: the ids for which `stable(s)` was false
+  (§1b). `/build-sliced` reads it to place `Unassigned` findings. It cannot be recomputed
+  later — by replay time no patch-id has moved since this file was written, so the predicate
+  would return the empty set — and the prose header above is written for humans, not parsing.
+  Record it explicitly and never parse the prose.
+
+The body sections:
+
+```markdown
 ## Findings
 Grouped by the **depth** of the slice they land in (§1a), shallowest first — that is the
 order the build loop re-derives in once it has rewound. Within a depth, `Critical` first.
@@ -198,19 +267,24 @@ id — the build loop widens its replay start to include them rather than guessi
 - [ ] `s02` `file.ts:5` — <summary>. (severity: medium, source: diff-critic)
 
 ## Unassigned
-Findings whose `file:line` resolved to **no** slice in range (e.g. a seam that no single
-commit owns, or a path absent from `HEAD`). The build loop treats these as touching the
-earliest changed slice.
+Findings whose `file:line` resolved to **no** slice in range: a seam no single commit owns,
+or a path absent from `HEAD`. The build loop treats these as touching the earliest id in the
+`changed:` comment.
 
 - [ ] `file.ts:12` — <summary>. (severity: high, source: diff-critic)
 
 ## Notes
-Agents skipped by a gate (with reason), seam concerns, open questions.
+Agents skipped by a gate (with reason), findings dropped as pre-`BASE`, seam concerns, open
+questions.
 ```
+
+A line whose last change **predates `BASE`** also resolves to no slice, and does **not**
+belong in Unassigned: that finding is about code this branch never touched. Drop it and note
+the drop. Replaying from the earliest changed slice cannot fix code no slice in range wrote.
 
 ### Finding states
 
-The checkbox is a three-state field, and `/build-sliced` Step 2 keys its replay decision
+The checkbox is a three-state field, and `/build-sliced` Step 3 keys its replay decision
 on it:
 
 - `- [ ]` **open** — not yet addressed. Any open finding triggers a replay.
@@ -223,8 +297,24 @@ Without the declined state a finding the user rejects stays `- [ ]` forever and 
 intends to fix. Only a human marks a finding declined; the build loop never demotes an
 open finding to skip work.
 
-`/review-slices` overwrites this file on every run but **carries forward every `- [~]`
-entry**, so a declined finding does not resurrect as open on the next pass.
+### Regenerating the file is a merge
+
+`/review-slices` rewrites this file on every run, and the agents that produce findings are
+not deterministic. So the rewrite is a **merge against the prior file**, governed by one
+rule: *a finding may only be removed by a pass that actually looked at the slice it names.*
+
+| prior entry | this pass | result |
+|---|---|---|
+| `- [~]` declined | anything | carried forward verbatim |
+| `- [x]` addressed | anything | dropped |
+| `- [ ]` on a `stable` slice (§1b) | did not look | carried forward verbatim |
+| `- [ ]` on a slice this pass reviewed | not re-reported | dropped — the pass is authoritative |
+| `- [ ]` on a slice that moved, outside this pass's scope | did not look | carried forward, marked `unverified` |
+
+A `stable` slice cannot have been fixed, because nothing beneath it moved — so an open
+finding on one survives untouched no matter what this pass reviewed. Regenerating purely
+from what the current pass found loses every open finding the moment a pass has nothing to
+look at, which is exactly what a second consecutive review is.
 
 ### Resolving a finding's `Slice-Id`
 
@@ -238,7 +328,18 @@ git log <BASE>..HEAD -1 -s \
 
 - `-s` is **required**. `-L` implies `-p`, so without it the id arrives with a full diff
   hunk stapled to it and the value can't be used as-is.
-- Empty output → no commit in range touched that line → **Unassigned**.
+- Empty output → no commit **in range** touched that line. Two causes, and they are not the
+  same finding: a seam no single commit owns → **Unassigned**; a line whose last change
+  predates `BASE` → pre-existing code, **dropped** with a note. Separate them by asking for
+  the owning commit over full history instead of the trailer over the range:
+
+  ```bash
+  git log -1 -s --format='%H' -L<line>,<line>:<file>          # no range
+  git merge-base --is-ancestor <that sha> <BASE>              # exit 0 → pre-BASE, drop it
+  ```
+
+  Ask for `%H`, not the trailer — a pre-`BASE` commit carries no `Slice-Id`, so the trailer
+  format comes back empty in both cases and distinguishes nothing.
 - A path that does not exist at `HEAD` (deleted file, or a bad path from an agent) makes
   this command **fail** with `fatal: There is no path …`, exit 128. That is not an empty
   result — tolerate the failure and record the finding as **Unassigned**.

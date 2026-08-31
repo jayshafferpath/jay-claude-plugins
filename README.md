@@ -43,6 +43,7 @@ Tickets are routed to a repo via a `repo:<name>` label, resolved to `$DEV_ROOT/<
 ```
 agents/         @planner, @feature-planner, @tdd-builder, @refactor
 commands/       slash commands (/ticket-work, /prework, /orchestrate, ...)
+  _*.md         shared reference fragments cited by commands; install.sh skips them
 cli/
   bin/          Node CLI entry points (symlinked into ~/.local/bin/)
   lib/          shared libraries: jira, git, labels, stack-resolver, ...
@@ -193,6 +194,26 @@ Base defaults: `$ARGUMENTS` → `git config branch.<BRANCH>.base` → `gh pr vie
 #### `/finalize`
 
 Final pre-merge pass. Updates the PR description to reflect the actual shipped state, then posts a finalization comment with context downstream stacked-ticket agents can use (touched files, gotchas, follow-ups). Writes to Jira's activity log via `append-activity`.
+
+### Sliced build: a peer pipeline to `/ticket-work`
+
+An alternative execution loop for a single greenfield layered feature, where the commits themselves are the plan. No Jira stack, no squash, no manifest file: each slice is one commit carrying `Slice-Id` / `Depends-On` trailers, and `git log` is the ledger. Shared formats live in `commands/_sliced-format.md`.
+
+#### `/build-sliced [spec ref] [BASE]`
+
+Builds a whole feature as dependency-ordered commit slices on one branch, foundations (types, schemas, contracts) first, leaves last. `<spec ref>` is a Jira key, `docs/tdds/{slug}.md`, or `.plans/ears-{slug}.md` — never free text. Refuses work that isn't a greenfield layered feature and names the better home (`/refactor`, `/ticket-work`, or "too small to slice").
+
+- **Kind and depth are derived**, never declared — `leaf` iff nothing names the slice in `Depends-On`; depth is its graph level. A trailer would have to predict slices that don't exist yet.
+- **Resume identity comes from the spec**, recorded at `git config branch.<BRANCH>.slicedSpec`. Re-invoke with no arguments to replay the current branch.
+- **Replay**: consumes `.plans/review-<branch>.md` and rewinds to the earliest slice with an open finding (commit order — the rewind is positional). Slices carrying findings are re-derived; the rest are cherry-picked so their patch-ids survive, and re-derived only when a conflict or a red bar proves it was needed. `Slice-Id` is immutable across replays; force-pushes its own branch.
+- **Crash-safe** via a one-line cursor at `.plans/replay-<branch>`, deleted only after the replay pushes.
+- Opens no PR. When the stack is settled it hands off to the normal PR flow.
+
+#### `/review-slices [BASE]`
+
+Reviews a sliced stack and writes slice-tagged findings to `.plans/review-<branch>.md`. Same two agents as `/jay-pr-review`, scoped to every slice that isn't **stable** — its own patch-id moved, or a patch-id in its transitive `Depends-On` closure did. The closure is the seam coverage: a foundation change puts every slice built on it in scope even when their own patches are byte-identical, because a patch that reads the same against a moved foundation behaves differently.
+
+Every finding resolves to the `Slice-Id` that owns its `file:line` (via `git log -L`), or lands in Unassigned. The file is a **merge**, not a regeneration — a finding is removed only by a pass that actually looked at its slice, so re-running the command never destroys open work. Read-only.
 
 ### Post-merge: cleanup
 
