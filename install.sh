@@ -2,56 +2,55 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-COMMANDS_DIR="$HOME/.claude/commands"
 
-mkdir -p "$COMMANDS_DIR"
+# Symlink every `*.md` in <src> into <dest>.
+#
+# `_`-prefixed files are shared reference fragments cited by other files, not
+# commands or agents of their own, so they are skipped everywhere — previously
+# only the commands loops did this, and the agents loops would have installed a
+# fragment as an agent the moment one appeared.
+link_dir() {
+  local src="$1"
+  local dest="$2"
+  local label="$3"
 
-echo "Installing commands..."
+  mkdir -p "$dest"
+  echo ""
+  echo "Installing $label..."
 
-for cmd in "$SCRIPT_DIR"/commands/*.md; do
-  name=$(basename "$cmd")
+  for file in "$src"/*.md; do
+    [ -f "$file" ] || continue
+    local name
+    name=$(basename "$file")
 
-  # `_`-prefixed files are shared reference fragments cited by other commands,
-  # not slash commands of their own. Skip them.
-  case "$name" in
-    _*) continue ;;
-  esac
+    case "$name" in
+      _*) continue ;;
+    esac
 
-  target="$COMMANDS_DIR/$name"
+    local target="$dest/$name"
 
-  if [ -L "$target" ]; then
-    rm "$target"
-  elif [ -f "$target" ]; then
-    echo "  Backing up existing $name -> $name.bak"
-    mv "$target" "$target.bak"
-  fi
+    if [ -L "$target" ]; then
+      rm "$target"
+    elif [ -f "$target" ]; then
+      # Never clobber an existing backup: a second real file in this slot would
+      # otherwise silently overwrite the first one we saved.
+      local backup="$target.bak"
+      local n=1
+      while [ -e "$backup" ]; do
+        backup="$target.bak.$n"
+        n=$((n + 1))
+      done
+      echo "  Backing up existing $name -> $(basename "$backup")"
+      mv "$target" "$backup"
+    fi
 
-  ln -s "$cmd" "$target"
-  echo "  Linked $name"
-done
+    ln -s "$file" "$target"
+    echo "  Linked $name"
+  done
+}
 
-# Install agents
-AGENTS_DIR="$HOME/.claude/agents"
-mkdir -p "$AGENTS_DIR"
-
-echo ""
-echo "Installing agents..."
-
-for agent in "$SCRIPT_DIR"/agents/*.md; do
-  [ -f "$agent" ] || continue
-  name=$(basename "$agent")
-  target="$AGENTS_DIR/$name"
-
-  if [ -L "$target" ]; then
-    rm "$target"
-  elif [ -f "$target" ]; then
-    echo "  Backing up existing $name -> $name.bak"
-    mv "$target" "$target.bak"
-  fi
-
-  ln -s "$agent" "$target"
-  echo "  Linked $name"
-done
+link_dir "$SCRIPT_DIR/commands" "$HOME/.claude/commands" "commands"
+link_dir "$SCRIPT_DIR/agents" "$HOME/.claude/agents" "agents"
 
 # Create .env from example if not present (project-level)
 if [ ! -f "$SCRIPT_DIR/.env" ] && [ -f "$SCRIPT_DIR/.env.example" ]; then
@@ -119,6 +118,28 @@ EOF
   fi
 fi
 
+# Install into opencode, if opencode is present.
+#
+# Ordered after the CLI install for two reasons: the sync is itself one of those
+# CLIs, and `set -e` means a failure here would otherwise abort the parts that
+# already worked.
+#
+# opencode gets *generated* files rather than symlinks. One file cannot satisfy
+# both dialects — `allowed-tools` is not an opencode field, and opencode routes
+# unknown frontmatter to the provider as model options while defaulting its
+# permissions to *allow*, so a shared file silently hands the read-only reviewers
+# write access. Generating costs nothing here because opencode loads agents and
+# commands at config time and needs a restart to see a change either way.
+OPENCODE_SYNCED=0
+if command -v opencode >/dev/null 2>&1 || [ -d "$HOME/.config/opencode" ]; then
+  if [ -f "$SCRIPT_DIR/cli/bin/sync-opencode.js" ] && [ -n "$NODE_BIN" ]; then
+    echo ""
+    echo "Installing opencode agents and commands (generated)..."
+    "$NODE_BIN" "$SCRIPT_DIR/cli/bin/sync-opencode.js" || true
+    OPENCODE_SYNCED=1
+  fi
+fi
+
 echo ""
 echo "Done. Commands available:"
 echo "  /ticket-work       - Run tickets end-to-end (single or queue mode)"
@@ -152,7 +173,15 @@ echo "  @condense-verified - Condense, then verify against the source and patch 
 echo ""
 echo "CLI tools:"
 echo "  ticket-status      - View/manage ticket stacks (run directly in terminal)"
+echo "  sync-opencode      - Regenerate the opencode copies after editing an agent/command"
 echo ""
 echo "Next steps:"
 echo "  1. Edit .env — set JIRA_EMAIL, JIRA_API_TOKEN, JIRA_DOMAIN"
 echo "  2. Edit ~/.claude/.env — set DEV_ROOT to your dev directory"
+if [ "$OPENCODE_SYNCED" = "1" ]; then
+  echo "  3. Restart opencode to pick up the generated agents and commands"
+  echo ""
+  echo 'opencode edit loop: edit the file here -> sync-opencode -> restart opencode.'
+  echo 'Agent and command files are config-time in opencode, so a restart was always'
+  echo 'required; `sync-opencode --check` exits 2 when the copies are stale.'
+fi

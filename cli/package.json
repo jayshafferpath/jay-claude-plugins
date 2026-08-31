@@ -28,7 +28,8 @@
     "read-ledger": "./bin/read-ledger.js",
     "slice-scope": "./bin/slice-scope.js",
     "slice-replay": "./bin/slice-replay.js",
-    "slice-review": "./bin/slice-review.js"
+    "slice-review": "./bin/slice-review.js",
+    "sync-opencode": "./bin/sync-opencode.js"
   },
   "scripts": {
     "start": "node bin/ticket-status.js",

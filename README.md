@@ -53,8 +53,28 @@ cli/
   tests/        vitest suite
 dashboard/      Vite browser dashboard for viewing stack state
 docs/           architecture diagrams
-install.sh      symlink commands/agents, install CLIs
+install.sh      symlink commands/agents into ~/.claude/, generate the opencode
+                copies via sync-opencode, install CLIs
 ```
+
+### Two runtimes, one source
+
+`agents/` and `commands/` are canonical in **Claude Code dialect** (`model: opus`,
+`allowed-tools:`). `~/.claude/` gets symlinks, so editing a file here takes effect
+immediately. **opencode gets generated copies** written by `sync-opencode`.
+
+One file cannot serve both: `allowed-tools` is not an opencode field, and opencode routes
+unknown frontmatter to the provider as model options while defaulting its permissions to
+*allow* — so a shared file would silently give the read-only reviewers write access.
+Generation costs nothing on that side, because opencode loads agents and commands at config
+time and needs a restart to see a change either way. The loop is
+`edit → sync-opencode → restart opencode`, and `sync-opencode --check` exits 2 when the
+copies are stale.
+
+The translation is not lossless, and says so on every run: commands have no permission field
+in opencode (a command inherits the invoking agent's permissions), and a model alias chosen
+to be *cheaper* than the default has no portable equivalent. Agent tool restrictions —
+including per-MCP-tool allowlists — do carry over.
 
 
 ## Core concepts
@@ -380,6 +400,7 @@ Post-PR-push helper. Drives CI to green, then evaluates each Copilot review comm
 | `slice-scope` | Compute `/review-slices`' scope: the `stable` predicate over every slice, its influence set, the diff range, and the changed-file union. |
 | `slice-replay` | `plan` picks the replay start in commit order and writes the crash cursor with the pre-rewind fingerprints; `classify` assigns the four replay classes and says which slices skip the bar; `recover` / `clear` handle the cursor. |
 | `slice-review` | Resolve each finding to the slice that owns its `file:line`, merge into the prior review file (never regenerate), and write it. |
+| `sync-opencode` | Generate the opencode-dialect copies of `agents/` and `commands/` from the Claude Code canonical sources. `--check` exits 2 when they are stale; reports every restriction the translation could not carry. |
 
 Run any CLI directly for its options: `ticket-status --help`, `resolve-stack --help`, etc.
 
