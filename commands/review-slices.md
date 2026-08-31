@@ -1,5 +1,5 @@
 ---
-description: "Review a sliced-build stack by fanning out diff-critic and diff-security across every slice whose content or dependency closure moved, then writing slice-tagged findings to .plans/review-<branch>.md for /build-sliced to consume. Merges into the prior review file rather than regenerating it. Read-only — reports findings, never edits."
+description: "Review a sliced-build stack by fanning out diff-critic and diff-security across every slice whose content or influence set moved, then writing slice-tagged findings to .plans/review-<branch>.md for /build-sliced to consume. Merges into the prior review file rather than regenerating it. Read-only — reports findings, never edits."
 argument-hint: [base-branch]
 allowed-tools: Read, Write, Grep, Glob, Agent, Bash(git:*), Bash(mkdir:*)
 ---
@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Grep, Glob, Agent, Bash(git:*), Bash(mkdir:*)
 
 Review a stack built by `/build-sliced`. Fans out the same specialist agents as
 `/jay-pr-review` (`diff-critic`, `diff-security`), but scopes them to the slices whose
-**content or dependency closure moved** and tags every finding with the `Slice-Id` it lands
+**content or influence set moved** and tags every finding with the `Slice-Id` it lands
 in — so `/build-sliced` can replay from the earliest touched slice.
 
 > Shared formats (trailer, fingerprint, review file): `commands/_sliced-format.md`. Use
@@ -46,29 +46,45 @@ depth for grouping, kind for counts.
 - A commit in range with **no** `Slice-Id`, **or an empty one**: this branch wasn't built by
   `/build-sliced`, a commit was added by hand, or the trailers were split across multiple
   `-m` flags so `Slice-Id` never parsed (`commands/_sliced-format.md` §1, "Committing the
-  trailer").
+  trailer"). A **merge commit** trips this too, and it is the common cause on a long-lived
+  stack: say so and name the fix — `git rebase origin/<BASE>`, which carries every message
+  and therefore every id and edge through, never a merge of `<BASE>` into the branch.
 - A `Depends-On` id that resolves to no slice in range, or a cycle in the edge set
-  (`commands/_sliced-format.md` §1a). Scope, depth, and the closure below are all derived
-  from those edges; an unreadable graph makes every one of them confidently wrong.
+  (`commands/_sliced-format.md` §1a). Scope, depth, and the influence set below are all
+  derived from those edges; an unreadable graph makes every one of them confidently wrong.
 
 ## Step 3: Compute review scope
 
 A slice is **changed** iff `stable(s)` is false (`commands/_sliced-format.md` §1b): its own
-patch-id moved, **or** any patch-id in its transitive `Depends-On` closure moved, measured
+patch-id moved, **or** any patch-id in its **influence set** moved — its transitive
+`Depends-On` closure, plus any earlier slice that touches a file it touches — measured
 against the `<!-- slicemap -->` recorded by the previous run. A slice absent from the prior
 map is changed. With **no** prior review file, every slice is changed (first review of the
 stack).
 
-`SCOPE` = the changed slices. The closure is what earns the seam coverage: a foundation
-change puts every slice built on it — at any depth — in scope even when their own patches are
-byte-identical, because a patch that reads the same against a moved foundation behaves
-differently. A rule keyed on direct dependents only reaches depth+1, and silently stops at
-any intermediate slice whose own patch happens not to move.
+`SCOPE` = the changed slices. The influence set is what earns the seam coverage, in two parts:
+
+- The **closure** puts every slice built on a changed foundation — at any depth — in scope even
+  when their own patches are byte-identical, because a patch that reads the same against a
+  moved foundation behaves differently. A rule keyed on direct dependents only reaches
+  depth+1, and silently stops at any intermediate slice whose own patch happens not to move.
+- The **file-overlap** term catches the coupling `Depends-On` cannot express. Replay is
+  positional, so a slice is rebuilt against every earlier slice, not just the ones it declares
+  (`commands/_sliced-format.md` §1b, "The influence set"). Two leaves writing the same barrel
+  file have no edge between them and can still break each other.
+
+Neither term makes the predicate a proof — a coupling through a third file with no shared path
+is invisible — so treat `stable` as the best scoping git can justify, not a guarantee that an
+out-of-scope slice is fine.
 
 Key on patch-id, **never on SHA**. A replay rewinds and re-commits, so every slice from the
 replay point to the tip gets a fresh SHA even when its content is untouched — a SHA-keyed
 comparison would mark the entire tail as changed and re-review work that provably didn't
 move.
+
+The overlap term needs a touched-file list per slice —
+`git diff-tree --no-commit-id --name-only -r <sha>`. Compute it once here, for every slice in
+the ledger; Step 4 reuses the lists for the slices that end up in `SCOPE`.
 
 If `SCOPE` is empty, **nothing moved since the last review**: carry the prior file forward
 unchanged, report that, and stop. Never write a clean review file from a pass in which no
@@ -78,9 +94,9 @@ agent ran — that is a claim the run didn't earn, and it would drop every open 
 
 Build the scoped diff range. The slices in `SCOPE` are contiguous from some earliest
 slice `E` to the tip in almost all cases; pass the range `<parent of E's sha>...HEAD` plus
-the changed-file list for the slices in `SCOPE` — union of `git diff-tree --no-commit-id
---name-only -r <sha>` over each one, not a whole-range diff. Pass file paths, never
-contents — the agents read what they need.
+the changed-file list for the slices in `SCOPE` — the union of the per-slice lists already
+computed in Step 3, not a whole-range diff. Pass file paths, never contents — the agents read
+what they need.
 
 When `SCOPE` is **not** contiguous, this range over-covers — it includes slices between
 `E` and the tip that aren't in scope. That's tolerated, not a bug: Step 5 resolves any
@@ -141,9 +157,11 @@ derived value from Step 2 — shallowest first, the order the build loop re-deri
 Merge against the prior file rather than regenerating it — the table in
 `commands/_sliced-format.md` §3, "Regenerating the file is a merge", is the whole rule. In
 short: `- [~]` verbatim always, `- [x]` dropped, and an open `- [ ]` may only be dropped by
-this pass if this pass actually reviewed its slice. An open finding on a `stable` slice
-carries forward untouched; one on a slice that moved outside this pass's scope carries
-forward marked `unverified`. Findings this pass found fresh are always `- [ ]`.
+this pass if this pass reviewed its slice **with the agent that produced it**. An open finding
+on a `stable` slice carries forward untouched; a finding from an agent this pass **skipped** —
+`diff-security` on a security-inert diff — carries forward marked `unverified` even when its
+slice was in scope, because no agent looked for it. Findings this pass found fresh are always
+`- [ ]`.
 
 Embed two comments so the next run and the build loop each get what they need:
 
@@ -161,7 +179,7 @@ by replay time no patch-id has moved since this file was written. The prose
 ## Step 7: Report
 
 ```
-Reviewed <K> of <N> slices on <BRANCH> — every slice whose content or closure moved.
+Reviewed <K> of <N> slices on <BRANCH> — every slice whose content or influence set moved.
 Findings: <C critical, H high, M medium, L low>. Written to <REVIEW_FILE>.
 ```
 
@@ -180,12 +198,14 @@ Findings: <C critical, H high, M medium, L low>. Written to <REVIEW_FILE>.
 - One message, multiple Agent calls — parallel is the point.
 - Pass file lists, not file contents.
 - Scope is every slice that is not `stable` — own patch-id moved, or anything in its
-  transitive `Depends-On` closure moved. The closure is the seam coverage; don't narrow it
-  to direct dependents, which stops at depth+1.
+  **influence set** moved: the transitive `Depends-On` closure plus any earlier slice sharing
+  a touched file. The closure is the seam coverage; don't narrow it to direct dependents,
+  which stops at depth+1. The overlap term covers the coupling no edge expresses. Neither
+  makes it a proof.
 - "Changed" is keyed on patch-id, never SHA — SHAs churn on every replay.
 - Kind and depth are derived from `Depends-On`, never read from a trailer. Group by depth.
-- An unreadable ledger — empty `Slice-Id`, dangling edge, cycle — stops the review. Never
-  review a stack whose graph you had to guess at.
+- An unreadable ledger — empty `Slice-Id`, a merge commit, a dangling edge, a cycle — stops
+  the review. Never review a stack whose graph you had to guess at.
 - Every finding keeps the `Slice-Id` it resolved to, even when that slice is out of scope;
   only a finding that resolves to no slice lands in Unassigned. That tag is what lets the
   build loop replay from the right place — a discarded or invented tag sends it to the

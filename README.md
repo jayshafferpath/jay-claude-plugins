@@ -204,16 +204,17 @@ An alternative execution loop for a single greenfield layered feature, where the
 Builds a whole feature as dependency-ordered commit slices on one branch, foundations (types, schemas, contracts) first, leaves last. `<spec ref>` is a Jira key, `docs/tdds/{slug}.md`, or `.plans/ears-{slug}.md` — never free text. Refuses work that isn't a greenfield layered feature and names the better home (`/refactor`, `/ticket-work`, or "too small to slice").
 
 - **Kind and depth are derived**, never declared — `leaf` iff nothing names the slice in `Depends-On`; depth is its graph level. A trailer would have to predict slices that don't exist yet.
-- **Resume identity comes from the spec**, recorded at `git config branch.<BRANCH>.slicedSpec`. Re-invoke with no arguments to replay the current branch.
+- **Resume identity comes from the spec**, recorded at `git config branch.<BRANCH>.slicedSpec`. Re-invoke with no arguments to replay the current branch. Missing that config is a refusal even when a ledger exists — Step 1's gate is skipped on resume and Step 4 needs the spec to know where the feature is incomplete.
 - **Replay**: consumes `.plans/review-<branch>.md` and rewinds to the earliest slice with an open finding (commit order — the rewind is positional). Slices carrying findings are re-derived; the rest are cherry-picked so their patch-ids survive, and re-derived only when a conflict or a red bar proves it was needed. `Slice-Id` is immutable across replays; force-pushes its own branch.
-- **Crash-safe** via a one-line cursor at `.plans/replay-<branch>`, deleted only after the replay pushes.
+- **Crash-safe** via a one-line cursor at `.plans/replay-<branch>`, deleted only after the replay pushes. Recovery guards the worktree *before* its own hard reset — a crash mid-replay is exactly when there's partial work to lose.
+- **Refuses a stale base.** A moved `origin/<BASE>` stops the command with `git rebase origin/<BASE>` as the named fix. A merge commit carries no `Slice-Id` and would make the ledger unreadable, so merging the base in is never the answer.
 - Opens no PR. When the stack is settled it hands off to the normal PR flow.
 
 #### `/review-slices [BASE]`
 
-Reviews a sliced stack and writes slice-tagged findings to `.plans/review-<branch>.md`. Same two agents as `/jay-pr-review`, scoped to every slice that isn't **stable** — its own patch-id moved, or a patch-id in its transitive `Depends-On` closure did. The closure is the seam coverage: a foundation change puts every slice built on it in scope even when their own patches are byte-identical, because a patch that reads the same against a moved foundation behaves differently.
+Reviews a sliced stack and writes slice-tagged findings to `.plans/review-<branch>.md`. Same two agents as `/jay-pr-review`, scoped to every slice that isn't **stable** — its own patch-id moved, or a patch-id in its **influence set** did. The influence set is the transitive `Depends-On` closure *plus* any earlier slice sharing a touched file, and it's the seam coverage: the closure puts every slice built on a changed foundation in scope even when their own patches are byte-identical, and the file-overlap term catches the coupling no edge expresses (replay is positional, so a slice is rebuilt against every earlier commit, not just its declared dependencies). Neither term makes it a proof — a coupling through a third file with no shared path stays invisible, which is why `regenerated-identical` is documented as the best skip git can justify rather than a guarantee.
 
-Every finding resolves to the `Slice-Id` that owns its `file:line` (via `git log -L`), or lands in Unassigned. The file is a **merge**, not a regeneration — a finding is removed only by a pass that actually looked at its slice, so re-running the command never destroys open work. Read-only.
+Every finding resolves to the `Slice-Id` that owns its `file:line` (via `git log -L`), or lands in Unassigned. The file is a **merge**, not a regeneration — a finding is removed only by a pass that looked at its slice *with the agent that produced it*, so a `diff-security` finding survives a pass that skipped `diff-security` as security-inert. Re-running never destroys open work. Read-only.
 
 ### Post-merge: cleanup
 

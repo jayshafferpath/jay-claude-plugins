@@ -32,8 +32,8 @@ Depends-On: <slice-id>[, <slice-id>…] | none
   `s01`, `s02` … assigned in creation order and never renumbered.
 - **`Depends-On`** — **every** `Slice-Id` this slice builds on, comma-separated, or
   `none`. A slice that consumes two foundations names both. This field is the only record
-  of the dependency graph: it drives review scope (every slice whose content *or dependency
-  closure* moved — §1b), the depth grouping, and the foundation/leaf derivation below. An
+  of the dependency graph: it drives review scope (every slice whose content *or influence
+  set* moved — §1b), the depth grouping, and the foundation/leaf derivation below. An
   unrecorded edge is invisible to all three, so under-reporting here silently narrows every
   downstream decision.
 
@@ -164,30 +164,59 @@ So content identity is defined over the slice **and everything beneath it**:
 
 ```
 closure(s) = s.dependsOn ∪ ⋃ closure(d) for d in s.dependsOn
-stable(s)  = patchid(s) unchanged  ∧  ∀ d ∈ closure(s): patchid(d) unchanged
 ```
 
-`stable` is computed entirely from `Depends-On` edges and patch-ids, both already in git —
-which is why there is no verdict-cache file. It is also why `Depends-On` must name **every**
-dependency: an unrecorded edge drops a slice out of the closure, and the predicate then
-answers confidently about a tree it never looked at.
+### The influence set — why the closure alone is not enough either
+
+The closure is the set a slice **builds on**. It is not the set that can **break** it, and
+replay makes the gap concrete: rewind is *positional* (`git reset --hard parent(START)`, then
+re-apply in commit order), so the tree slice `s` is rebuilt against is `BASE` plus **every
+slice committed before it** — of which `closure(s)` is a subset, usually a proper one.
+
+So an earlier slice that `s` declares no edge to can break it anyway: two leaves writing the
+same barrel file or DI registration, a shared test fixture, migration ordering. No amount of
+`Depends-On` discipline closes this, because the field records a *dependency*, and the
+builder writing `Depends-On` is answering "what do I import?" — not "who could invalidate my
+tests?" Those are different questions and only the first has a natural answer at commit time.
+
+Widen the predicate by the one such coupling git can see — a shared file:
+
+```
+touched(s)    = git diff-tree --no-commit-id --name-only -r <s.sha>
+before(s)     = slices committed before s, in commit order
+influences(s) = closure(s) ∪ { t ∈ before(s) : touched(t) ∩ touched(s) ≠ ∅ }
+stable(s)     = patchid(s) unchanged  ∧  ∀ d ∈ influences(s): patchid(d) unchanged
+```
+
+`influences` is still computed entirely from git — `Depends-On` edges, patch-ids, and
+`--name-only` file lists — which is why there is no verdict-cache file. `Depends-On` remains
+the primary term and must still name **every** dependency: an unrecorded edge drops a slice
+out of the closure, and the file-overlap term is a backstop for couplings that were never
+declarable, not a substitute for edges the builder simply failed to write down.
+
+**What stays uncovered, stated plainly:** an earlier slice that changes behaviour `s` depends
+on through a third file, with no declared edge and no shared path, is invisible to
+`influences`. So `regenerated-identical` is the **best skip git can justify**, not a proof of
+greenness. It asserts that nothing git can see has moved beneath the slice. Treat the residual
+as the price of skipping the bar at all, and when in doubt widen `Depends-On` rather than
+leaning on the overlap term.
 
 ### The four replay classes
 
 Both commands classify a replayed slice from `stable(s)` plus the slice's own patch-id. The
-distinction between the last two rows is the entire reason the closure exists:
+distinction between the last two rows is the entire reason the influence set exists:
 
-| class | own patch-id | closure | test bar | prior review comments |
+| class | own patch-id | influence set | test bar | prior review comments |
 |---|---|---|---|---|
 | `changed` | moved | any | runs | superseded — a finding was addressed here |
 | `shape-changed` | moved | any | runs | may be **stale** — no finding targeted this slice |
 | `context-changed` | unchanged | moved | **runs** | still describe the text; the verdict was never re-earned |
 | `regenerated-identical` | unchanged | unchanged | **skipped** | still apply verbatim |
 
-`regenerated-identical` is the only sound skip: identical content on an identical foundation
-was green when it was committed, and nothing it can see has moved. `context-changed` is the
-case a patch-id-only comparison silently files as `regenerated-identical` — the slice reads
-the same and behaves differently.
+`regenerated-identical` is the only defensible skip: identical content, and nothing git can see
+beneath it has moved since it was green. `context-changed` is the case a patch-id-only
+comparison silently files as `regenerated-identical` — the slice reads the same and behaves
+differently.
 
 Two consumers depend on this:
 
@@ -198,9 +227,20 @@ Two consumers depend on this:
 - `/build-sliced` classifies each replayed slice and skips the test bar for
   `regenerated-identical` only.
 
+The two consumers measure over different ranges, and both are correct. `/review-slices`
+compares every slice in the ledger against the prior slicemap, because any of them may have
+moved since the last review. `/build-sliced` measures only slices at or after the replay
+start: the rewind does not reach anything earlier, so an `influences(s)` term naming an earlier
+slice contributes "unchanged" without needing to be measured.
+
 ## 2. Replay cursor — crash-safety
 
-The only durable state outside git. One line at `{PLANS_DIR}/replay-<BRANCH>`:
+`SLUG` is `<BRANCH>` with `/` and `_` collapsed to `-`, the same convention as
+`pr-review-<branch>.md`. Both file paths below use `SLUG`, never the raw branch name — a
+branch called `feature/foo` would otherwise name a file inside a `.plans/replay-feature/`
+directory that nothing creates.
+
+The cursor is the only durable state outside git. One line at `{PLANS_DIR}/replay-<SLUG>`:
 
 ```
 replay_from=<slice-id> started=<YYYY-MM-DDTHH:MM:SSZ> head_before=<sha>
@@ -216,12 +256,9 @@ replay_from=<slice-id> started=<YYYY-MM-DDTHH:MM:SSZ> head_before=<sha>
 where the "before" patch-ids (§1b) and the original per-slice SHAs are read from — the
 patch-ids to classify against, the SHAs to cherry-pick from.
 
-Branch name with `/` and `_` collapsed to `-`, same convention as
-`pr-review-<branch>.md`.
-
 ## 3. Review file — feedback the loop consumes
 
-Written by `/review-slices` at `{PLANS_DIR}/review-<BRANCH>.md`. `/build-sliced` parses
+Written by `/review-slices` at `{PLANS_DIR}/review-<SLUG>.md`. `/build-sliced` parses
 it to decide the replay start point. Every actionable item is a checkbox keyed to a
 `Slice-Id`.
 
@@ -308,8 +345,16 @@ rule: *a finding may only be removed by a pass that actually looked at the slice
 | `- [~]` declined | anything | carried forward verbatim |
 | `- [x]` addressed | anything | dropped |
 | `- [ ]` on a `stable` slice (§1b) | did not look | carried forward verbatim |
-| `- [ ]` on a slice this pass reviewed | not re-reported | dropped — the pass is authoritative |
-| `- [ ]` on a slice that moved, outside this pass's scope | did not look | carried forward, marked `unverified` |
+| `- [ ]` on a slice this pass reviewed, from an agent this pass ran | not re-reported | dropped — the pass is authoritative |
+| `- [ ]` on a moved slice, from an agent this pass **skipped** | did not look | carried forward, marked `unverified` |
+
+Note which axis the last row turns on. Every moved slice is in scope by construction — scope
+*is* the not-`stable` set — so a moved slice is never skipped for being out of scope. The only
+way a moved slice goes unexamined is the **per-agent gate**: `/review-slices` runs
+`diff-critic` always but skips `diff-security` on a security-inert diff. `unverified`
+therefore tracks *agent coverage*, not slice coverage, and applies per finding according to
+which agent produced it. A `diff-security` finding on a slice this pass reviewed with
+`diff-critic` alone was not re-examined and must not be dropped.
 
 A `stable` slice cannot have been fixed, because nothing beneath it moved — so an open
 finding on one survives untouched no matter what this pass reviewed. Regenerating purely

@@ -44,7 +44,8 @@ are satisfied. **You decide when it ends; this command never auto-exits.**
 ## Step 0: Preflight — spec, base, plans, ledger
 
 Everything downstream needs to know whether this is a first invocation or a resume, so
-resolve that first. Nothing here mutates the repo.
+resolve that first. Nothing here touches the worktree or rewrites history; the one write is
+`git fetch`, which only advances remote-tracking refs.
 
 - `PLANS_DIR` = `.plans` (mkdir if missing).
 - **Resolve the resume target from the spec, not from where you happen to be standing.**
@@ -52,15 +53,24 @@ resolve that first. Nothing here mutates the repo.
     identity) and derive the branch name from it: the ticket key lowercased, or the TDD/EARS
     slug; kebab-case, ≤6 words. That is `BRANCH`.
   - No `$1` → this is the documented replay invocation. `BRANCH` = the current branch, which
-    must carry `git config branch.<BRANCH>.slicedSpec`. Missing config and no ledger is a
-    refusal, not a cold start: say that `/build-sliced` needs a spec reference on first
-    invocation.
+    must carry `git config branch.<BRANCH>.slicedSpec`. **Missing config is a refusal
+    whether or not a ledger exists** — say that `/build-sliced` needs a spec reference. A
+    ledger without a spec is the worse of the two cases, not a licence to continue: Step 1's
+    gate is skipped on resume, and Step 4 decides *where the feature is incomplete* by
+    reading the spec, so there would be nothing to build against. Re-invoke with the spec
+    reference to adopt the existing stack — Step 2 records the config and the ledger is
+    picked up unchanged.
 - `BASE` = `$2` → else `git config branch.<BRANCH>.base` → else `main`.
 - Read the ledger for `BRANCH` if that branch exists (`commands/_sliced-format.md` §1,
   "Reading the ledger") — `<BASE>..<BRANCH>`, since you may not be on it yet. Parse into
   `SLICES` = `[{sha, id, dependsOn[], subject}]`, reversed to build order.
 - `RESUMING` = true iff `BRANCH` exists **and** (`SLICES` is non-empty or a replay cursor
   exists in `PLANS_DIR` for it).
+- **Check `BASE` for drift** when `RESUMING`. `git fetch origin <BASE>`, then
+  `git merge-base --is-ancestor origin/<BASE> <BRANCH>`. Exit 0 → the stack still sits on the
+  current base, carry on. Non-zero → `origin/<BASE>` has advanced since the stack was cut;
+  stop and report (below). This loop is long-lived by design — build, review, replay, repeat —
+  so the base moving underneath it is the expected case, not an exotic one.
 
 `RESUMING` is a fact about the spec's branch, never about the working directory. Deriving it
 from the current branch lets `/build-sliced NEW-123`, fired while standing on an unrelated
@@ -72,9 +82,26 @@ branch.
 - A commit in range with an **empty** `Slice-Id`: the trailer block was mis-committed, almost
   always by passing each trailer as its own `-m` (`commands/_sliced-format.md` §1,
   "Committing the trailer"). Do not treat those commits as unsliced and build on top of them.
+- A commit in range with **no** `Slice-Id` trailer at all, including a **merge commit**. One
+  commit per slice is a ledger invariant, not a style preference: a commit with no id owns
+  lines that no finding can ever be routed to (§3, "Resolving a finding's `Slice-Id`").
 - A `Depends-On` id that resolves to no slice in range, or a cycle in the edge set
   (`commands/_sliced-format.md` §1a). Replay scope, depth, and the `stable` predicate all
   derive from those edges.
+- **`origin/<BASE>` has advanced.** Name the fix rather than acting on it — this rewrites
+  every slice's SHA and the user should choose when that happens:
+
+  ```
+  <BRANCH> is <N> commits behind origin/<BASE>. Rebase before continuing:
+    git rebase origin/<BASE>
+  Then re-run. Do NOT merge origin/<BASE> in — a merge commit carries no Slice-Id
+  and makes the ledger unreadable to /build-sliced and /review-slices alike.
+  ```
+
+  A rebase is the safe move here precisely because the ledger is keyed on `Slice-Id`, not on
+  SHA: commit messages carry through, so every id and every edge survives the replay of the
+  stack onto the new base. Expect patch-ids to move where the rebase shifted diff context —
+  that is a truthful `shape-changed`, and the next `/review-slices` will scope to it.
 
 ## Step 1: Trigger gate (refuse before building)
 
@@ -157,9 +184,23 @@ Derive each slice's kind and depth from the recorded edges per
 determine mode:
 
 - **Crash recovery first.** If the cursor file exists, the previous replay died
-  mid-flight. `git reset --hard <head_before>` (from the cursor), then go to
-  **Step 5 (Replay)** starting at the cursor's `replay_from`. Do not build new work
-  until the interrupted replay is repaired.
+  mid-flight. **Guard before repairing** — the repair itself is a hard reset, and it runs
+  ahead of Step 5's own guard. In this order:
+  1. Clear any in-progress cherry-pick: if `git rev-parse --verify -q CHERRY_PICK_HEAD`
+     succeeds, `git cherry-pick --abort`. This comes **first** because a conflicted
+     cherry-pick leaves paths staged `AA`/`UU`, so the next check would see a dirty tree and
+     tell the user to commit or stash — advice that would commit conflict markers. Aborting
+     is safe here: Step 5.1 guaranteed a clean tree when the replay began, so anything dirty
+     now came from the replay itself.
+  2. `git status --porcelain` must be empty. A crash mid-replay is precisely when the tree
+     holds half-finished work, so this is the guard's highest-value moment, not a formality.
+     If still dirty after the abort, stop and tell the user to commit or stash.
+
+  Then `git reset --hard <head_before>` (from the cursor) and go to **Step 5 (Replay)**,
+  re-entering at **step 5.3** with `START` = the cursor's `replay_from`. Re-entry at 5.3 is
+  deliberate: the reset restored the pre-replay stack, so the "before" SHAs and patch-ids
+  re-read there are the same ones the dead replay was working against. Do not build new
+  work until the interrupted replay is repaired.
 - **Review pending.** Else if `review-<SLUG>.md` exists with **open** (`- [ ]`) findings
   → **Step 5 (Replay)**. Declined findings (`- [~]`) are terminal and never trigger a
   replay (`commands/_sliced-format.md` §3, "Finding states"); a file whose only remaining
@@ -243,11 +284,14 @@ Triggered by open findings in `review-<SLUG>.md`, or by crash recovery.
    - An open finding naming a `Slice-Id` that is **not in the ledger** means the review file
      is stale. Stop and say so; never guess a `START`.
 3. **Record the "before" state.** For every slice from `START` to the tip, capture its
-   **original SHA** and its **patch-id** (`commands/_sliced-format.md` §1b) *before*
-   rewinding. Step 6's classification and the test-bar skip compare against the patch-ids;
-   step 6's cherry-picks replay the SHAs. `git reset --hard` moves the branch ref but leaves
-   those commits reachable by SHA, which is what makes the cherry-pick path work — and if the
-   replay dies, the cursor's `head_before` names the ledger they can all be re-read from.
+   **original SHA**, its **patch-id**, and its **touched-file list**
+   (`commands/_sliced-format.md` §1b) *before* rewinding. Step 6's classification and the
+   test-bar skip compare against the patch-ids; the file lists supply the overlap term of the
+   influence set; step 6's cherry-picks replay the SHAs. Slices *before* `START` need none of
+   this — the rewind does not reach them, so their patch-ids are unchanged by construction.
+   `git reset --hard` moves the branch ref but leaves those commits reachable by SHA, which is
+   what makes the cherry-pick path work — and if the replay dies, the cursor's `head_before`
+   names the ledger they can all be re-read from.
 4. **Write the cursor** (`commands/_sliced-format.md` §2) **before** rewriting anything:
    `replay_from=<START> started=<now> head_before=<current HEAD sha>`.
 5. **Rewind.** `git reset --hard <parent of START's commit>`. Everything from `START`
@@ -266,18 +310,25 @@ Triggered by open findings in `review-<SLUG>.md`, or by crash recovery.
      destroys the one signal the replay-diff runs on: an agent re-implementing from spec
      essentially never reproduces a byte-identical patch, so everything downstream of a fix
      would read as `shape-changed` forever. Note that a fix to `START` puts every later slice
-     in a moved closure — if that alone triggered re-derivation, this path would never run.
+     in a moved influence set — if that alone triggered re-derivation, this path would never
+     run.
    - **Then run the bar** on the slice, whether re-derived or cherry-picked, **unless it
      classifies `regenerated-identical`** — `stable(s)` holds against the step-3 fingerprints:
-     the slice's own patch-id *and* every patch-id in its `Depends-On` closure unchanged
+     the slice's own patch-id *and* every patch-id in its **influence set** unchanged, meaning
+     its `Depends-On` closure plus any earlier slice sharing a touched file
      (`commands/_sliced-format.md` §1b). `changed`, `shape-changed`, and `context-changed` all
      run it. A clean cherry-pick is **not** a green light: it preserves the patch, not the
      tree, and a patch that reads identically against a moved foundation is exactly the case
      that compiled yesterday and fails today.
    - **A cherry-pick conflict, or a red bar on a cherry-picked slice**, means the slice
-     genuinely reshaped against the corrected upstream. Re-derive it against that upstream and
-     classify it `shape-changed`. This is the only evidence that a downstream slice needed
-     rewriting, and it is cheaper to collect than to assume.
+     genuinely reshaped against the corrected upstream. On a **conflict, abort before
+     re-deriving**: `git cherry-pick --abort`. A conflicted cherry-pick is not a no-op that
+     left the tree alone — it leaves conflict markers in the working files, the paths staged
+     `AA`/`UU`, and `CHERRY_PICK_HEAD` set. Re-deriving into that state writes code around
+     conflict markers and lets `git commit` silently reuse the cherry-picked message instead
+     of the trailer block you meant to write. Abort, re-derive against the corrected
+     upstream, and classify the slice `shape-changed`. This is the only evidence that a
+     downstream slice needed rewriting, and it is cheaper to collect than to assume.
 7. **Re-derive kind and depth** from the post-replay edge set before reporting. A
    foundation change can add or remove an edge, which can flip a slice's derived kind and
    shift depths downstream.
@@ -303,7 +354,7 @@ Run /review-slices to review the stack.
 
 **After a replay**, emit a **structured replay-diff** — one line per slice from `START`
 to the tip, so the user re-reads only what moved. Classify each slice against the step-3
-"before" fingerprints, using both its own patch-id and its `Depends-On` closure
+"before" fingerprints, using both its own patch-id and its influence set
 (`commands/_sliced-format.md` §1b, "The four replay classes"):
 
 ```
@@ -319,12 +370,13 @@ Addressed <M> of <T> findings. Re-run /review-slices, or declare done and open a
 - `shape-changed` — own patch-id moved but no finding targeted this slice; an upstream change
   reshaped it. Any prior comment on it may be stale. Flag these explicitly — they are
   where review feedback silently rots. Ran its bar.
-- `context-changed` — own patch-id unchanged, but something in its closure moved. Prior
+- `context-changed` — own patch-id unchanged, but something in its influence set moved. Prior
   comments still describe the text accurately; the *verdict* was never re-earned, so it
   **ran its bar**. This is the class a patch-id-only comparison misses.
-- `regenerated-identical` — own patch-id and the whole closure unchanged. No re-review
-  needed and the bar was skipped. `/review-slices` reaches the same conclusion independently
-  from the slicemap, so this line is a report of a derived fact, not a claim it has to trust.
+- `regenerated-identical` — own patch-id and the whole influence set unchanged, so nothing git
+  can see beneath the slice moved. No re-review needed and the bar was skipped.
+  `/review-slices` reaches the same conclusion independently from the slicemap, so this line
+  is a report of a derived fact, not a claim it has to trust.
 
 `M < T` should not happen: a replay that cannot address an in-scope finding halts as a plan
 defect (Step 5.8) rather than pushing a stack with known-open work. If a human has declined
@@ -341,7 +393,7 @@ downstream picks the branch up on its own:
 
 - Git is the ledger. Never write a manifest or a plan file; the commits and their
   trailers carry everything except the crash cursor. Content identity is derived from
-  patch-id and the dependency closure, not cached in a file.
+  patch-id and the influence set, not cached in a file.
 - `Slice-Id` is immutable across replays. This is the one invariant that cannot bend.
   Both trailers go in one `-m` — split across two, the id silently lands empty.
 - `Depends-On` names **every** dependency. It is the only record of the graph — review
@@ -351,16 +403,21 @@ downstream picks the branch up on its own:
 - Kind and depth are derived, never declared, and only meaningful against a complete
   slice set. Neither one orders a replay — commit order does.
 - One commit per slice; each green in isolation; no squashing. No target slice count —
-  effort is not a slicing axis.
+  effort is not a slicing axis. A commit with no `Slice-Id` — a merge commit above all —
+  makes the ledger unreadable; rebase onto a moved `<BASE>`, never merge it in.
 - Resume identity comes from the spec (`branch.<x>.slicedSpec`), never from the current
-  branch. Two specs never share a stack.
+  branch. Missing that config is a refusal even when a ledger exists. Two specs never share
+  a stack.
 - A replay re-derives only the slices carrying a finding and cherry-picks the rest, then
   re-derives a cherry-picked slice on evidence — a conflict or a red bar — never because its
-  closure moved. A clean cherry-pick preserves the patch, not the tree.
+  influence set moved. A clean cherry-pick preserves the patch, not the tree; a conflicted one
+  leaves markers and `CHERRY_PICK_HEAD` behind, so `--abort` before re-deriving.
 - The command owns its branch and force-pushes on replay — never a shared branch. Never
-  hard-reset a dirty worktree.
+  hard-reset a dirty worktree — including the crash-recovery reset, which is the one most
+  likely to meet one.
 - A slice that cannot reach green, or a finding a replay cannot address, halts the build as
   a named plan defect. Never lower the bar to reach green. Skipping the bar for a
   `regenerated-identical` slice is not lowering it; skipping it for an identical patch on a
-  moved foundation is.
+  moved foundation is. That skip is the best git can justify, not a proof — a coupling with
+  neither a declared edge nor a shared file is invisible to it.
 - Manual exit only. No open findings means "nothing to replay"; wait for the user.
