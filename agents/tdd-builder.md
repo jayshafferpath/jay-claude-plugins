@@ -41,6 +41,7 @@ You are conversational: intake → scope → research → propose capabilities �
 5. **Reuse the planner clone cache.** Repo research runs inside `{TDD_REPO}/.planner-cache/{org}/{repo}` (gitignored). When `@planner init` runs later, the cache is already warm.
 6. **Stop at draft ready.** Builder writes the TDD, validates shape, prints a next-step pointer at `@planner init {slug}`. It does not auto-invoke planner.
 7. **No frontmatter on the TDD itself.** Builder writes the TDD body only. `@planner init` writes the `planner:` frontmatter block when init runs. This keeps the TDD diff easy to review and avoids encoding init state before init has happened.
+8. **The TDD ships condensed.** The draft goes through `@condense-verified` before handoff — see `commands/_condense-docs.md`. Phases 3–6 spend a long conversation and several research passes accumulating context, and a body written straight out of that lands at the length the research reached rather than the length a reader needs. The condense pass is a separate cheap read whose only job is to cut, and its output is re-validated against Phase 7b before it is kept.
 
 ---
 
@@ -523,6 +524,45 @@ If any check fails, fix the body and re-validate before writing.
 ### 7c: Write the file
 
 `Write` the validated body to `{TDD_REPO}/{TDD_PATH}`. The file is now on disk.
+
+### 7d: Condense the TDD
+
+Read `commands/_condense-docs.md` and follow it. The draft is on disk, so pass the path —
+never the body.
+
+One `Agent` call, `subagent_type: condense-verified`, telling it to condense
+`{TDD_REPO}/{TDD_PATH}` in place. Name the structural contracts explicitly in the prompt,
+because a generic condensor has no way to know them:
+
+```
+Condense the TDD at {TDD_REPO}/{TDD_PATH} in place. It is a planner input, not just prose —
+these are hard structural contracts, not style preferences:
+
+- Keep the H1 as the first non-blank line.
+- Keep every H2 heading verbatim, character for character. Downstream tooling matches
+  research sidecar H2s and GitHub anchor links against these strings.
+- Under every capability H2, keep `**Repos**: {slugs}` as the first non-blank line, with
+  every slug exactly as written.
+- Keep these H2s if present, with these exact names: `## Problem & Goals`, `## Non-Goals`,
+  `## Open Questions`, `## Source`, `## References`.
+- Keep every link in `## Source` — both the local `./{slug}/{filename}` links and the
+  canonical URLs.
+- Do not add, drop, merge, rename, or reorder any heading. Cut inside sections only.
+
+Goals, non-goals, and open questions are lists a reader acts on — drop none of them. The
+scope and integration prose under each capability is where the cutting happens.
+```
+
+Then **re-run every check in 7b** against the condensed body. A condense pass that drops a
+`**Repos**:` line or reflows an H2 produces a TDD that `@planner init` refuses.
+
+If any check fails, restore the 7c draft, `Write` it back, and tell the user:
+
+```
+Condense pass discarded — it broke {which check}. The TDD on disk is the full-length draft.
+```
+
+Do not hand-repair the condensed body and do not re-dispatch. The verbose TDD is correct.
 
 ---
 
