@@ -1,5 +1,5 @@
 ---
-description: "Build an entire feature as dependency-ordered commit slices on a single branch, foundation-first. Requires a spec artifact (Jira ticket AC, a TDD, or an EARS doc) and refuses work that isn't a greenfield layered feature. Git log is the ledger (Slice-Id trailers); resumable and crash-safe across replays. Re-invoke with no arguments to replay: consumes .plans/review-<branch>.md and rewinds to the earliest slice with an open finding. Peer to /ticket-work — no squash."
+description: "Build a feature as dependency-ordered vertical slices on a single branch — each slice a thin end-to-end increment (its own contract, a consumer, its test) that passes the full CI gate on its own. Requires a spec artifact (Jira ticket AC, a TDD, or an EARS doc) and refuses work that doesn't decompose into 2+ independently-shippable increments. Git log is the ledger (Slice-Id trailers); resumable and crash-safe across replays. Each slice gets its own PR, stacked on the previous slice's branch by commit order, so a slice merges — and passes CI — independently of the rest of the stack. Re-invoke with no arguments to replay: consumes .plans/review-<branch>.md and rewinds to the earliest slice with an open finding. Peer to /ticket-work — no squash."
 argument-hint: "[spec ref: TICKET-KEY | docs/tdds/{slug}.md | .plans/ears-{slug}.md] [base-branch] — omit both to replay the current branch"
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
@@ -15,6 +15,7 @@ allowed-tools:
   - Bash(ls:*)
   - Bash(read-ledger:*)
   - Bash(slice-replay:*)
+  - Bash(ensure-pr:*)
   - Bash(make:*)
   - Bash(just:*)
   - Bash(task:*)
@@ -42,12 +43,17 @@ allowed-tools:
 
 # Build Sliced
 
-Build a feature as a stack of **commit slices** on one branch. Each slice is one commit
-carrying `Slice-Id` / `Depends-On` trailers — git log is the ledger, there is no
-manifest. Kind and depth are **derived** from the recorded dependency edges, not
-declared; foundation slices (types, schemas, contracts) come first, leaves last. The loop
-is: build → `/review-slices` → replay from the earliest touched slice → repeat, until you
-are satisfied. **You decide when it ends; this command never auto-exits.**
+Build a feature as a stack of **vertical commit slices** on one branch. Each slice is one
+commit carrying `Slice-Id` / `Depends-On` trailers — git log is the ledger, there is no
+manifest. A slice is a **thin end-to-end increment**: its own contract, a consumer of it,
+and its test — complete enough to pass the full CI gate standing alone, not a bare layer
+waiting for a later slice to make it whole. Commit order follows dependency: a slice that
+reuses an earlier slice's code comes after it, so `Depends-On` edges — and the kind/depth
+**derived** from them — fall out of reuse rather than a pre-declared layer cake. Each slice
+also gets its own PR, stacked on the previous slice's branch by commit order, so a slice can
+merge — and pass CI — as soon as it is green, without the rest of the stack landing first.
+The loop is: build → `/review-slices` → replay from the earliest touched slice → repeat,
+until you are satisfied. **You decide when it ends; this command never auto-exits.**
 
 > Shared formats and the reasoning behind them: `commands/_sliced-format.md`.
 > Every derivation over the ledger belongs to a CLI — `read-ledger` and `slice-replay`.
@@ -126,52 +132,58 @@ branch.
 **If `RESUMING`, skip this step entirely** — the gate already passed on the first
 invocation, and `branch.<BRANCH>.slicedSpec` records which spec it passed for.
 
-`$1` is a **spec reference**, not a free-text description. This workflow's payoff
-depends on foundations being stable enough to freeze on review cycle 1 — and
-foundations are only stable if they were *specified*, not improvised while slicing. So
-build nothing until all three checks pass. On any failure, **refuse and name the better
-home** — never build on a failed gate, never proceed on an override.
+`$1` is a **spec reference**, not a free-text description. This workflow's payoff depends
+on each slice being an independently shippable, CI-green increment — and a feature only cuts
+cleanly into such increments if the separable outcomes were *specified*, not improvised
+while slicing. So build nothing until all three checks pass. On any failure, **refuse and
+name the better home** — never build on a failed gate, never proceed on an override.
 
-### 1a: A spec artifact exists and names the foundation surface
+### 1a: A spec artifact exists and names separable outcomes
 
 Resolve `$1` to one of the three accepted artifacts and read it. It must name the
-feature's **boundaries** — the types/contracts/schemas the leaves will consume — not
-just a goal. A spec that says only *what* the feature does, with no *foundation surface*
-to slice against, fails this check.
+feature's **separable, independently-shippable outcomes** — the distinct user-observable
+behaviors each slice will deliver end to end — not just a single goal. A spec that says only
+*what* the feature does, with no seam between outcomes to slice against, fails this check.
 
 - **Jira ticket key** (matches `[A-Z]+-\d+`): fetch via `mcp__atlassian__getJiraIssue`.
   Requires a populated Acceptance Criteria (and, ideally, `h2. Implementation Notes`
   from `planner`). No AC → fail.
 - **A TDD** (`docs/tdds/{slug}.md` or a path ending `.md` under `docs/tdds/`): `Read` it.
-  Requires the design/interface section that names contracts. This is the richest
-  source — it already orders foundation before consumers.
+  Requires the design/interface section that names the contracts and the behaviors built on
+  them. This is the richest source; where it orders foundation before consumers, read that
+  as build *order*, not as the slice boundaries — each slice still pairs a contract with a
+  consumer (the `@feature-planner` agent already cuts this way: "by feature … genuinely
+  distinct user-observable outcomes").
 - **An EARS requirements doc** (`.plans/ears-*.md` or a path the user names as EARS
-  output): `Read` it. The structured requirements are the foundation surface.
+  output): `Read` it. Each structured requirement is a candidate increment.
 
-If `$1` resolves to none of these, or the artifact lacks a foundation surface:
+If `$1` resolves to none of these, or the artifact names no separable outcomes to slice:
 
 ```
-Refused: no spec artifact names this feature's foundation surface.
+Refused: no spec artifact names this feature's separable, shippable outcomes.
 Provide one of:
   - a Jira ticket with Acceptance Criteria      (TICKET-KEY)
   - a TDD                                        (docs/tdds/{slug}.md — run @tdd-builder)
   - an EARS requirements doc                     (run /ears-requirements)
 ```
 
-### 1b: The work fits — greenfield layered feature
+### 1b: The work fits — decomposes into independent vertical increments
 
-This loop earns its machinery (ledger, replay, cursor) only for a feature with a real
-**foundation→leaf** structure. Judge from the spec and a quick look at the repo. Refuse,
-naming the better home, when the work is:
+This loop earns its machinery (ledger, replay, cursor) only for a feature that cuts into
+**2+ independently-shippable vertical increments** — each a complete end-to-end path that
+could merge on its own. That fits greenfield features *and* increments added to an existing
+service; the axis is separability, not newness. Judge from the spec and a quick look at the
+repo. Refuse, naming the better home, when the work is:
 
-- **A single-file / trivial change** — no slices to order. → "too small to slice; make
-  the change directly."
+- **A single-file / trivial change** — one increment, nothing to slice. → "too small to
+  slice; make the change directly."
 - **A pure refactor** — behavior-preserving restructuring. → "use `/refactor`."
 - **Already ticketed and stacked** — the spec is a ticket that's part of a Story/Epic
   stack with a feature branch. → "use `/ticket-work {KEY}` — this is stacked work."
 
-Only proceed when the spec describes new, internally-layered behavior: contracts/types
-first, consumers built on them.
+Only proceed when the spec describes behavior that splits into distinct increments, each
+shippable on its own. A feature that can only land as one indivisible change has nothing to
+slice — say so rather than manufacturing seams that don't exist.
 
 ### 1c: Manual invocation
 
@@ -234,18 +246,38 @@ Never trust SHAs across runs — they churn on replay. `Slice-Id` order in the l
 the truth; a slice is "present" iff `read-ledger` lists its id (it refuses duplicates, so
 one appearance is guaranteed).
 
-## Step 4: Build slices (foundation-first)
+## Step 4: Build slices (vertical, dependency-ordered)
 
-Decompose the feature **bottom-up** from the spec's foundation surface (Step 1a): build
-what nothing else depends on first — the contracts/types/schemas the spec named — then
-the consumers on top. This makes foundation-first fall out of dependency order rather
-than a pre-committed plan.
+Decompose the feature into **thin vertical increments** from the separable outcomes the
+spec named (Step 1a). Each slice is a complete end-to-end path — its own contract, a
+consumer that exercises it, and the test that proves it — that stands up against the full CI
+gate on its own, with no unconsumed surface left for a later slice to justify. Order by
+reuse, not by layer: a slice that builds on an earlier slice's code comes after it, so
+dependency order — and the foundation/leaf kind derived from it — falls out of what each
+increment actually reuses rather than a pre-committed plan. The first slice is a whole
+increment too, never a bare foundation with nothing consuming it.
+
+**Changing behavior existing code depends on → expand, migrate, contract.** When a slice
+would alter a shared contract, schema, or API that existing consumers rely on, it cannot
+both stay green and move the producer ahead of its consumers in one step. Decompose it the
+way the parallel-change pattern does: one slice **expands** — adds the new form alongside
+the old, both working — one or more **migrate** the consumers across, and a final slice
+**contracts** — removes the old form once nothing uses it. Each phase is an ordinary
+vertical slice, green on its own; commit order puts expand first and contract last, and the
+bottom-up merge (Step 4a) preserves that sequence by construction. One caveat the ledger
+cannot enforce: a green bar is a *merge* fact, not a *deploy* fact. Where a slice is safe
+only once an earlier one has actually shipped and run — a migration a later slice reads,
+most commonly — that ordering is yours to hold at merge and deploy time; CI-green does not
+prove deploy-safe.
 
 For each slice, in order:
 
-1. Write the code and its tests, then **run the bar** — the slice compiles and its own
-   tests pass against the tree at this commit (`commands/_sliced-format.md` §1c). Determine
-   the project's test command from the repo; if you cannot, ask rather than guess.
+1. Write the code and its tests, then **run the bar** — the slice passes the project's full
+   local CI gate (build/compile, lint, typecheck, the full suite, any coverage gate) against
+   the tree at this commit (`commands/_sliced-format.md` §1c). Determine that gate from the
+   repo — CI config first, then the script/target it invokes; if you cannot, ask rather than
+   guess. Where a CI check genuinely cannot run locally, run the rest and name what was
+   deferred; never claim a green the local run did not earn.
 2. Mint a `Slice-Id` (`s01`, `s02`, … in creation order, never renumbered). Set
    `Depends-On` to **every** slice id this one builds on, comma-separated, or `none`.
    Under-reporting an edge silently narrows review scope, replay scope, and the
@@ -280,17 +312,88 @@ For each slice, in order:
 4. Do not squash. This is the deliberate divergence from `/ticket-work`'s stage-squash;
    preserved commits are the whole point.
 
-**Escalation.** If a slice cannot be made green against its bar, **halt and report a plan
-defect** — name the slice, the bar it fails, and what the spec appears to require that the
-code cannot deliver. Never improvise a weaker slice, never relax a test to reach green, and
-never fold the failing work into a neighbouring slice to hide it. A halted build with a
-named defect is a useful result; a green build that reached green by lowering the bar is
-not.
+**Escalation.** A slice that cannot be made green against its bar is a **mis-cut**, and it
+comes in two shapes — halt and report a plan defect for either. The first: the spec asks for
+something the code cannot deliver; name the slice, the check it fails, and the gap. The
+second, and the one the vertical cut exists to surface: the slice is red only because it is
+**not actually an independent increment** — it fails lint/typecheck/coverage or the suite
+because it is missing the consumer, the migration, or the sibling code that would make it
+whole. That is not a slice to weaken; it is a boundary drawn in the wrong place. Redraw the
+cut so the increment is complete, or fold it into the slice that completes it. Never
+improvise a weaker slice, never relax a test or a lint rule to reach green, and never leave
+unconsumed surface behind for a later slice to redeem — that is exactly the incomplete
+intermediate state this workflow no longer ships. A halted build with a named defect is a
+useful result; a green build that reached green by lowering the bar is not.
 
 When the feature is fully built, `read-ledger --base <BASE>` once more for the final
-kind/depth counts — the derivations are only meaningful against a complete slice set. Then
-push (`git push -u origin <BRANCH>`) and go to **Step 6 (Report)**. Tell the user to run
+kind/depth counts — the derivations are only meaningful against a complete slice set. Push
+the branch (`git push -u origin <BRANCH>`), then run **Step 4a (Stack the slices as
+PRs)** over the full ledger, then go to **Step 6 (Report)**. Tell the user to run
 `/review-slices`.
+
+## Step 4a: Stack the slices as PRs
+
+Give each slice its own PR so a slice can merge — and pass CI — as soon as it is green,
+without waiting for slices that haven't been built yet. A single PR for `<BRANCH>` would
+throw that away at the last step: its CI run would require every slice, defeating the
+point of slicing.
+
+**Inputs**: the `slices[]` from a `read-ledger --base <BASE> --head <BRANCH>` call (Step 4
+already made one for the final counts; reuse it rather than re-deriving `index` by hand).
+**Scope**:
+
+- Called from Step 4 → every slice in the ledger.
+- Called from Step 5.6 (replay) → only the slices in `replaySpan`. Everything before the
+  replay start already has a correct branch and PR from a prior run of this step; a
+  positional rewind never touches it, so neither does this.
+
+For each slice `s` in `slices`, in `index` order, within scope:
+
+1. **Point the slice's own branch at its commit.** `refName = "<BRANCH>--<s.id>"`;
+   `git branch -f <refName> <s.sha>`.
+2. **Chain the base on commit order, never on `Depends-On`.**
+   `prevRef = s.index === 0 ? <BASE> : "<BRANCH>--<slices[s.index - 1].id>"`.
+   `Depends-On` is a DAG; a linear branch has exactly one predecessor per commit, and that
+   predecessor already contains everything `s` was built against, declared dependency or
+   not (`commands/_sliced-format.md` §1b, "the influence set"). Chaining on `Depends-On`
+   instead would either skip an earlier slice `s` has no declared edge to — silently
+   dropping its code out of the PR's tree and breaking CI on exactly the case this step
+   exists to fix — or, for a slice with more than one dependency, have no single
+   predecessor to name.
+3. **Ensure the PR:**
+
+   ```bash
+   ensure-pr <refName> --base <prevRef> --title "<title>" --body-file <bodyFile> --draft --force-push
+   ```
+
+   - `<title>` = `"<s.id> [<s.index + 1>/<N>] <s.subject>"` (`N` = total slice count).
+   - `<bodyFile>` is a scratch file under `{PLANS_DIR}` (e.g.
+     `{PLANS_DIR}/pr-body-<SLUG>-<s.id>.md`):
+
+     ```
+     Slice `<s.id>` (<s.kind>, depth <s.depth>) of `<BRANCH>`.
+     Depends-On: <s.dependsOn, or "none">
+     Stacked on `<prevRef>` — position <s.index + 1>/<N>.
+     ```
+   - Always pass `--force-push`. These per-slice refs are exclusively owned by this
+     command, the same way `<BRANCH>` itself is (Guidelines) — a plain push would be
+     refused by a replay's rewritten SHA.
+
+`ensure-pr` is idempotent (`commands/_shared-stack-procedures.md`, "PR Push & Review",
+step P2): it probes for an existing open PR for `<refName>` → `<prevRef>` before creating
+one, so re-running this step after a build that only appended slices, or after a replay
+that only rewrote a suffix, touches nothing for the slices it didn't need to.
+
+**Do not open an umbrella PR** for `<BRANCH>` → `<BASE>` alongside the per-slice ones —
+that recreates the single-PR merge gate this step exists to avoid. Anyone who wants the
+whole feature's diff reads it with `gh pr diff` down the chain, or a plain
+`<BASE>...<BRANCH>` compare; no PR needs to represent it.
+
+**Merging is bottom-up and needs a manual restack between merges — this command does not
+drive that.** Merging the first slice's PR (base `<BASE>`) strands or deletes
+`<BRANCH>--<id0>`, so the second slice's PR — based on it — needs `gh pr edit <n> --base
+<BASE>` before it can merge next, and so on up the chain. That hand-off is what "the
+normal PR flow" means in Step 6.
 
 ## Step 5: Replay from earliest touched slice
 
@@ -364,9 +467,11 @@ Triggered by open findings in `review-<SLUG>.md`, or by crash recovery.
    finding was routed to whose patch did not move — meaning the slice was cherry-picked when
    it should have been re-derived. Go back to step 4 and re-derive them; do not push. Nothing
    else catches this: the classification alone reads as an ordinary skip.
-6. **Finish.** `git push --force-with-lease origin <BRANCH>`, then
-   `slice-replay clear --branch <BRANCH> --plans-dir <PLANS_DIR>` to delete the cursor —
-   in that order, never before the push. Mark the addressed findings `- [x]` in the review
+6. **Finish.** `git push --force-with-lease origin <BRANCH>`, then run **Step 4a**
+   scoped to `replaySpan` — the replayed slices' per-slice branches point at stale SHAs
+   until this runs, and their PRs still show the pre-replay diff. Then `slice-replay clear
+   --branch <BRANCH> --plans-dir <PLANS_DIR>` to delete the cursor — push, then restack,
+   then clear, never out of that order. Mark the addressed findings `- [x]` in the review
    file. A replay never leaves an in-scope finding open: address it, or **halt and report a
    plan defect** naming the finding and why the slice cannot satisfy it — same escalation as
    a slice that cannot reach green. Leaving it `- [ ]` re-picks the same start on every
@@ -385,6 +490,9 @@ repairs it on the next run.
 **After a build:**
 ```
 Built <N> slices on <BRANCH> (<F> foundation, <L> leaf — derived), pushed.
+Stacked <N> PRs — each mergeable independently once its base merges:
+  <id> -> <prevRef|BASE>   <PR_URL>
+  ...
 Run /review-slices to review the stack.
 ```
 
@@ -392,12 +500,12 @@ Run /review-slices to review the stack.
 classify` — one line per replayed slice, so the user re-reads only what moved:
 
 ```
-Replayed from <start>. Force-pushed <BRANCH>.
+Replayed from <start>. Force-pushed <BRANCH>. Restacked <K> PR(s) in replaySpan.
   <id> depth 0  changed                — <what changed, per findings>
   <id> depth 1  context-changed        — patch identical, rebuilt on a moved foundation
   <id> depth 1  regenerated-identical
   <id> depth 2  shape-changed          — prior review comment on this slice is now stale
-Addressed <M> of <T> findings. Re-run /review-slices, or declare done and open a PR.
+Addressed <M> of <T> findings. Re-run /review-slices, or declare done and merge the stack.
 ```
 
 - `changed` — own patch-id moved, and a finding was addressed here. Ran its bar.
@@ -419,11 +527,14 @@ cursor, which means it was added after the replay began and was classified again
 defect (Step 5.6) rather than pushing a stack with known-open work. If a human has declined
 findings, say how many and move on.
 
-When the stack is settled, say so and hand off — this command does not open PRs, and nothing
-downstream picks the branch up on its own:
+When the stack is settled, say so and hand off — the per-slice PRs from Step 4a are
+already open and current; merging bottom-up and repointing each successor's base after a
+merge (Step 4a) is the human's call, not something this command drives:
 
 ```
-<BRANCH> is settled: <N> slices, no open findings. Take it through the normal PR flow.
+<BRANCH> is settled: <N> slices, no open findings. <N> PRs are stacked and independently
+mergeable. Merge bottom-up starting with <id0>; after each merge, `gh pr edit` the next
+PR's base to <BASE> before merging it.
 ```
 
 ## Guidelines
@@ -446,9 +557,12 @@ downstream picks the branch up on its own:
 - One commit per slice; each green against its bar in isolation; no squashing. No target
   slice count — effort is not a slicing axis. A commit with no `Slice-Id` — a merge commit
   above all — makes the ledger unreadable; rebase onto a moved `<BASE>`, never merge it in.
-- The bar is one fixed thing: compiles, own tests pass, against that slice's tree
-  (`commands/_sliced-format.md` §1c). If the project's runner isn't in `allowed-tools`, stop
-  and say so rather than substituting a check you can run.
+- The bar is one fixed thing: the project's full local CI gate — build/compile, lint,
+  typecheck, the full suite, any coverage gate — against that slice's tree
+  (`commands/_sliced-format.md` §1c). The bar *is* CI run locally; that is what makes a green
+  slice independently mergeable. If a runner isn't in `allowed-tools`, stop and say so rather
+  than substituting a check you can run; if a CI check can't run locally at all, run the rest
+  and name what was deferred.
 - Resume identity comes from the spec (`branch.<x>.slicedSpec`), never from the current
   branch. Missing that config is a refusal even when a ledger exists. Two specs never share
   a stack.
@@ -462,6 +576,11 @@ downstream picks the branch up on its own:
 - The command owns its branch and force-pushes on replay — never a shared branch. Never
   hard-reset a dirty worktree — including the crash-recovery reset, which is the one most
   likely to meet one. Push before clearing the cursor, never after.
+- Ownership extends to the per-slice branches (`<BRANCH>--<id>`) and their PRs (Step 4a):
+  created and force-pushed by this command, chained by commit `index`, never by
+  `Depends-On`. No umbrella PR for the whole branch — the per-slice PRs are the only PRs.
+  Merging one, and repointing the next PR's base afterward, is a human step this command
+  never performs.
 - A slice that cannot reach green, a finding a replay cannot address, or a finding that says
   the slicing itself is wrong, all halt the build as a named plan defect. Never lower the bar
   to reach green. Skipping the bar for a `regenerated-identical` slice is not lowering it;

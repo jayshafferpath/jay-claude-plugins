@@ -249,19 +249,35 @@ earlier slice contributes "unchanged" without needing to be measured.
 "The bar" is one fixed thing, and every reference to it in `/build-sliced` means exactly
 this:
 
-> **The slice compiles and its own tests pass, run against the tree at that slice's commit.**
+> **The slice passes the project's full local verification gate — build/compile, lint,
+> typecheck, the full test suite, and any coverage gate — run against the tree at that
+> slice's commit.**
 
-Not the full suite, and not a smoke check. Two consequences follow from the "at that
-slice's commit" half, and they are the reason the classes above exist at all:
+The bar *is* CI, run locally. That equivalence is the whole point of the vertical cut: a
+slice that passes the bar is a slice that passes CI, so it can merge on its own. A narrower
+bar — "compiles and its own tests pass" — is precisely what let a slice go green while CI
+went red, because lint, typecheck, coverage, and the *rest* of the suite are exactly where
+an incomplete increment fails. Two consequences follow from the "at that slice's commit"
+half, and they are the reason the classes above exist at all:
 
-- A slice is read by a reviewer as a standalone commit, so it has to stand up as one.
-- The bar is a claim about a **tree**, not about a patch. That is why a clean cherry-pick
-  does not inherit yesterday's green bar, and why only `regenerated-identical` may skip it.
+- A slice is read by a reviewer, and by CI, as a standalone commit — so it has to stand up
+  as one against the same gate CI will apply.
+- The bar is a claim about a **tree**, not about a patch. A full-suite pass is still a
+  tree-claim, so this is unchanged by the wider gate: a clean cherry-pick does not inherit
+  yesterday's green bar, and only `regenerated-identical` may skip it.
 
-Determine the project's test command from the repo — `package.json` scripts, a `Makefile`
-target, `pyproject.toml`, the CI config. If you cannot determine it, **ask**; do not guess,
-and do not substitute a weaker check. If the runner is not in `/build-sliced`'s
-`allowed-tools`, say so and stop rather than falling back to something you can run.
+Determine the gate from the repo — `package.json` scripts, a `Makefile`/`justfile` target,
+`pyproject.toml`, and above all the **CI config**, which names the checks a slice must
+survive. If you cannot determine it, **ask**; do not guess, and do not substitute a weaker
+check. If a runner is not in `/build-sliced`'s `allowed-tools`, say so and stop rather than
+falling back to something you can run. And where CI includes checks that **cannot** run
+locally at all — integration suites needing live services, deploy-preview gates — the slice
+cannot fully self-certify: run every part of the gate you can, and **say plainly which
+checks were deferred to CI** rather than claiming a green the local run did not earn. And a
+green bar — even a complete one — certifies the slice against its *tree*, never against a
+running system: where a slice is safe only once an earlier one has shipped and run (a
+migration a later slice reads is the usual case), that sequencing is deploy-ordered,
+enforced at merge and deploy time, and lives outside the bar.
 
 ## 2. Replay cursor — crash-safety
 
