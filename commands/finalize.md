@@ -32,7 +32,7 @@ Final pass before merge. Updates the PR description to reflect the actual shippe
 
 ## Step 2: Update PR Description
 
-Use the Skill tool to run skill `pr-description` with args `{BASE_BRANCH}`.
+Use the Skill tool to run skill `jay-pr-description` with args `{BASE_BRANCH}`.
 
 After it completes, read the generated `./pr.md` file. The first line is the title, the rest is the body.
 

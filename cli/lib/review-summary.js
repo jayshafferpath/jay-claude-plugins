@@ -14,10 +14,30 @@ function run(cmd, cwd) {
   }
 }
 
-export function findReviewPlanFile(plansDir, ticketKey) {
+// `/jay-pr-review`'s exact filename convention (commands/jay-pr-review.md Step 1):
+// `.plans/pr-review-<BRANCH with / and _ -> ->.md`. Exposed so callers that
+// already know the branch (every real caller does — it's a required arg)
+// can match on it instead of guessing.
+export function reviewPlanFilename(branch) {
+  return `pr-review-${branch.replace(/[/_]/g, "-")}.md`;
+}
+
+export function findReviewPlanFile(plansDir, ticketKey, branch) {
   if (!existsSync(plansDir)) return null;
 
   const files = readdirSync(plansDir);
+
+  // Branch match is checked first, and is authoritative when it hits: the
+  // filename convention already encodes the branch, so this is an exact,
+  // unambiguous match rather than a scoped guess. This is what makes the
+  // function safe to call with no ticket key at all — a Jira-less stack (a
+  // plain GitHub PR chain) still has one `pr-review-*.md` file per branch
+  // sitting in the same shared `.plans/` dir, and without this check the
+  // ticket-key-less fallback below would grab an arbitrary one of them.
+  if (branch) {
+    const target = reviewPlanFilename(branch);
+    if (files.includes(target)) return join(plansDir, target);
+  }
 
   // When a ticket key is supplied, require the filename to reference it.
   // Without this scoping, a leftover `pr-review-*.md` from a prior ticket
@@ -86,7 +106,7 @@ export function formatSummary(planContent) {
 }
 
 export function postSummary(branch, plansDir, ticketKey, cwd) {
-  const planFile = findReviewPlanFile(plansDir, ticketKey);
+  const planFile = findReviewPlanFile(plansDir, ticketKey, branch);
   if (!planFile) {
     return { posted: false, reason: "no_plan_file" };
   }

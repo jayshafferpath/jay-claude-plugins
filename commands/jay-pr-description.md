@@ -1,7 +1,14 @@
 ---
 description: Generate a PR title and description following the team's PR template
 argument-hint: [base-branch]
-allowed-tools: Read, Grep, Glob, Bash(git:*), Bash(gh:*), mcp__atlassian__getJiraIssue, mcp__atlassian__searchJiraIssuesUsingJql
+allowed-tools:
+  - Read
+  - Grep
+  - Glob
+  - Bash(git *)
+  - Bash(gh *)
+  - mcp__atlassian__getAccessibleAtlassianResources
+  - mcp__atlassian__getJiraIssue
 ---
 
 # PR Description Generator
@@ -26,29 +33,54 @@ Run these commands to understand the changes:
 
 ## Step 2: Fetch Jira Ticket Context
 
-If a Jira ticket number was found in the branch name:
+Skip this entire step if no Jira ticket number was found in Step 1.6 — the description is
+written from the diff alone in that case.
 
-1. Use `mcp__atlassian__getJiraIssue` to fetch the ticket. Extract:
-   - **Summary** (title)
-   - **Description** (acceptance criteria, requirements, context)
-   - **Issue type** (Story, Bug, Task, Sub-task, etc.)
-   - **Labels and components**
-   - **Linked issues** (blocks, is blocked by, relates to)
-   - **Parent field** — if the issue has a parent (subtask or child issue), note the parent key.
+### 2a: Resolve the Jira site
 
-2. **If the ticket is a Sub-task** (issue type is `Sub-task`, or the ticket has a parent): Use `mcp__atlassian__getJiraIssue` to fetch the parent ticket. Extract:
-   - **Summary** (title)
-   - **Description** in full — acceptance criteria, goals, motivation, business context
-   - **Issue type** of the parent (typically Story, but could be Epic or Task)
-   - **Parent field** of the parent — if the parent itself has a parent (e.g., a Story under an Epic), fetch that grandparent too and capture its Summary + a brief description excerpt for additional framing.
+```
+mcp__atlassian__getAccessibleAtlassianResources
+```
 
-   The goal is to surface the **overall Story** the subtask is part of, so the PR description can explain how this subtask fits into the larger feature or initiative. Treat the parent's description as primary context — reviewers need to understand the Story's scope, not just the subtask's narrow slice.
+Store the first resource's `id` as `CLOUD_ID` and its `url` as `JIRA_SITE_URL` (e.g.
+`https://your-site.atlassian.net`). `JIRA_SITE_URL` is what every link in Step 4 is built
+from — never hardcode a site domain, since this command runs across whatever Jira
+instance the invoking user's Atlassian connection resolves to.
 
-3. Compile a **Jira Context Block** for use in the description:
-   - Ticket link: `https://rula.atlassian.net/browse/<TICKET>` + brief summary
-   - Parent (Story) link + summary, **plus a 2–3 sentence synopsis of what the parent Story is trying to accomplish** (drawn from the parent's description). This synopsis is required when the ticket is a subtask.
-   - Grandparent (Epic) link + summary, if applicable
-   - One-line statement of how this subtask contributes to the parent Story
+### 2b: Fetch the ticket and its ancestors
+
+Use `mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={TICKET_KEY}`.
+Extract:
+- **Summary** (title)
+- **Description** (acceptance criteria, requirements, context)
+- **Issue type** (Story, Bug, Task, Sub-task, etc.)
+- **Labels and components**
+- **Linked issues** (blocks, is blocked by, relates to)
+- **Parent field** — if the issue has a parent (subtask or child issue), note the parent key.
+
+**If the ticket is a Sub-task** (issue type is `Sub-task`, or the ticket has a parent): call
+`mcp__atlassian__getJiraIssue` with `cloudId={CLOUD_ID}`, `issueIdOrKey={PARENT_KEY}`.
+Extract:
+- **Summary** (title)
+- **Description** in full — acceptance criteria, goals, motivation, business context
+- **Issue type** of the parent (typically Story, but could be Epic or Task)
+- **Parent field** of the parent — if the parent itself has a parent (e.g., a Story under
+  an Epic), fetch that grandparent too and capture its Summary + a brief description
+  excerpt for additional framing.
+
+The goal is to surface the **overall Story** the subtask is part of, so the PR description
+can explain how this subtask fits into the larger feature or initiative. Treat the parent's
+description as primary context — reviewers need to understand the Story's scope, not just
+the subtask's narrow slice.
+
+### 2c: Compile a Jira Context Block
+
+- Ticket link: `{JIRA_SITE_URL}/browse/{TICKET}` + brief summary
+- Parent (Story) link + summary, **plus a 2–3 sentence synopsis of what the parent Story
+  is trying to accomplish** (drawn from the parent's description). This synopsis is
+  required when the ticket is a subtask.
+- Grandparent (Epic) link + summary, if applicable
+- One-line statement of how this subtask contributes to the parent Story
 
 ## Step 3: Determine PR Prefix and Title
 
@@ -88,9 +120,9 @@ Use this exact template structure:
 
 # Jira Context
 
-- **Ticket**: [<TICKET>](https://rula.atlassian.net/browse/<TICKET>) — <ticket summary>
-- **Parent Story**: [<PARENT>](https://rula.atlassian.net/browse/<PARENT>) — <parent summary>  *(only if applicable)*
-- **Epic**: [<EPIC>](https://rula.atlassian.net/browse/<EPIC>) — <epic summary>  *(only if the parent has a parent)*
+- **Ticket**: [<TICKET>](<JIRA_SITE_URL>/browse/<TICKET>) — <ticket summary>
+- **Parent Story**: [<PARENT>](<JIRA_SITE_URL>/browse/<PARENT>) — <parent summary>  *(only if applicable)*
+- **Epic**: [<EPIC>](<JIRA_SITE_URL>/browse/<EPIC>) — <epic summary>  *(only if the parent has a parent)*
 - **Linked Issues**: <list any blocking/related tickets with links>  *(only if applicable)*
 
 <If the ticket is a subtask, add a **Story Synopsis** subsection here with 2–3 sentences summarizing the parent Story's goals and acceptance criteria, so reviewers don't have to click through.>
@@ -116,13 +148,16 @@ Use this exact template structure:
 - No breaking API changes
 ```
 
+If Step 2 was skipped (no Jira ticket found), omit the `# Jira Context` section entirely
+rather than leaving it templated-but-empty.
+
 ## Guidelines
 
 - The **TL;DR** is mandatory and must be 1-2 sentences. State what the PR does and what it changes — no story framing, no business justification, no hedging. If you can't say it in two sentences, the scope is the problem, not the blurb.
 - Be concise but comprehensive in the description — reviewers should understand the PR without reading every line of code.
 - Use the Jira ticket context to explain the *why* behind changes. Don't repeat the ticket verbatim — synthesize it into the description narrative.
 - If the ticket is a subtask, frame the description in terms of the parent Story's goals so reviewers understand the bigger picture. Include a **Story Context** lead paragraph in the Description and a **Story Synopsis** in the Jira Context section. Do not assume reviewers will click through to Jira.
-- The Jira Context section should always use clickable markdown links.
+- The Jira Context section should always use clickable markdown links built from `JIRA_SITE_URL` — never a hardcoded domain.
 - Omit the Parent line from Jira Context if there is no parent. Omit Linked Issues if there are none.
 - Assess business impact honestly. Most code changes are Medium. Reserve Large/Extra Large for changes touching auth, data persistence, payment processing, or infrastructure.
 - For risk mitigations, only list mitigations that actually apply. Do not fabricate mitigations.

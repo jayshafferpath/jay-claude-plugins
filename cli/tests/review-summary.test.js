@@ -65,6 +65,40 @@ describe("findReviewPlanFile", () => {
     readdirSync.mockReturnValue(["jira-T-1.md", "other.md"]);
     expect(findReviewPlanFile("/plans", "T-1")).toBeNull();
   });
+
+  it("matches the exact branch filename with no ticket key at all", () => {
+    // The pure-GitHub-PR case: no Jira ticket, several stack levels' review
+    // files sitting in the same shared .plans/ dir. Without a branch match
+    // the ticket-key-less fallback would grab an arbitrary one of these.
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue([
+      "pr-review-feat-bottom.md",
+      "pr-review-feat-top.md",
+    ]);
+    const result = findReviewPlanFile("/plans", undefined, "feat-top");
+    expect(result).toBe("/plans/pr-review-feat-top.md");
+  });
+
+  it("sanitizes / and _ in the branch the same way /jay-pr-review does", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue(["pr-review-feature-my_branch.md"]);
+    const result = findReviewPlanFile("/plans", undefined, "feature/my_branch");
+    expect(result).toBe("/plans/pr-review-feature-my_branch.md");
+  });
+
+  it("prefers the branch match over a ticket key when both are supplied", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue(["pr-review-T-1.md", "pr-review-feat-1.md"]);
+    const result = findReviewPlanFile("/plans", "T-1", "feat-1");
+    expect(result).toBe("/plans/pr-review-feat-1.md");
+  });
+
+  it("falls back to ticket key when the exact branch filename isn't present", () => {
+    existsSync.mockReturnValue(true);
+    readdirSync.mockReturnValue(["pr-review-T-1.md"]);
+    const result = findReviewPlanFile("/plans", "T-1", "feat-1");
+    expect(result).toBe("/plans/pr-review-T-1.md");
+  });
 });
 
 describe("formatSummary", () => {

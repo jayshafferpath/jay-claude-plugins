@@ -233,6 +233,14 @@ Both are read-only and return JSON. Plan format lives in `commands/_pr-review-fo
 
 Base defaults: `$ARGUMENTS` → `git config branch.<BRANCH>.base` → `gh pr view --json baseRefName` → `main`.
 
+#### `/jay-pr-description [BASE]`
+
+Generates a PR title and description at `./pr.md` from the branch's diff and commit history, plus Jira context when a ticket key is found in the branch name (walking up to the parent Story and grandparent Epic for a subtask, so reviewers get the bigger picture without clicking through). Ticket links are built from `getAccessibleAtlassianResources`' resolved site `url`, never a hardcoded domain. Called by `/finalize`, `/groom-stack`, and `/ticket-work`'s PR-push sub-procedure — never run standalone as part of the normal lifecycle, but safe to invoke directly against any branch.
+
+#### `/groom-stack [PR-number-or-url] [--dry-run]`
+
+Preps a stacked chain of GitHub PRs for review, bottom-up — a peer to `/jay-pr-review` for a chain instead of a single branch. Unlike this repo's Jira-managed ticket stacks (where every ticket's PR targets the same shared feature branch independently, per `computeBaseBranch` — see "Core concepts" above), this command discovers the chain purely from `baseRefName`/`headRefName` on the open PRs themselves, with no Jira involvement at all: PR B is "on top of" PR A when `B.baseRefName === A.headRefName`. Walks down to the trunk and up to the tip from a given (or current-branch) PR, then for each level in order: rebases onto its own base if it's fallen behind (the cascade is implicit — rebase-then-push, re-fetch at the next level), refreshes the PR description via `/jay-pr-description`, and regenerates `/jay-pr-review` findings. Flags a fork (two PRs basing on the same head) or a broken base (predecessor merged and its branch was deleted before the PR was retargeted) rather than guessing past either. Halts on the first unresolved rebase conflict. `--dry-run` reports staleness and base-existence without any write. Discovery and rebasing never touch Jira; `/jay-pr-description` may still read a ticket if it finds a key-shaped substring in the branch name.
+
 #### `/finalize`
 
 Final pre-merge pass. Updates the PR description to reflect the actual shipped state, then posts a finalization comment with context downstream stacked-ticket agents can use (touched files, gotchas, follow-ups). Writes to Jira's activity log via `append-activity`.
