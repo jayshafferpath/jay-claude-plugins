@@ -1,6 +1,6 @@
 ---
 description: "Load an entire stack into context as one unit — a /build-sliced branch (whole ledger + whole diff) or a /ticket-work Epic/Story stack (every member ticket + the whole feature branch's diff) — then hand off for free-form conversation. Auto-detects which kind of stack it's looking at. Unlike /review-slices or /pr-chat, this never scopes down to a single slice, commit, or ticket: the aggregate diff and history are the primary artifact for the rest of the session."
-argument-hint: "[ticket-key | container-key | branch-name] — omit to infer from the current branch"
+argument-hint: "[ticket-key | container-key | branch-name | pr-number | pr-url] — omit to infer from the current branch"
 allowed-tools:
   - mcp__atlassian__getAccessibleAtlassianResources
   - mcp__atlassian__getJiraIssue
@@ -28,7 +28,9 @@ This command **does not** plan, edit, or push. It loads context and prints a sum
 
 `$ARGUMENTS`
 
-Optional: a Jira ticket key, a Jira container (Epic/Story) key, or a branch name.
+Optional: a Jira ticket key, a Jira container (Epic/Story) key, a branch name, or a
+GitHub PR number/URL anchoring a (Jira-less) stacked chain of PRs — the same
+`pr-number-or-url` shape `/groom-stack` takes.
 
 If omitted, infer from the current branch: `git rev-parse --abbrev-ref HEAD` → `ARG`.
 
@@ -65,22 +67,52 @@ Else, if `ARG` is Jira-shaped, run `resolve-stack {ARG} --repo-root {REPO_ROOT} 
 
 Go to Step 1b.
 
-### 0c: Fallback — plain branch
+### 0c: GH PR stack (no Jira)
+
+Else, if `ARG` is a bare integer (`^\d+$`) or a GitHub PR URL
+(`https://github.com/{owner}/{repo}/pull/{number}`), try resolving it as a PR:
+
+```bash
+gh pr view {ARG} --json number,url,title,headRefName,baseRefName,isCrossRepository
+```
+
+If this fails, or it succeeds but `isCrossRepository` is `true` (same bail as
+`/groom-stack` Step 1a — everything downstream assumes every branch in the chain
+is `origin/<branch>` in this repo), fall through to Step 0d; `ARG` may still
+resolve as a bare branch name there.
+
+Otherwise:
+
+- **Mode = GH-STACK.**
+- Store the result as `ANCHOR`.
+- Discover the rest of the chain exactly as `/groom-stack` Step 1b (walk down via
+  `gh pr list --head {current.baseRefName}`) and Step 1c (walk up via
+  `gh pr list --base {current.headRefName}`) — same cycle guard, same
+  cross-repository stop, same fork handling (record `FORK`, don't pick a side).
+  Assemble `STACK` the same way (`DOWN_CHAIN` + `[ANCHOR]` + `UP_CHAIN`,
+  bottom-first, never re-sorted). `TRUNK` = the bottom entry's `baseRefName`.
+  Record `BROKEN_BASES` per `/groom-stack` Step 1e, informationally only —
+  this command never rebases.
+- `BRANCH` = the top-of-stack entry's `headRefName`. `BASE` = `TRUNK`.
+
+Go to Step 1c.
+
+### 0d: Fallback — plain branch
 
 Else, treat `ARG` as a bare branch name:
 
 - **Mode = PLAIN.**
 - `BRANCH = ARG`. If it doesn't exist locally or as `origin/{ARG}`, bail:
   ```
-  /stack-chat could not resolve "{ARG}" as a sliced-build branch, a Jira ticket/container, or a git branch.
-  Pass one of: a Jira ticket key, an Epic/Story key, or a branch name.
+  /stack-chat could not resolve "{ARG}" as a sliced-build branch, a Jira ticket/container, a GitHub PR/stack, or a git branch.
+  Pass one of: a Jira ticket key, an Epic/Story key, a branch name, or a PR number/URL.
   ```
   Stop.
 - `BASE = origin/main`.
 
 Note the fallback prominently in the final summary — there's no lifecycle metadata backing this mode.
 
-Go to Step 1c.
+Go to Step 1d.
 
 ---
 
@@ -122,7 +154,32 @@ Go to Step 2.
 
 ---
 
-## Step 1c: PLAIN mode — minimal fallback load
+## Step 1c: GH-STACK mode — load the whole PR chain + diff
+
+1. For every `P` in `STACK`, fetch full detail (one call per PR — there are
+   `N` PRs here, not one feature branch with a single PR state):
+   `gh pr view {P.number} --json number,url,title,headRefName,baseRefName,body,reviews,comments,reviewRequests,statusCheckRollup,additions,deletions,changedFiles`.
+2. `git fetch origin {TRUNK} {headRefName of every entry in STACK}` — the
+   chain was discovered via the GitHub API and its branches may not be
+   fetched locally yet.
+3. Run, in parallel, using the fetched remote refs (not local checkouts —
+   this command never calls `git checkout`):
+   - `git log origin/{TRUNK}..origin/{BRANCH} --pretty=format:"%h %s%n%b%n---"`
+   - `git diff origin/{TRUNK}...origin/{BRANCH}` — full unified diff across the
+     whole chain, the primary artifact.
+   - `git diff origin/{TRUNK}...origin/{BRANCH} --name-only` → `CHANGED_FILES`.
+4. For every path in `CHANGED_FILES`, `Read` it in full from
+   `{REPO_ROOT}/{path}` (same rules as 1a). Note unreadable/binary files in
+   `SKIPPED_FILES`.
+5. Hold `STACK` (number, title, url, headRefName, baseRefName, review/CI
+   status per entry) as reference for "which PR introduced what" — not as
+   the primary lens.
+
+Go to Step 2.
+
+---
+
+## Step 1d: PLAIN mode — minimal fallback load
 
 1. `git log {BASE}..{BRANCH} --pretty=format:"%h %s%n%b%n---"`, `git diff {BASE}...{BRANCH}`, `git diff {BASE}...{BRANCH} --name-only` → `CHANGED_FILES`.
 2. `pr-state {BRANCH} --base {BASE} --cwd {REPO_ROOT}` best-effort; load `gh pr view` details if one exists.
@@ -139,7 +196,7 @@ Go to Step 2.
 Print a compact summary shaped to the detected mode, e.g.:
 
 ```
-Stack Chat ready — mode: {SLICED | TICKET-STACK | PLAIN}
+Stack Chat ready — mode: {SLICED | TICKET-STACK | GH-STACK | PLAIN}
 
   Branch:        {BRANCH or FEATURE_BRANCH} → {BASE or CONTAINER_BASE}
   PR:            #{PR_NUMBER} {PR_STATE}  {PR_URL}     (or "no PR open yet")
@@ -152,6 +209,10 @@ Stack Chat ready — mode: {SLICED | TICKET-STACK | PLAIN}
   [TICKET-STACK] Container: {CONTAINER_KEY}: {CONTAINER_SUMMARY} (or "standalone")
                  Members:   {N} tickets loaded — {list of keys}
                  TDD:       {docs/tdds/{slug}.md | Confluence page title | "no TDD cited"}
+
+  [GH-STACK]     Chain:     {N} PRs rooted on `{TRUNK}` — {list of "#number headRefName"}
+                 Fork:      {FORK summary, or "none"}
+                 Broken base: {BROKEN_BASES summary, or "none"}
 
   [PLAIN]        No lifecycle metadata found — loaded as a bare branch diff.
 
@@ -179,3 +240,4 @@ Then **stop**. Do not begin a walkthrough or analysis until the user asks for on
 - The context loaded here is large by design, and scales with stack size — for a long-running Epic this can be substantial. If the user immediately follows with another large operation, warn them they may be near context limits.
 - Re-running `/stack-chat` reloads from scratch — useful after new slices/commits land or a ticket in the stack changes state.
 - If the stack spans multiple tickets that are only partially merged (some `mergedIntoFeature`, some not), the loaded diff still reflects `{FEATURE_BRANCH}`'s current tip — note in the summary which `STACK_ORDER` entries are and aren't merged in yet, so the user knows the diff isn't necessarily "the finished feature."
+- GH-STACK mode never rebases, retargets, or checks out a branch — a `FORK` or `BROKEN_BASES` finding (same semantics as `/groom-stack` Step 1) is reported in the summary and left for the human; it doesn't block loading whatever chain was discoverable up to that point.
